@@ -5,6 +5,8 @@
 #include <deque>
 #include <termios.h>
 #include <unistd.h>
+#include <atomic>
+#include <mutex>
 #include <thread>
 
 
@@ -26,7 +28,7 @@ public:
 
     _thread_running  = true;
     _readThread = std::thread([this] {
-      while (_running) {
+      while (_thread_running) {
         _read();
       }
     });
@@ -34,12 +36,17 @@ public:
 
   ~Keyboard()
   {
+    _running = false;
     _thread_running = false;
+    if (_readThread.joinable()) {
+      _readThread.join();
+    }
     _pauseKey();
   }
 
   void update()
   {
+    std::lock_guard<std::mutex> lock(_key_mutex);
     if(_key != _last_key)
     {
       on_pressed = _key != "";
@@ -59,7 +66,11 @@ public:
    * 
    * @return std::string 
    */
-  std::string key() const { return _key; };
+  std::string key() const
+  {
+    std::lock_guard<std::mutex> lock(_key_mutex);
+    return _key;
+  };
 
   /**
    * @brief Get the String object from keyboard 
@@ -72,6 +83,7 @@ public:
     // Stop reading keyboard value
     _running = false;
     _pauseKey();
+    _setKey("");
 
     std::string stringtemp;
     std::cout << slogan << std::endl;// prompt
@@ -91,50 +103,66 @@ public:
   bool on_released = false;
 
   private:
-  bool _thread_running = false;
-  bool _running = false;
+  void _setKey(const std::string& key)
+  {
+    std::lock_guard<std::mutex> lock(_key_mutex);
+    _key = key;
+  }
+
+  std::atomic<bool> _thread_running = false;
+  std::atomic<bool> _running = false;
   std::thread _readThread;
 
   void _read()
   {
-    if(_running)
+    if(!_running)
     {
-      FD_ZERO(&_fd_set);
-      FD_SET( fileno(stdin), &_fd_set);
+      usleep(1000);
+      return;
+    }
 
-      _tv.tv_sec = 0;
-      _tv.tv_usec = 80000;
+    FD_ZERO(&_fd_set);
+    FD_SET( fileno(stdin), &_fd_set);
 
-      if(select(fileno(stdin)+1, &_fd_set, NULL, NULL, &_tv))
-      {
-        // Read the key value into _c
-        int res = read( fileno(stdin), &_c, 1 );
+    _tv.tv_sec = 0;
+    _tv.tv_usec = 80000;
 
-        // Parser the key value
-        if(_c != '\033') {
-          // This is a normal key
-          _key = _c;
-        }else{
-          // This is a special key
-          int m = read(fileno(stdin), &_c, 1);
-          if(_c == '[')
+    if(select(fileno(stdin)+1, &_fd_set, NULL, NULL, &_tv))
+    {
+      // Read the key value into _c
+      int res = read( fileno(stdin), &_c, 1 );
+      (void)res;
+
+      std::string next_key = "";
+
+      // Parser the key value
+      if(_c != '\033') {
+        // This is a normal key
+        next_key = std::string(1, _c);
+      }else{
+        // This is a special key
+        int m = read(fileno(stdin), &_c, 1);
+        (void)m;
+        if(_c == '[')
+        {
+          m = read(fileno(stdin), &_c, 1);
+          (void)m;
+          switch (_c)
           {
-            m = read(fileno(stdin), &_c, 1);
-            switch (_c)
-            {
-            case 'A': _key = "up";    break;
-            case 'B': _key = "down";  break;
-            case 'C': _key = "right"; break;
-            case 'D': _key = "left";  break;
-            default:  _key = "";      break;
-            }
+          case 'A': next_key = "up";    break;
+          case 'B': next_key = "down";  break;
+          case 'C': next_key = "right"; break;
+          case 'D': next_key = "left";  break;
+          default:  next_key = "";      break;
           }
         }
-      }else{
-        _key = "";
       }
-      // std::cout << "key: "<< key() << std::endl;
+
+      _setKey(next_key);
+    }else{
+      _setKey("");
     }
+    // std::cout << "key: "<< key() << std::endl;
   }
 
   /**
@@ -157,6 +185,7 @@ public:
 
   fd_set _fd_set;
   char _c = '\0';
+  mutable std::mutex _key_mutex;
   std::string _key, _last_key;
   
   termios _oldSettings, _newSettings;

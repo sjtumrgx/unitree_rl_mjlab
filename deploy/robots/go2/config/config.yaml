@@ -10,12 +10,17 @@ FSM:
   Passive:
     transitions: 
       FixStand: LT + up.on_pressed
+    keyboard_transitions:
+      FixStand: f.on_pressed
     mode: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
     kd: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
   FixStand:
     transitions: 
       Passive: LT + B.on_pressed
       Velocity: RT + A.on_pressed
+    keyboard_transitions:
+      Passive: p.on_pressed
+      Velocity: v.on_pressed
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -27,5 +32,6 @@ FSM:
   Velocity:
     transitions: 
       Passive: LT + B.on_pressed
+    keyboard_transitions:
+      Passive: p.on_pressed
     policy_dir: config/policy/velocity
-    
