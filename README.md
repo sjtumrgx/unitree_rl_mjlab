@@ -82,49 +82,46 @@ Available anti-fall tasks:
 - `Unitree-G1-AntiFall-Stage4a` — slip-focused low-friction recovery
 - `Unitree-G1-AntiFall-Stage4b` — trip-like recovery
 - `Unitree-G1-AntiFall-Benchmark` — deterministic benchmark configuration
+- `Unitree-G1-AntiFall-Curriculum` — single-entry curriculum task while keeping the stage tasks available for manual debugging / ablations
 
-Recommended training order:
+Recommended curriculum order:
 
 `Stage0 → Stage1 → Stage2 → Stage3 → Stage4a → Stage4b`
 
-Example commands:
+Recommended production training command:
 
 ```bash
-# Stage 0: stable flat-ground seed
-python scripts/train.py Unitree-G1-AntiFall-Stage0 --env.scene.num-envs=4096
-
-# Stage 1: flat push / kick recovery
-python scripts/train.py Unitree-G1-AntiFall-Stage1 --env.scene.num-envs=4096
-
-# Stage 3: rough-terrain recovery
-python scripts/train.py Unitree-G1-AntiFall-Stage3 --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-AntiFall-Curriculum \
+  --gpu-ids 0 \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10000 \
+  --agent.save-interval=100
 ```
 
-Minimal smoke run on CPU:
+Parameter guide:
 
-```bash
-CUDA_VISIBLE_DEVICES='' python scripts/train.py Unitree-G1-AntiFall-Stage0 \
-  --env.scene.num-envs=1 \
-  --agent.max-iterations=1 \
-  --agent.save-interval=1
-```
+- Positional task argument: the training task ID.
+  - Use `Unitree-G1-AntiFall-Curriculum` for the new automatic curriculum entrypoint.
+  - Use `Unitree-G1-AntiFall-Stage0` ~ `Unitree-G1-AntiFall-Stage4b` only when you intentionally want a manual single-stage run.
+- `--gpu-ids`: GPU selection passed to the training launcher, for example `--gpu-ids 0` for one GPU or `--gpu-ids 0 1` for two GPUs.
+- `--env.scene.num-envs`: number of parallel environments. Increase it for throughput if your GPU / CPU memory budget allows.
+- `--agent.max-iterations`: maximum training iterations.
+  - For `Unitree-G1-AntiFall-Curriculum`, this is the **per-stage** iteration budget.
+  - For a manual single-stage task, this is the total iteration budget for that run.
+- `--agent.save-interval`: checkpoint interval. Training writes `model_*.pt` at this cadence and also exports `policy.onnx`.
+
+Default curriculum behavior:
+- The curriculum advances in one top-level process following the fixed stage order above.
+- Stage0 promotes on the stable controllable-locomotion gate.
+- Stage1 ~ Stage4b promote on recovery-rate / recovery-latency gates.
+- If a stage does not meet its gate before `--agent.max-iterations`, the curriculum advances at the per-stage limit.
+- `Stage2 → Stage3` and `Stage3 → Stage4a` automatically switch to actor-only warm starts because the rough-terrain critic observation contract changes there.
 
 Training outputs are written to:
 
 ```text
 logs/rsl_rl/g1_antifall/<date_time>_<stage>/...
-```
-
-Each save also exports `policy.onnx` with actor observation metadata.
-
-Useful helper commands:
-
-```bash
-# Show the frozen benchmark scenarios for the deterministic benchmark task
-python scripts/benchmark_antifall.py scenarios Unitree-G1-AntiFall-Benchmark
-
-# Emit the canonical smoke-training command for a stage
-python scripts/benchmark_antifall.py smoke-command Unitree-G1-AntiFall-Stage4b --seed 7
+logs/rsl_rl/g1_antifall_curriculum/<date_time>_curriculum/...
 ```
 
 For implementation details, stage semantics, and current caveats, see

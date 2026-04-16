@@ -80,23 +80,17 @@ benchmark 工具。
 - `Unitree-G1-AntiFall-Stage4a` — 以滑倒为主的低摩擦恢复
 - `Unitree-G1-AntiFall-Stage4b` — 以绊倒样式为主的恢复
 - `Unitree-G1-AntiFall-Benchmark` — 确定性 benchmark 配置
-- `Unitree-G1-AntiFall-Curriculum` — 单入口自动课程学习任务（保持上述 stage 任务可单独训练 / debug）
+- `Unitree-G1-AntiFall-Curriculum` — 单入口自动课程学习任务（保留上述 stage 任务用于手工调试 / 对比实验）
 
 推荐课程顺序：
 
 `Stage0 → Stage1 → Stage2 → Stage3 → Stage4a → Stage4b`
 
-正式训练命令：
+正式训练命令（推荐统一入口）：
 
 ```bash
-# 自动课程学习（推荐）
 python scripts/train.py Unitree-G1-AntiFall-Curriculum \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10000 \
-  --agent.save-interval=100
-
-# 单独训练某个 stage（手工调试 / 对比实验）
-python scripts/train.py Unitree-G1-AntiFall-Stage3 \
+  --gpu-ids 0 \
   --env.scene.num-envs=4096 \
   --agent.max-iterations=10000 \
   --agent.save-interval=100
@@ -106,14 +100,15 @@ python scripts/train.py Unitree-G1-AntiFall-Stage3 \
 
 - 第一个位置参数：训练任务 ID。
   - 推荐使用 `Unitree-G1-AntiFall-Curriculum` 执行自动课程学习。
-  - 若需手工训练或排查某个阶段，可替换为 `Unitree-G1-AntiFall-Stage0` ~ `Unitree-G1-AntiFall-Stage4b`。
+  - 只有在你明确要手工跑某一阶段时，才改成 `Unitree-G1-AntiFall-Stage0` ~ `Unitree-G1-AntiFall-Stage4b`。
+- `--gpu-ids`：训练使用的 GPU 编号，例如 `--gpu-ids 0` 表示单卡，`--gpu-ids 0 1` 表示双卡。
 - `--env.scene.num-envs`：并行环境数量；越大吞吐越高，但显存 / 内存占用也越高。
 - `--agent.max-iterations`：最大训练迭代数。
   - 对 `Unitree-G1-AntiFall-Curriculum` 而言，它表示**每个 stage** 的最大迭代数。
   - 对单独 stage 任务而言，它表示该次运行的总迭代数。
 - `--agent.save-interval`：checkpoint 保存间隔；训练过程中会按该间隔输出 `model_*.pt`，并同步导出 `policy.onnx`。
 
-Curriculum 默认策略：
+课程默认策略：
 - 训练在单个顶层进程中按固定顺序推进 stage。
 - Stage0 默认以稳定可控行走指标晋级。
 - Stage1 ~ Stage4b 默认以恢复率 / 恢复延迟指标晋级。
