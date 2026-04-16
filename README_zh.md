@@ -65,6 +65,69 @@ python scripts/train.py Unitree-G1-Flat \
 > 更多有关详细说明，请参阅 mjlab 文档
 > [mjlab documentation](https://mujocolab.github.io/mjlab/index.html).
 
+### 1.1 G1 抗摔任务训练
+
+当前仓库已经加入分阶段的 **Unitree G1 Anti-Fall** 任务族。该任务保持部署侧
+actor 为纯本体感觉观测，同时在 critic 侧加入扰动/恢复上下文、恢复奖励和
+benchmark 工具。
+
+可用任务：
+
+- `Unitree-G1-AntiFall-Stage0` — 平地站立/行走种子任务（无外部扰动）
+- `Unitree-G1-AntiFall-Stage1` — 平地抗推 / 抗踢恢复
+- `Unitree-G1-AntiFall-Stage2` — 更强的平地恢复 + 近失稳重置
+- `Unitree-G1-AntiFall-Stage3` — 粗糙地形恢复
+- `Unitree-G1-AntiFall-Stage4a` — 以滑倒为主的低摩擦恢复
+- `Unitree-G1-AntiFall-Stage4b` — 以绊倒样式为主的恢复
+- `Unitree-G1-AntiFall-Benchmark` — 确定性 benchmark 配置
+
+推荐训练顺序：
+
+`Stage0 → Stage1 → Stage2 → Stage3 → Stage4a → Stage4b`
+
+示例命令：
+
+```bash
+# Stage 0：平地基础种子
+python scripts/train.py Unitree-G1-AntiFall-Stage0 --env.scene.num-envs=4096
+
+# Stage 1：平地抗推 / 抗踢
+python scripts/train.py Unitree-G1-AntiFall-Stage1 --env.scene.num-envs=4096
+
+# Stage 3：粗糙地形恢复
+python scripts/train.py Unitree-G1-AntiFall-Stage3 --env.scene.num-envs=4096
+```
+
+CPU 最小 smoke 训练：
+
+```bash
+CUDA_VISIBLE_DEVICES='' python scripts/train.py Unitree-G1-AntiFall-Stage0 \
+  --env.scene.num-envs=1 \
+  --agent.max-iterations=1 \
+  --agent.save-interval=1
+```
+
+训练输出目录：
+
+```text
+logs/rsl_rl/g1_antifall/<date_time>_<stage>/...
+```
+
+每次保存都会同步导出 `policy.onnx`，并写入 actor 观测 metadata。
+
+常用辅助命令：
+
+```bash
+# 查看确定性 benchmark 任务的默认场景
+python scripts/benchmark_antifall.py scenarios Unitree-G1-AntiFall-Benchmark
+
+# 生成某个 stage 的标准 smoke 训练命令
+python scripts/benchmark_antifall.py smoke-command Unitree-G1-AntiFall-Stage4b --seed 7
+```
+
+任务分阶段语义、benchmark 说明和当前已知限制，请参阅
+[`doc/g1_antifall.md`](doc/g1_antifall.md)。
+
 ### 2. 动作模仿训练
 
 训练 Unitree G1 模仿参考动作序列。
@@ -231,4 +294,3 @@ cd deploy/robots/g1/build
 - [rsl_rl](https://github.com/leggedrobotics/rsl_rl.git): 强化学习算法实现。
 - [mujoco_warp](https://github.com/google-deepmind/mujoco_warp.git): 提供 GPU 加速渲染与仿真接口。
 - [mujoco](https://github.com/google-deepmind/mujoco.git): 提供强大仿真功能。
-

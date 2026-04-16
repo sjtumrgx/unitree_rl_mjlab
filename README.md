@@ -67,6 +67,69 @@ Available velocity tracking tasks:
 > For more details, refer to the mjlab documentation:
 > [mjlab documentation](https://mujocolab.github.io/mjlab/index.html).
 
+### 1.1 G1 Anti-Fall Training
+
+The repo now includes a staged **Unitree G1 anti-fall** task family. It keeps the
+deployable actor observation contract proprioceptive-only while adding
+disturbance-aware critic context, recovery rewards, and benchmark helpers.
+
+Available anti-fall tasks:
+
+- `Unitree-G1-AntiFall-Stage0` — flat standing / walking seed (no external disturbance)
+- `Unitree-G1-AntiFall-Stage1` — flat push / kick recovery
+- `Unitree-G1-AntiFall-Stage2` — harder flat recovery + near-failure reset starts
+- `Unitree-G1-AntiFall-Stage3` — rough terrain recovery
+- `Unitree-G1-AntiFall-Stage4a` — slip-focused low-friction recovery
+- `Unitree-G1-AntiFall-Stage4b` — trip-like recovery
+- `Unitree-G1-AntiFall-Benchmark` — deterministic benchmark configuration
+
+Recommended training order:
+
+`Stage0 → Stage1 → Stage2 → Stage3 → Stage4a → Stage4b`
+
+Example commands:
+
+```bash
+# Stage 0: stable flat-ground seed
+python scripts/train.py Unitree-G1-AntiFall-Stage0 --env.scene.num-envs=4096
+
+# Stage 1: flat push / kick recovery
+python scripts/train.py Unitree-G1-AntiFall-Stage1 --env.scene.num-envs=4096
+
+# Stage 3: rough-terrain recovery
+python scripts/train.py Unitree-G1-AntiFall-Stage3 --env.scene.num-envs=4096
+```
+
+Minimal smoke run on CPU:
+
+```bash
+CUDA_VISIBLE_DEVICES='' python scripts/train.py Unitree-G1-AntiFall-Stage0 \
+  --env.scene.num-envs=1 \
+  --agent.max-iterations=1 \
+  --agent.save-interval=1
+```
+
+Training outputs are written to:
+
+```text
+logs/rsl_rl/g1_antifall/<date_time>_<stage>/...
+```
+
+Each save also exports `policy.onnx` with actor observation metadata.
+
+Useful helper commands:
+
+```bash
+# Show the frozen benchmark scenarios for the deterministic benchmark task
+python scripts/benchmark_antifall.py scenarios Unitree-G1-AntiFall-Benchmark
+
+# Emit the canonical smoke-training command for a stage
+python scripts/benchmark_antifall.py smoke-command Unitree-G1-AntiFall-Stage4b --seed 7
+```
+
+For implementation details, stage semantics, and current caveats, see
+[`doc/g1_antifall.md`](doc/g1_antifall.md).
+
 ### 2. Motion Imitation Training
 
 Train a Unitree G1 to mimic reference motion sequences.
