@@ -12,11 +12,16 @@ endif()
 
 include_directories(
   /usr/include/eigen3
-  /usr/local/include/ddscxx
-  /usr/local/include/iceoryx/v2.0.2
+  /opt/unitree_robotics/include
+  /opt/unitree_robotics/include/ddscxx
+  /opt/unitree_robotics/include/iceoryx/v2.0.2
   include
   ${ONNXRUNTIME_DIR}/include
   ${PROJECT_SOURCE_DIR}/../../include/
+)
+
+link_directories(
+  /opt/unitree_robotics/lib
 )
 
 link_libraries(
