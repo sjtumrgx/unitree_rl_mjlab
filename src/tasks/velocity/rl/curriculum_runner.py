@@ -20,13 +20,16 @@ from mjlab.utils.os import dump_yaml
 from mjlab.utils.wrappers import VideoRecorder
 
 from .antifall_curriculum import (
-  CURRICULUM_TASK_ID,
   ANTI_FALL_STAGE_TASK_IDS,
+  CURRICULUM_TASK_ID,
   AntiFallCurriculumCfg,
   curriculum_stage_name,
 )
-
-from .curriculum_metrics import StagePromotionMonitor
+from .curriculum_metrics import (
+  StagePromotionMonitor,
+  evaluate_promotion,
+  metrics_from_totals,
+)
 from .curriculum_state import (
   load_manifest,
   manifest_for_update,
@@ -115,7 +118,7 @@ class AntiFallCurriculumRunner:
     strict: bool = True,
     map_location: str | None = None,
   ) -> dict:
-    del load_cfg, strict  # Top-level curriculum checkpoints only store manifest state.
+    del load_cfg, strict
     loaded_dict = torch.load(path, map_location=map_location, weights_only=False)
     self.current_learning_iteration = int(loaded_dict.get("iter", 0))
     infos = loaded_dict.get("infos") or {}
@@ -149,6 +152,7 @@ class AntiFallCurriculumRunner:
     if resume_stage_index > 0:
       self._release_bootstrap_env()
 
+    last_child_runner: VelocityOnPolicyRunner | None = None
     for stage_index, task_id in enumerate(self.curriculum_cfg.stage_task_ids):
       if stage_index < resume_stage_index:
         continue
@@ -169,6 +173,7 @@ class AntiFallCurriculumRunner:
         stage_dir=stage_dir,
         reuse_bootstrap=(stage_index == 0 and not self._bootstrap_env_released),
       )
+      last_child_runner = child_runner
 
       load_mode = self._load_child_runner(
         child_runner=child_runner,
@@ -193,13 +198,45 @@ class AntiFallCurriculumRunner:
 
     self._manifest["status"] = "complete"
     self._manifest["updated_at"] = self._now()
-    write_manifest(self._manifest_path, self._manifest)
-    if self.log_dir is not None:
+    if last_child_runner is None or self._is_primary_process(last_child_runner):
+      write_manifest(self._manifest_path, self._manifest)
+    if (
+      self.log_dir is not None
+      and last_child_runner is not None
+      and self._is_primary_process(last_child_runner)
+    ):
       self.save(str(self.log_dir / f"model_{self.current_learning_iteration}.pt"))
 
-  # ---------------------------------------------------------------------------
-  # Stage orchestration helpers.
-  # ---------------------------------------------------------------------------
+  def _is_primary_process(self, child_runner: VelocityOnPolicyRunner) -> bool:
+    return (not child_runner.is_distributed) or child_runner.gpu_global_rank == 0
+
+  def _distributed_barrier(self, child_runner: VelocityOnPolicyRunner) -> None:
+    if child_runner.is_distributed:
+      torch.distributed.barrier()
+
+  def _reduce_monitor_totals(
+    self,
+    child_runner: VelocityOnPolicyRunner,
+    totals: dict[str, float],
+  ) -> dict[str, float]:
+    if not child_runner.is_distributed:
+      return totals
+    keys = [
+      "iteration",
+      "step_count",
+      "controllable_locomotion_sum",
+      "disturbance_count",
+      "recovery_success_count",
+      "recovery_latency_sum",
+      "recovery_latency_count",
+    ]
+    tensor = torch.tensor(
+      [totals[key] for key in keys], device=self.device, dtype=torch.float64
+    )
+    torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
+    reduced = dict(zip(keys, tensor.tolist(), strict=True))
+    reduced["iteration"] = totals["iteration"]
+    return reduced
 
   def _build_stage_runner(
     self,
@@ -223,7 +260,7 @@ class AntiFallCurriculumRunner:
     for repo_path in self._git_repo_paths:
       child_runner.add_git_repo_to_log(repo_path)
 
-    if self.log_dir is not None:
+    if self.log_dir is not None and self._is_primary_process(child_runner):
       dump_yaml(stage_dir / "params" / "env.yaml", asdict(stage_env.cfg))
       dump_yaml(stage_dir / "params" / "agent.yaml", child_train_cfg)
 
@@ -237,7 +274,8 @@ class AntiFallCurriculumRunner:
     manifest["status"] = "running"
     manifest["updated_at"] = self._now()
     self._manifest = manifest
-    write_manifest(self._manifest_path, self._manifest)
+    if self._is_primary_process(child_runner):
+      write_manifest(self._manifest_path, self._manifest)
     return child_runner
 
   def _build_stage_train_cfg(self, stage_name: str) -> dict[str, Any]:
@@ -287,12 +325,15 @@ class AntiFallCurriculumRunner:
     previous_checkpoint: Path | None,
     resume_current_stage: bool,
   ) -> str:
+    is_primary = self._is_primary_process(child_runner)
     if previous_checkpoint is None:
-      self._record_stage_source(stage_index, None, "fresh")
+      self._record_stage_source(stage_index, None, "fresh", is_primary=is_primary)
       return "fresh"
     if resume_current_stage:
       child_runner.load(str(previous_checkpoint), map_location=self.device)
-      self._record_stage_source(stage_index, previous_checkpoint, "full_resume")
+      self._record_stage_source(
+        stage_index, previous_checkpoint, "full_resume", is_primary=is_primary
+      )
       return "full_resume"
 
     if self.curriculum_cfg.load_mode == "auto":
@@ -303,8 +344,11 @@ class AntiFallCurriculumRunner:
       load_mode = self.curriculum_cfg.load_mode
 
     if load_mode == "fresh":
-      self._record_stage_source(stage_index, previous_checkpoint, load_mode)
+      self._record_stage_source(
+        stage_index, previous_checkpoint, load_mode, is_primary=is_primary
+      )
       return load_mode
+
     if load_mode == "actor_only":
       child_runner.load(
         str(previous_checkpoint),
@@ -314,7 +358,9 @@ class AntiFallCurriculumRunner:
       )
       child_runner.env.unwrapped.common_step_counter = 0
       child_runner.current_learning_iteration = 0
-      self._record_stage_source(stage_index, previous_checkpoint, load_mode)
+      self._record_stage_source(
+        stage_index, previous_checkpoint, load_mode, is_primary=is_primary
+      )
       return load_mode
 
     child_runner.load(
@@ -331,7 +377,9 @@ class AntiFallCurriculumRunner:
     )
     child_runner.env.unwrapped.common_step_counter = 0
     child_runner.current_learning_iteration = 0
-    self._record_stage_source(stage_index, previous_checkpoint, load_mode)
+    self._record_stage_source(
+      stage_index, previous_checkpoint, load_mode, is_primary=is_primary
+    )
     return load_mode
 
   def _run_stage(
@@ -367,6 +415,7 @@ class AntiFallCurriculumRunner:
     failure_reason: str | None = None
     metrics: dict[str, Any] = {}
     stage_status = "completed"
+    is_primary = self._is_primary_process(child_runner)
 
     try:
       while child_runner.current_learning_iteration < stage_budget:
@@ -375,7 +424,9 @@ class AntiFallCurriculumRunner:
         with torch.inference_mode():
           for _ in range(child_runner.cfg["num_steps_per_env"]):
             actions = child_runner.alg.act(obs)
-            obs, rewards, dones, extras = child_runner.env.step(actions.to(child_runner.env.device))
+            obs, rewards, dones, extras = child_runner.env.step(
+              actions.to(child_runner.env.device)
+            )
             if child_runner.cfg.get("check_for_nan", True):
               check_nan(obs, rewards, dones)
             obs = obs.to(self.device)
@@ -387,17 +438,21 @@ class AntiFallCurriculumRunner:
               if child_runner.cfg["algorithm"]["rnd_cfg"]
               else None
             )
-            child_runner.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
+            child_runner.logger.process_env_step(
+              rewards, dones, extras, intrinsic_rewards
+            )
             metrics_manager = child_runner.env.unwrapped.metrics_manager
             if getattr(metrics_manager, "active_terms", None):
-              monitor.observe_step(metrics_manager.active_terms, metrics_manager._step_values)
+              monitor.observe_step(
+                metrics_manager.active_terms, metrics_manager._step_values
+              )
           collect_time = time.time() - start
           start = time.time()
           child_runner.alg.compute_returns(obs)
 
         loss_dict = child_runner.alg.update()
         learn_time = time.time() - start
-        summary = monitor.finish_iteration(iteration_index + 1)
+        monitor.finish_iteration(iteration_index + 1)
         child_runner.logger.log(
           it=iteration_index,
           start_it=stage_start_iteration,
@@ -407,12 +462,19 @@ class AntiFallCurriculumRunner:
           loss_dict=loss_dict,
           learning_rate=child_runner.alg.learning_rate,
           action_std=child_runner.alg.get_policy().output_std,
-          rnd_weight=child_runner.alg.rnd.weight if child_runner.cfg["algorithm"]["rnd_cfg"] else None,
+          rnd_weight=(
+            child_runner.alg.rnd.weight
+            if child_runner.cfg["algorithm"]["rnd_cfg"]
+            else None
+          ),
         )
 
         child_runner.current_learning_iteration = iteration_index + 1
         self.current_learning_iteration += 1
-        metrics = summary.as_dict() | monitor.aggregate_metrics()
+        reduced_totals = self._reduce_monitor_totals(
+          child_runner, monitor.aggregate_totals()
+        )
+        metrics = metrics_from_totals(reduced_totals)
 
         if self._should_save_checkpoint(child_runner.current_learning_iteration):
           latest_checkpoint = self._save_stage_checkpoint(
@@ -427,10 +489,17 @@ class AntiFallCurriculumRunner:
             stage_iteration=child_runner.current_learning_iteration,
             promotion_reason=None,
             metrics=metrics,
+            is_primary=is_primary,
           )
-          self._save_root_checkpoint()
+          self._save_root_checkpoint(child_runner)
+          self._distributed_barrier(child_runner)
 
-        decision = monitor.evaluate(child_runner.current_learning_iteration)
+        decision = evaluate_promotion(
+          stage_name,
+          self.curriculum_cfg,
+          child_runner.current_learning_iteration,
+          metrics,
+        )
         if decision.stop:
           stage_status = "failed"
           promotion_reason = decision.reason
@@ -457,14 +526,17 @@ class AntiFallCurriculumRunner:
         promotion_reason="failed_health_check",
         metrics=metrics,
         failure_reason=failure_reason,
+        is_primary=is_primary,
       )
-      self._save_root_checkpoint()
+      self._save_root_checkpoint(child_runner)
       raise
     finally:
       child_runner.logger.stop_logging_writer()
 
-    latest_checkpoint = self._save_stage_checkpoint(child_runner=child_runner, stage_dir=stage_dir)
-    self._copy_latest_policy(stage_dir)
+    latest_checkpoint = self._save_stage_checkpoint(
+      child_runner=child_runner, stage_dir=stage_dir
+    )
+    self._copy_latest_policy(stage_dir, child_runner=child_runner)
     self._update_stage_record(
       stage_index=stage_index,
       status=stage_status,
@@ -474,8 +546,10 @@ class AntiFallCurriculumRunner:
       promotion_reason=promotion_reason,
       metrics=metrics,
       failure_reason=failure_reason,
+      is_primary=is_primary,
     )
-    self._save_root_checkpoint()
+    self._save_root_checkpoint(child_runner)
+    self._distributed_barrier(child_runner)
 
     return {
       "status": stage_status,
@@ -491,15 +565,16 @@ class AntiFallCurriculumRunner:
     stage_dir: Path,
   ) -> Path:
     checkpoint_path = stage_dir / f"model_{child_runner.current_learning_iteration}.pt"
-    child_runner.save(str(checkpoint_path))
+    if self._is_primary_process(child_runner):
+      child_runner.save(str(checkpoint_path))
     return checkpoint_path
 
   def _should_save_checkpoint(self, stage_iteration: int) -> bool:
     save_interval = int(self.cfg.get("save_interval", 0) or 0)
     return save_interval > 0 and stage_iteration % save_interval == 0
 
-  def _save_root_checkpoint(self) -> None:
-    if self.log_dir is None:
+  def _save_root_checkpoint(self, child_runner: VelocityOnPolicyRunner) -> None:
+    if self.log_dir is None or not self._is_primary_process(child_runner):
       return
     checkpoint_path = self.log_dir / f"model_{self.current_learning_iteration}.pt"
     self.save(str(checkpoint_path))
@@ -509,6 +584,8 @@ class AntiFallCurriculumRunner:
     stage_index: int,
     checkpoint: Path | None,
     load_mode: str,
+    *,
+    is_primary: bool,
   ) -> None:
     manifest = manifest_for_update(self._manifest)
     stage_record = manifest["stages"][stage_index]
@@ -516,7 +593,8 @@ class AntiFallCurriculumRunner:
     stage_record["load_mode"] = load_mode
     manifest["updated_at"] = self._now()
     self._manifest = manifest
-    write_manifest(self._manifest_path, self._manifest)
+    if is_primary:
+      write_manifest(self._manifest_path, self._manifest)
 
   def _update_stage_record(
     self,
@@ -529,6 +607,7 @@ class AntiFallCurriculumRunner:
     promotion_reason: str | None,
     metrics: dict[str, Any],
     failure_reason: str | None = None,
+    is_primary: bool,
   ) -> None:
     manifest = manifest_for_update(self._manifest)
     stage_record = manifest["stages"][stage_index]
@@ -557,18 +636,20 @@ class AntiFallCurriculumRunner:
       manifest["latest_checkpoint"] = self._relative_to_run(latest_checkpoint)
     manifest["updated_at"] = self._now()
     self._manifest = manifest
-    write_manifest(self._manifest_path, self._manifest)
-
-  # ---------------------------------------------------------------------------
-  # Filesystem / path helpers.
-  # ---------------------------------------------------------------------------
+    if is_primary:
+      write_manifest(self._manifest_path, self._manifest)
 
   def _stage_log_dir(self, stage_index: int, stage_name: str) -> Path:
     assert self.log_dir is not None
     return self.log_dir / "stages" / f"{stage_index:02d}_{stage_name}"
 
-  def _copy_latest_policy(self, stage_dir: Path) -> None:
-    if self.log_dir is None:
+  def _copy_latest_policy(
+    self,
+    stage_dir: Path,
+    *,
+    child_runner: VelocityOnPolicyRunner,
+  ) -> None:
+    if self.log_dir is None or not self._is_primary_process(child_runner):
       return
     policy_path = stage_dir / "policy.onnx"
     if policy_path.exists():

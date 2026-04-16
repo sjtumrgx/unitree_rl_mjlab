@@ -55,6 +55,59 @@ class PromotionDecision:
   metrics: dict[str, float | int | None] | None = None
 
 
+def metrics_from_totals(totals: dict[str, float]) -> dict[str, float | int | None]:
+  step_count = int(totals.get("step_count", 0.0))
+  disturbance_count = float(totals.get("disturbance_count", 0.0))
+  recovery_latency_count = int(totals.get("recovery_latency_count", 0.0))
+  controllable_sum = float(totals.get("controllable_locomotion_sum", 0.0))
+  recovery_success_count = float(totals.get("recovery_success_count", 0.0))
+  recovery_latency_sum = float(totals.get("recovery_latency_sum", 0.0))
+  return {
+    "iteration": int(totals.get("iteration", 0.0)),
+    "step_count": step_count,
+    "controllable_locomotion": (controllable_sum / step_count) if step_count else 0.0,
+    "disturbance_count": disturbance_count,
+    "recovery_success_count": recovery_success_count,
+    "recovery_rate": (recovery_success_count / disturbance_count) if disturbance_count else 0.0,
+    "recovery_latency_s": (recovery_latency_sum / recovery_latency_count) if recovery_latency_count else None,
+  }
+
+
+def evaluate_promotion(
+  stage_name: str,
+  cfg: AntiFallCurriculumCfg,
+  iteration: int,
+  metrics: dict[str, float | int | None],
+  *,
+  unhealthy: bool = False,
+) -> PromotionDecision:
+  if unhealthy and cfg.stop_on_unhealthy_run:
+    return PromotionDecision(stop=True, reason="failed_health_check", metrics=metrics)
+  if cfg.force_promotion_after_iterations is not None and iteration >= cfg.force_promotion_after_iterations:
+    return PromotionDecision(promote=True, reason="forced_for_test", metrics=metrics)
+  if iteration < cfg.min_iterations_before_promotion:
+    return PromotionDecision(metrics=metrics)
+  if cfg.evaluation_interval > 1 and iteration % cfg.evaluation_interval != 0:
+    return PromotionDecision(metrics=metrics)
+
+  if stage_name == "stage0":
+    if float(metrics["controllable_locomotion"]) >= cfg.stage0_controllable_locomotion_threshold:
+      return PromotionDecision(promote=True, reason="threshold_met", metrics=metrics)
+    return PromotionDecision(metrics=metrics)
+
+  latency_s = metrics["recovery_latency_s"]
+  if float(metrics["disturbance_count"]) < cfg.min_disturbances_in_window:
+    return PromotionDecision(metrics=metrics)
+  if latency_s is None:
+    return PromotionDecision(metrics=metrics)
+  if (
+    float(metrics["recovery_rate"]) >= cfg.recovery_rate_threshold
+    and float(latency_s) <= cfg.recovery_latency_threshold_s
+  ):
+    return PromotionDecision(promote=True, reason="threshold_met", metrics=metrics)
+  return PromotionDecision(metrics=metrics)
+
+
 class StagePromotionMonitor:
   def __init__(self, stage_name: str, cfg: AntiFallCurriculumCfg):
     self.stage_name = stage_name
@@ -93,53 +146,35 @@ class StagePromotionMonitor:
     return summary
 
   def evaluate(self, iteration: int, *, unhealthy: bool = False) -> PromotionDecision:
-    if unhealthy and self.cfg.stop_on_unhealthy_run:
-      return PromotionDecision(stop=True, reason="failed_health_check")
-    if self.cfg.force_promotion_after_iterations is not None:
-      if iteration >= self.cfg.force_promotion_after_iterations:
-        return PromotionDecision(
-          promote=True,
-          reason="forced_for_test",
-          metrics=self.aggregate_metrics(),
-        )
-    if iteration < self.cfg.min_iterations_before_promotion:
-      return PromotionDecision(metrics=self.aggregate_metrics())
-    if self.cfg.evaluation_interval > 1 and iteration % self.cfg.evaluation_interval != 0:
-      return PromotionDecision(metrics=self.aggregate_metrics())
-
     metrics = self.aggregate_metrics()
-    if self.stage_name == "stage0":
-      if metrics["controllable_locomotion"] >= self.cfg.stage0_controllable_locomotion_threshold:
-        return PromotionDecision(promote=True, reason="threshold_met", metrics=metrics)
-      return PromotionDecision(metrics=metrics)
+    return evaluate_promotion(
+      self.stage_name,
+      self.cfg,
+      iteration,
+      metrics,
+      unhealthy=unhealthy,
+    )
 
-    latency_s = metrics["recovery_latency_s"]
-    if metrics["disturbance_count"] < self.cfg.min_disturbances_in_window:
-      return PromotionDecision(metrics=metrics)
-    if latency_s is None:
-      return PromotionDecision(metrics=metrics)
-    if (
-      metrics["recovery_rate"] >= self.cfg.recovery_rate_threshold
-      and latency_s <= self.cfg.recovery_latency_threshold_s
-    ):
-      return PromotionDecision(promote=True, reason="threshold_met", metrics=metrics)
-    return PromotionDecision(metrics=metrics)
+  def aggregate_totals(self) -> dict[str, float]:
+    if not self._history:
+      return {
+        "iteration": 0.0,
+        "step_count": 0.0,
+        "controllable_locomotion_sum": 0.0,
+        "disturbance_count": 0.0,
+        "recovery_success_count": 0.0,
+        "recovery_latency_sum": 0.0,
+        "recovery_latency_count": 0.0,
+      }
+    return {
+      "iteration": float(self._history[-1].iteration),
+      "step_count": float(sum(item.step_count for item in self._history)),
+      "controllable_locomotion_sum": float(sum(item.controllable_locomotion_sum for item in self._history)),
+      "disturbance_count": float(sum(item.disturbance_count for item in self._history)),
+      "recovery_success_count": float(sum(item.recovery_success_count for item in self._history)),
+      "recovery_latency_sum": float(sum(item.recovery_latency_sum for item in self._history)),
+      "recovery_latency_count": float(sum(item.recovery_latency_count for item in self._history)),
+    }
 
   def aggregate_metrics(self) -> dict[str, float | int | None]:
-    if not self._history:
-      return StageIterationMetrics().as_dict()
-    total_steps = sum(item.step_count for item in self._history)
-    total_controllable = sum(item.controllable_locomotion_sum for item in self._history)
-    total_disturbances = sum(item.disturbance_count for item in self._history)
-    total_successes = sum(item.recovery_success_count for item in self._history)
-    total_latency = sum(item.recovery_latency_sum for item in self._history)
-    total_latency_count = sum(item.recovery_latency_count for item in self._history)
-    return {
-      "iteration": self._history[-1].iteration,
-      "step_count": total_steps,
-      "controllable_locomotion": (total_controllable / total_steps) if total_steps else 0.0,
-      "disturbance_count": total_disturbances,
-      "recovery_success_count": total_successes,
-      "recovery_rate": (total_successes / total_disturbances) if total_disturbances else 0.0,
-      "recovery_latency_s": (total_latency / total_latency_count) if total_latency_count else None,
-    }
+    return metrics_from_totals(self.aggregate_totals())
