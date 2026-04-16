@@ -43,6 +43,31 @@ This branch wires the anti-fall helper stack into the actual `g1_antifall` task 
 | Stage4b | Flat | Forward-biased tracked trip-like pushes + occasional near-failure reset starts |
 | Benchmark | Flat deterministic | Randomization disabled for reproducible evaluation |
 
+## Automatic curriculum entrypoint
+
+The repo now also exposes `Unitree-G1-AntiFall-Curriculum`, which keeps the
+existing stage tasks intact but runs them through one top-level curriculum
+process:
+
+`Stage0 -> Stage1 -> Stage2 -> Stage3 -> Stage4a -> Stage4b`
+
+Current default behavior:
+- per-stage fallback budget: `10000` iterations
+- Stage0 promotion gate: controllable locomotion threshold
+- Stage1-Stage4b promotion gate: recovery-rate + recovery-latency threshold
+- `Stage2 -> Stage3` and `Stage3 -> Stage4a` use actor-only warm starts because
+  rough terrain reintroduces critic `height_scan`
+- every stage transition is written to `curriculum_manifest.json` in the run dir
+
+Example:
+
+```bash
+python scripts/train.py Unitree-G1-AntiFall-Curriculum --env.scene.num-envs=4096
+```
+
+The original `Unitree-G1-AntiFall-Stage0` ... `Stage4b` tasks remain available
+for manual training and debug workflows.
+
 ## Benchmark CLI
 
 Use the compatibility wrapper:

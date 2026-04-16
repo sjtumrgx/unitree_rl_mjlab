@@ -80,52 +80,54 @@ benchmark 工具。
 - `Unitree-G1-AntiFall-Stage4a` — 以滑倒为主的低摩擦恢复
 - `Unitree-G1-AntiFall-Stage4b` — 以绊倒样式为主的恢复
 - `Unitree-G1-AntiFall-Benchmark` — 确定性 benchmark 配置
+- `Unitree-G1-AntiFall-Curriculum` — 单入口自动课程学习任务（保持上述 stage 任务可单独训练 / debug）
 
-推荐训练顺序：
+推荐课程顺序：
 
 `Stage0 → Stage1 → Stage2 → Stage3 → Stage4a → Stage4b`
 
-示例命令：
+正式训练命令：
 
 ```bash
-# Stage 0：平地基础种子
-python scripts/train.py Unitree-G1-AntiFall-Stage0 --env.scene.num-envs=4096
+# 自动课程学习（推荐）
+python scripts/train.py Unitree-G1-AntiFall-Curriculum \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10000 \
+  --agent.save-interval=100
 
-# Stage 1：平地抗推 / 抗踢
-python scripts/train.py Unitree-G1-AntiFall-Stage1 --env.scene.num-envs=4096
-
-# Stage 3：粗糙地形恢复
-python scripts/train.py Unitree-G1-AntiFall-Stage3 --env.scene.num-envs=4096
+# 单独训练某个 stage（手工调试 / 对比实验）
+python scripts/train.py Unitree-G1-AntiFall-Stage3 \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10000 \
+  --agent.save-interval=100
 ```
 
-CPU 最小 smoke 训练：
+参数说明：
 
-```bash
-CUDA_VISIBLE_DEVICES='' python scripts/train.py Unitree-G1-AntiFall-Stage0 \
-  --env.scene.num-envs=1 \
-  --agent.max-iterations=1 \
-  --agent.save-interval=1
-```
+- 第一个位置参数：训练任务 ID。
+  - 推荐使用 `Unitree-G1-AntiFall-Curriculum` 执行自动课程学习。
+  - 若需手工训练或排查某个阶段，可替换为 `Unitree-G1-AntiFall-Stage0` ~ `Unitree-G1-AntiFall-Stage4b`。
+- `--env.scene.num-envs`：并行环境数量；越大吞吐越高，但显存 / 内存占用也越高。
+- `--agent.max-iterations`：最大训练迭代数。
+  - 对 `Unitree-G1-AntiFall-Curriculum` 而言，它表示**每个 stage** 的最大迭代数。
+  - 对单独 stage 任务而言，它表示该次运行的总迭代数。
+- `--agent.save-interval`：checkpoint 保存间隔；训练过程中会按该间隔输出 `model_*.pt`，并同步导出 `policy.onnx`。
+
+Curriculum 默认策略：
+- 训练在单个顶层进程中按固定顺序推进 stage。
+- Stage0 默认以稳定可控行走指标晋级。
+- Stage1 ~ Stage4b 默认以恢复率 / 恢复延迟指标晋级。
+- 若 stage 未达标但达到 `--agent.max-iterations`，则自动推进到下一 stage。
+- `Stage2 → Stage3` 与 `Stage3 → Stage4a` 会自动切换到 actor-only warm start，以兼容 rough-terrain critic 观测变化。
 
 训练输出目录：
 
 ```text
 logs/rsl_rl/g1_antifall/<date_time>_<stage>/...
+logs/rsl_rl/g1_antifall_curriculum/<date_time>_curriculum/...
 ```
 
-每次保存都会同步导出 `policy.onnx`，并写入 actor 观测 metadata。
-
-常用辅助命令：
-
-```bash
-# 查看确定性 benchmark 任务的默认场景
-python scripts/benchmark_antifall.py scenarios Unitree-G1-AntiFall-Benchmark
-
-# 生成某个 stage 的标准 smoke 训练命令
-python scripts/benchmark_antifall.py smoke-command Unitree-G1-AntiFall-Stage4b --seed 7
-```
-
-任务分阶段语义、benchmark 说明和当前已知限制，请参阅
+任务分阶段语义、benchmark 说明和已知限制，请参阅
 [`doc/g1_antifall.md`](doc/g1_antifall.md)。
 
 ### 2. 动作模仿训练

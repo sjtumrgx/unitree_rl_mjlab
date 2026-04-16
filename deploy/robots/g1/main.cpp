@@ -3,10 +3,37 @@
 #include "FSM/State_FixStand.h"
 #include "FSM/State_RLBase.h"
 #include "State_Mimic.h"
+#include <unistd.h>
 
 std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
 std::shared_ptr<LowState_t> FSMState::lowstate = nullptr;
-std::shared_ptr<Keyboard> FSMState::keyboard = std::make_shared<Keyboard>();
+std::shared_ptr<Keyboard> FSMState::keyboard = nullptr;
+
+namespace
+{
+
+void print_control_help()
+{
+    if (param::keyboard_control)
+    {
+        std::cout << "Keyboard mode enabled. Keep this terminal focused.\n";
+        std::cout << "  f : enter FixStand\n";
+        std::cout << "  v : enter Velocity control\n";
+        std::cout << "  p : return to Passive mode\n";
+        std::cout << "  m : play dance motion (from Velocity)\n";
+        std::cout << "  w/s : move forward/backward\n";
+        std::cout << "  a/d : strafe left/right\n";
+        std::cout << "  q/e : turn left/right\n";
+        std::cout << "Release movement keys to stop.\n";
+        return;
+    }
+
+    std::cout << "Press [L2 + Up] to enter FixStand mode.\n";
+    std::cout << "And then press [R2 + A] to start controlling the robot.\n";
+    std::cout << "And then press [R1 + A/B/Y/X] to control the robot dance.\n";
+}
+
+}
 
 void init_fsm_state()
 {
@@ -29,12 +56,23 @@ int main(int argc, char** argv)
 {
     // Load parameters
     auto vm = param::helper(argc, argv);
+    if (param::keyboard_control)
+    {
+        if (!isatty(STDIN_FILENO))
+        {
+            spdlog::critical("--keyboard requires an interactive terminal on stdin.");
+            return -1;
+        }
+        FSMState::keyboard = std::make_shared<Keyboard>();
+        param::active_keyboard = FSMState::keyboard;
+    }
 
     std::cout << " --- Unitree Robotics --- \n";
     std::cout << "     G1-29dof Controller \n";
 
     // Unitree DDS Config
     unitree::robot::ChannelFactory::Instance()->Init(0, vm["network"].as<std::string>());
+    print_control_help();
 
     init_fsm_state();
 
@@ -48,10 +86,6 @@ int main(int argc, char** argv)
     auto fsm = std::make_unique<CtrlFSM>(param::config["FSM"]);
     fsm->start();
 
-    std::cout << "Press [L2 + Up] to enter FixStand mode.\n";
-    std::cout << "And then press [R2 + A] to start controlling the robot.\n";
-    std::cout << "And then press [R1 + A/B/Y/X] to control the robot dance.\n";
-
     while (true)
     {
         sleep(1);
@@ -59,4 +93,3 @@ int main(int argc, char** argv)
     
     return 0;
 }
-

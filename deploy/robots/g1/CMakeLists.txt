@@ -15,12 +15,17 @@ endif()
 
 include_directories(
   /usr/include/eigen3
-  /usr/local/include/ddscxx
-  /usr/local/include/iceoryx/v2.0.2
+  /opt/unitree_robotics/include
+  /opt/unitree_robotics/include/ddscxx
+  /opt/unitree_robotics/include/iceoryx/v2.0.2
   include
   ${ONNXRUNTIME_DIR}/include
   ${PROJECT_SOURCE_DIR}/../../include/
   ${PROJECT_SOURCE_DIR}/../../thirdparty/cnpy
+)
+
+link_directories(
+  /opt/unitree_robotics/lib
 )
 
 file(GLOB CNPY_SRC ${PROJECT_SOURCE_DIR}/../../thirdparty/cnpy/*.cpp)

@@ -1,6 +1,8 @@
 from mjlab.tasks.registry import register_mjlab_task
-from src.tasks.velocity.rl import VelocityOnPolicyRunner
+from src.tasks.velocity.rl.runner import VelocityOnPolicyRunner
+from src.tasks.velocity.rl.curriculum_runner import AntiFallCurriculumRunner
 
+from src.tasks.velocity.rl.antifall_curriculum import CURRICULUM_TASK_ID
 from .env_cfgs import (
   unitree_g1_antifall_benchmark_env_cfg,
   unitree_g1_antifall_stage0_env_cfg,
@@ -10,7 +12,10 @@ from .env_cfgs import (
   unitree_g1_antifall_stage4a_env_cfg,
   unitree_g1_antifall_stage4b_env_cfg,
 )
-from .rl_cfg import unitree_g1_antifall_ppo_runner_cfg
+from .rl_cfg import (
+  unitree_g1_antifall_curriculum_runner_cfg,
+  unitree_g1_antifall_ppo_runner_cfg,
+)
 
 
 def _register_antifall_task(task_id: str, stage_name: str, env_cfg_factory) -> None:
@@ -57,4 +62,12 @@ _register_antifall_task(
   task_id="Unitree-G1-AntiFall-Benchmark",
   stage_name="benchmark",
   env_cfg_factory=unitree_g1_antifall_benchmark_env_cfg,
+)
+
+register_mjlab_task(
+  task_id=CURRICULUM_TASK_ID,
+  env_cfg=unitree_g1_antifall_stage0_env_cfg(),
+  play_env_cfg=unitree_g1_antifall_stage0_env_cfg(play=True),
+  rl_cfg=unitree_g1_antifall_curriculum_runner_cfg(),
+  runner_cls=AntiFallCurriculumRunner,
 )

@@ -4,11 +4,51 @@
 #pragma once
 
 #include "isaaclab/envs/manager_based_rl_env.h"
+#include "param.h"
 
 namespace isaaclab
 {
 namespace mdp
 {
+
+inline std::vector<float> keyboard_velocity_command(ManagerBasedRLEnv* env)
+{
+    std::vector<float> obs(3, 0.0f);
+    if (!param::keyboard_control || !param::active_keyboard)
+    {
+        return obs;
+    }
+
+    const auto cfg = env->cfg["commands"]["base_velocity"]["ranges"];
+    const std::string key = param::active_keyboard->key();
+
+    if (key == "w")
+    {
+        obs[0] = cfg["lin_vel_x"][1].as<float>();
+    }
+    else if (key == "s")
+    {
+        obs[0] = cfg["lin_vel_x"][0].as<float>();
+    }
+    else if (key == "a")
+    {
+        obs[1] = cfg["lin_vel_y"][1].as<float>();
+    }
+    else if (key == "d")
+    {
+        obs[1] = cfg["lin_vel_y"][0].as<float>();
+    }
+    else if (key == "q")
+    {
+        obs[2] = cfg["ang_vel_z"][1].as<float>();
+    }
+    else if (key == "e")
+    {
+        obs[2] = cfg["ang_vel_z"][0].as<float>();
+    }
+
+    return obs;
+}
 
 REGISTER_OBSERVATION(base_ang_vel)
 {
@@ -110,6 +150,11 @@ REGISTER_OBSERVATION(last_action)
 
 REGISTER_OBSERVATION(velocity_commands)
 {
+    if (param::keyboard_control)
+    {
+        return keyboard_velocity_command(env);
+    }
+
     std::vector<float> obs(3);
     auto & joystick = env->robot->data.joystick;
 

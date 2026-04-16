@@ -15,6 +15,7 @@
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <memory>
 #include <iomanip>
+#include "isaaclab/devices/keyboard/keyboard.h"
 
 /* ---------- logger ---------- */
 namespace spdlog
@@ -43,6 +44,8 @@ inline std::filesystem::path bin_path;
 inline std::filesystem::path proj_dir;
 inline std::filesystem::path config_dir;
 inline YAML::Node config;
+inline bool keyboard_control = false;
+inline std::shared_ptr<Keyboard> active_keyboard = nullptr;
 
 inline std::filesystem::path get_bin_path() {
     std::vector<char> path(1024);
@@ -130,11 +133,13 @@ inline po::variables_map helper(int argc, char** argv)
         ("version,v", "show version")
         ("log", "record log file")
         ("network,n", po::value<std::string>()->default_value(""), "dds network interface")
+        ("keyboard,k", "enable keyboard control")
         ;
 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
+    keyboard_control = vm.count("keyboard") > 0;
 
     if (vm.count("help"))
     {
