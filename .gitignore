@@ -15,3 +15,6 @@ simulate/build
 .omx/
 __pycache__/
 *.pyc
+.history/
+.workflow/
+tests/
