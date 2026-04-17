@@ -263,3 +263,64 @@ def test_curriculum_runner_finishes_stage_saves_before_stopping_logger(
     "barrier",
     "stop",
   ]
+
+
+def test_curriculum_runner_destroys_process_group_between_distributed_stages(
+  monkeypatch, tmp_path: Path
+) -> None:
+  env_cfg = load_env_cfg(CURRICULUM_TASK_ID)
+  rl_cfg = load_rl_cfg(CURRICULUM_TASK_ID)
+  runner = AntiFallCurriculumRunner(DummyVecEnv(env_cfg), asdict(rl_cfg), str(tmp_path), "cpu")
+
+  destroy_calls: list[int] = []
+
+  class DistributedChildRunner(FakeChildRunner):
+    def __init__(self):
+      super().__init__()
+      self.is_distributed = True
+
+  def fake_build_stage_runner(self, *, stage_index, task_id, stage_name, stage_dir, reuse_bootstrap):
+    del self, task_id, stage_name, stage_dir, reuse_bootstrap
+    return DistributedChildRunner()
+
+  def fake_load_child_runner(self, *, child_runner, stage_index, previous_checkpoint, resume_current_stage):
+    del child_runner, stage_index, previous_checkpoint, resume_current_stage
+    return "fresh"
+
+  def fake_run_stage(self, *, child_runner, stage_index, stage_name, stage_dir, load_mode, init_at_random_ep_len):
+    del child_runner, stage_name, load_mode, init_at_random_ep_len
+    checkpoint = stage_dir / f"model_{stage_index + 1}.pt"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_text("checkpoint")
+    return {
+      "status": "completed",
+      "latest_checkpoint": checkpoint,
+      "failure_reason": None,
+      "promotion_reason": "forced_for_test",
+    }
+
+  monkeypatch.setattr(AntiFallCurriculumRunner, "_build_stage_runner", fake_build_stage_runner)
+  monkeypatch.setattr(AntiFallCurriculumRunner, "_load_child_runner", fake_load_child_runner)
+  monkeypatch.setattr(AntiFallCurriculumRunner, "_run_stage", fake_run_stage)
+  monkeypatch.setattr(AntiFallCurriculumRunner, "_save_root_checkpoint", lambda self: None)
+  monkeypatch.setattr(AntiFallCurriculumRunner, "_copy_latest_policy", lambda self, stage_dir: None)
+  monkeypatch.setattr(
+    "src.tasks.velocity.rl.curriculum_runner.torch.distributed.is_available",
+    lambda: True,
+  )
+  monkeypatch.setattr(
+    "src.tasks.velocity.rl.curriculum_runner.torch.distributed.is_initialized",
+    lambda: True,
+  )
+  monkeypatch.setattr(
+    "src.tasks.velocity.rl.curriculum_runner.torch.distributed.destroy_process_group",
+    lambda: destroy_calls.append(1),
+  )
+
+  runner.curriculum_cfg.stage_task_ids = (
+    "Unitree-G1-AntiFall-Stage0",
+    "Unitree-G1-AntiFall-Stage1",
+  )
+  runner.learn(1)
+
+  assert len(destroy_calls) == 2

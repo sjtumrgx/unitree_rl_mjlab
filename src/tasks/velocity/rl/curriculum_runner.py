@@ -193,6 +193,7 @@ class AntiFallCurriculumRunner:
       previous_checkpoint = stage_result["latest_checkpoint"]
 
       self._close_child_env(child_runner.env)
+      self._destroy_distributed_process_group(child_runner)
       if stage_result["status"] == "failed":
         raise RuntimeError(stage_result["failure_reason"])
 
@@ -213,6 +214,16 @@ class AntiFallCurriculumRunner:
   def _distributed_barrier(self, child_runner: VelocityOnPolicyRunner) -> None:
     if child_runner.is_distributed:
       torch.distributed.barrier()
+
+  def _destroy_distributed_process_group(
+    self, child_runner: VelocityOnPolicyRunner
+  ) -> None:
+    if (
+      child_runner.is_distributed
+      and torch.distributed.is_available()
+      and torch.distributed.is_initialized()
+    ):
+      torch.distributed.destroy_process_group()
 
   def _reduce_monitor_totals(
     self,
