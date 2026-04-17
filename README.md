@@ -50,7 +50,7 @@ Multi-GPU Training: Scale to multiple GPUs using --gpu-ids:
 
 ```bash
 python scripts/train.py Unitree-G1-Flat \
-  --gpu-ids 0 1 \
+  --gpu-ids "[0,1]" \
   --env.scene.num-envs=4096
 ```
 
@@ -92,7 +92,7 @@ Recommended production training command:
 
 ```bash
 python scripts/train.py Unitree-G1-AntiFall-Curriculum \
-  --gpu-ids 0 \
+  --gpu-ids "[0]" \
   --env.scene.num-envs=4096 \
   --agent.max-iterations=10000 \
   --agent.save-interval=100
@@ -103,7 +103,7 @@ Parameter guide:
 - Positional task argument: the training task ID.
   - Use `Unitree-G1-AntiFall-Curriculum` for the new automatic curriculum entrypoint.
   - Use `Unitree-G1-AntiFall-Stage0` ~ `Unitree-G1-AntiFall-Stage4b` only when you intentionally want a manual single-stage run.
-- `--gpu-ids`: GPU selection passed to the training launcher, for example `--gpu-ids 0` for one GPU or `--gpu-ids 0 1` for two GPUs.
+- `--gpu-ids`: GPU selection passed to the training launcher, for example `--gpu-ids "[0]"` for one GPU or `--gpu-ids "[0,1]"` for two GPUs. The legacy spaced form (`--gpu-ids 0 1`) still works.
 - `--env.scene.num-envs`: number of parallel environments. Increase it for throughput if your GPU / CPU memory budget allows.
 - `--agent.max-iterations`: maximum training iterations.
   - For `Unitree-G1-AntiFall-Curriculum`, this is the **per-stage** iteration budget.

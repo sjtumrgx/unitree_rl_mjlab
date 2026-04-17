@@ -530,33 +530,33 @@ class AntiFallCurriculumRunner:
       )
       self._save_root_checkpoint(child_runner)
       raise
+    else:
+      latest_checkpoint = self._save_stage_checkpoint(
+        child_runner=child_runner, stage_dir=stage_dir
+      )
+      self._copy_latest_policy(stage_dir, child_runner=child_runner)
+      self._update_stage_record(
+        stage_index=stage_index,
+        status=stage_status,
+        load_mode=load_mode,
+        latest_checkpoint=latest_checkpoint,
+        stage_iteration=child_runner.current_learning_iteration,
+        promotion_reason=promotion_reason,
+        metrics=metrics,
+        failure_reason=failure_reason,
+        is_primary=is_primary,
+      )
+      self._save_root_checkpoint(child_runner)
+      self._distributed_barrier(child_runner)
+
+      return {
+        "status": stage_status,
+        "latest_checkpoint": latest_checkpoint,
+        "failure_reason": failure_reason,
+        "promotion_reason": promotion_reason,
+      }
     finally:
       child_runner.logger.stop_logging_writer()
-
-    latest_checkpoint = self._save_stage_checkpoint(
-      child_runner=child_runner, stage_dir=stage_dir
-    )
-    self._copy_latest_policy(stage_dir, child_runner=child_runner)
-    self._update_stage_record(
-      stage_index=stage_index,
-      status=stage_status,
-      load_mode=load_mode,
-      latest_checkpoint=latest_checkpoint,
-      stage_iteration=child_runner.current_learning_iteration,
-      promotion_reason=promotion_reason,
-      metrics=metrics,
-      failure_reason=failure_reason,
-      is_primary=is_primary,
-    )
-    self._save_root_checkpoint(child_runner)
-    self._distributed_barrier(child_runner)
-
-    return {
-      "status": stage_status,
-      "latest_checkpoint": latest_checkpoint,
-      "failure_reason": failure_reason,
-      "promotion_reason": promotion_reason,
-    }
 
   def _save_stage_checkpoint(
     self,

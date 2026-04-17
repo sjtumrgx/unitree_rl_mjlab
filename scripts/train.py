@@ -1,12 +1,13 @@
 """Script to train RL agent with RSL-RL."""
 
+import ast
 import logging
 import os
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 import tyro
 
@@ -30,13 +31,96 @@ class TrainConfig:
   video_interval: int = 2000
   enable_nan_guard: bool = False
   torchrunx_log_dir: str | None = None
-  gpu_ids: list[int] | Literal["all"] | None = field(default_factory=lambda: [0])
+  gpu_ids: str | None = "[0]"
 
   @staticmethod
   def from_task(task_id: str) -> "TrainConfig":
     env_cfg = load_env_cfg(task_id)
     agent_cfg = load_rl_cfg(task_id)
     return TrainConfig(env=env_cfg, agent=agent_cfg)
+
+
+def _normalize_gpu_ids_cli_args(args: list[str]) -> list[str]:
+  """Normalize legacy `--gpu-ids 0 1` usage into a single list token.
+
+  Tyro handles a quoted list such as `--gpu-ids "[0,1]"` cleanly. This helper
+  preserves that new format while remaining backwards-compatible with the older
+  multi-token form.
+  """
+  normalized: list[str] = []
+  index = 0
+  while index < len(args):
+    token = args[index]
+    if token != "--gpu-ids":
+      normalized.append(token)
+      index += 1
+      continue
+
+    normalized.append(token)
+    index += 1
+
+    values: list[str] = []
+    while index < len(args) and not args[index].startswith("--"):
+      values.append(args[index])
+      index += 1
+
+    if len(values) <= 1:
+      normalized.extend(values)
+      continue
+
+    normalized.append(f"[{','.join(values)}]")
+
+  return normalized
+
+
+def _parse_gpu_ids_arg(gpu_ids: str | None) -> list[int] | Literal["all"] | None:
+  """Parse CLI GPU selection into the format expected by `select_gpus`."""
+  if gpu_ids is None:
+    return None
+
+  value = gpu_ids.strip()
+  if value == "":
+    raise ValueError("`--gpu-ids` cannot be empty.")
+
+  lowered = value.lower()
+  if lowered == "all":
+    return "all"
+  if lowered in {"none", "cpu"}:
+    return None
+
+  if value[0] in "[(":
+    parsed = ast.literal_eval(value)
+  elif "," in value:
+    parsed = [part.strip() for part in value.split(",") if part.strip()]
+  else:
+    parsed = [value]
+
+  if isinstance(parsed, int):
+    parsed = [parsed]
+  elif isinstance(parsed, tuple):
+    parsed = list(parsed)
+
+  if not isinstance(parsed, list):
+    raise ValueError(
+      "`--gpu-ids` must be a list like \"[0,1]\", a comma-separated string like "
+      "\"0,1\", a single GPU id, \"all\", or \"cpu\"."
+    )
+
+  normalized: list[int] = []
+  for item in parsed:
+    if isinstance(item, int):
+      gpu_id = item
+    elif isinstance(item, str) and item.strip().lstrip("-").isdigit():
+      gpu_id = int(item.strip())
+    else:
+      raise ValueError(
+        "`--gpu-ids` entries must be integers, e.g. --gpu-ids \"[0,1]\"."
+      )
+    if gpu_id < 0:
+      raise ValueError("`--gpu-ids` entries must be non-negative integers.")
+    normalized.append(gpu_id)
+
+  return normalized
 
 
 def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
@@ -154,7 +238,7 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
   log_dir = log_root_path / log_dir_name
 
   # Select GPUs based on CUDA_VISIBLE_DEVICES and user specification.
-  selected_gpus, num_gpus = select_gpus(args.gpu_ids)
+  selected_gpus, num_gpus = select_gpus(_parse_gpu_ids_arg(args.gpu_ids))
 
   # Set environment variables for all modes.
   if selected_gpus is None:
@@ -208,7 +292,7 @@ def main():
 
   args = tyro.cli(
     TrainConfig,
-    args=remaining_args,
+    args=_normalize_gpu_ids_cli_args(remaining_args),
     default=TrainConfig.from_task(chosen_task),
     prog=sys.argv[0] + f" {chosen_task}",
     config=mjlab.TYRO_FLAGS,

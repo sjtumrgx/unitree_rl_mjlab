@@ -49,7 +49,7 @@ python scripts/train.py Unitree-G1-Flat --env.scene.num-envs=4096
 
 ```bash
 python scripts/train.py Unitree-G1-Flat \
-  --gpu-ids 0 1 \
+  --gpu-ids "[0,1]" \
   --env.scene.num-envs=4096
 ```
 
@@ -90,7 +90,7 @@ benchmark 工具。
 
 ```bash
 python scripts/train.py Unitree-G1-AntiFall-Curriculum \
-  --gpu-ids 0 \
+  --gpu-ids "[0]" \
   --env.scene.num-envs=4096 \
   --agent.max-iterations=10000 \
   --agent.save-interval=100
@@ -101,7 +101,7 @@ python scripts/train.py Unitree-G1-AntiFall-Curriculum \
 - 第一个位置参数：训练任务 ID。
   - 推荐使用 `Unitree-G1-AntiFall-Curriculum` 执行自动课程学习。
   - 只有在你明确要手工跑某一阶段时，才改成 `Unitree-G1-AntiFall-Stage0` ~ `Unitree-G1-AntiFall-Stage4b`。
-- `--gpu-ids`：训练使用的 GPU 编号，例如 `--gpu-ids 0` 表示单卡，`--gpu-ids 0 1` 表示双卡。
+- `--gpu-ids`：训练使用的 GPU 编号，例如 `--gpu-ids "[0]"` 表示单卡，`--gpu-ids "[0,1]"` 表示双卡。旧的空格写法（`--gpu-ids 0 1`）仍然兼容。
 - `--env.scene.num-envs`：并行环境数量；越大吞吐越高，但显存 / 内存占用也越高。
 - `--agent.max-iterations`：最大训练迭代数。
   - 对 `Unitree-G1-AntiFall-Curriculum` 而言，它表示**每个 stage** 的最大迭代数。
