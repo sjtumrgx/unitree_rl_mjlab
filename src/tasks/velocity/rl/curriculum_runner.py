@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import shutil
 import time
 from copy import deepcopy
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import warp as wp
 from rsl_rl.utils import check_nan
 
 from mjlab.envs import ManagerBasedRlEnv
@@ -40,6 +42,17 @@ from .curriculum_state import (
 from .runner import VelocityOnPolicyRunner
 
 
+class _ReleasedStageEnv:
+  """Lightweight placeholder used after a stage environment is torn down."""
+
+  def __init__(self, render_mode: str | None) -> None:
+    self.render_mode = render_mode
+    self.unwrapped = self
+
+  def close(self) -> None:
+    return None
+
+
 class AntiFallCurriculumRunner:
   """Run the anti-fall stages as one top-level curriculum process.
 
@@ -63,6 +76,7 @@ class AntiFallCurriculumRunner:
     self.device = device
     self.log_dir = Path(log_dir) if log_dir is not None else None
     self.current_learning_iteration = 0
+    self._render_mode = self.env.render_mode
 
     curriculum_payload = deepcopy(self.cfg.get("curriculum") or {})
     if isinstance(curriculum_payload, AntiFallCurriculumCfg):
@@ -152,7 +166,7 @@ class AntiFallCurriculumRunner:
     if resume_stage_index > 0:
       self._release_bootstrap_env()
 
-    last_child_runner: VelocityOnPolicyRunner | None = None
+    last_stage_is_primary = True
     for stage_index, task_id in enumerate(self.curriculum_cfg.stage_task_ids):
       if stage_index < resume_stage_index:
         continue
@@ -173,7 +187,7 @@ class AntiFallCurriculumRunner:
         stage_dir=stage_dir,
         reuse_bootstrap=(stage_index == 0 and not self._bootstrap_env_released),
       )
-      last_child_runner = child_runner
+      last_stage_is_primary = self._is_primary_process(child_runner)
 
       load_mode = self._load_child_runner(
         child_runner=child_runner,
@@ -182,37 +196,40 @@ class AntiFallCurriculumRunner:
         resume_current_stage=resume_current_stage,
       )
 
-      stage_result = self._run_stage(
-        child_runner=child_runner,
-        stage_index=stage_index,
-        stage_name=stage_name,
-        stage_dir=stage_dir,
-        load_mode=load_mode,
-        init_at_random_ep_len=(init_at_random_ep_len and not resume_current_stage),
-      )
-      previous_checkpoint = stage_result["latest_checkpoint"]
+      stage_result: dict[str, Any] | None = None
+      try:
+        stage_result = self._run_stage(
+          child_runner=child_runner,
+          stage_index=stage_index,
+          stage_name=stage_name,
+          stage_dir=stage_dir,
+          load_mode=load_mode,
+          init_at_random_ep_len=(init_at_random_ep_len and not resume_current_stage),
+        )
+      finally:
+        self._finalize_child_runner(child_runner)
 
-      self._close_child_env(child_runner.env)
-      self._destroy_distributed_process_group(child_runner)
+      assert stage_result is not None
+      previous_checkpoint = stage_result["latest_checkpoint"]
       if stage_result["status"] == "failed":
         raise RuntimeError(stage_result["failure_reason"])
 
     self._manifest["status"] = "complete"
     self._manifest["updated_at"] = self._now()
-    if last_child_runner is None or self._is_primary_process(last_child_runner):
+    if last_stage_is_primary:
       write_manifest(self._manifest_path, self._manifest)
-    if (
-      self.log_dir is not None
-      and last_child_runner is not None
-      and self._is_primary_process(last_child_runner)
-    ):
+    if self.log_dir is not None and last_stage_is_primary:
       self.save(str(self.log_dir / f"model_{self.current_learning_iteration}.pt"))
 
   def _is_primary_process(self, child_runner: VelocityOnPolicyRunner) -> bool:
     return (not child_runner.is_distributed) or child_runner.gpu_global_rank == 0
 
   def _distributed_barrier(self, child_runner: VelocityOnPolicyRunner) -> None:
-    if child_runner.is_distributed:
+    if (
+      child_runner.is_distributed
+      and torch.distributed.is_available()
+      and torch.distributed.is_initialized()
+    ):
       torch.distributed.barrier()
 
   def _destroy_distributed_process_group(
@@ -302,8 +319,7 @@ class AntiFallCurriculumRunner:
     cfg.scene.num_envs = self._initial_env_cfg_template.scene.num_envs
     cfg.seed = self._initial_env_cfg_template.seed
     cfg.sim.nan_guard = deepcopy(self._initial_env_cfg_template.sim.nan_guard)
-    render_mode = self.env.render_mode
-    raw_env = ManagerBasedRlEnv(cfg=cfg, device=self.device, render_mode=render_mode)
+    raw_env = ManagerBasedRlEnv(cfg=cfg, device=self.device, render_mode=self._render_mode)
     if self._video_template is not None and self.log_dir is not None:
       raw_env = VideoRecorder(
         raw_env,
@@ -685,11 +701,41 @@ class AntiFallCurriculumRunner:
       return None
     return self._resolve_run_path(path_str)
 
+  def _finalize_child_runner(self, child_runner: VelocityOnPolicyRunner) -> None:
+    self._close_child_env(child_runner.env)
+    self._distributed_barrier(child_runner)
+    self._destroy_distributed_process_group(child_runner)
+    self._release_child_runner_references(child_runner)
+    self._release_cuda_memory()
+
   def _close_child_env(self, stage_env: RslRlVecEnvWrapper) -> None:
     stage_env.close()
+    if hasattr(stage_env, "env"):
+      stage_env.env = _ReleasedStageEnv(self._render_mode)  # type: ignore[assignment]
     if stage_env is self.env:
       self._bootstrap_env_released = True
       stage_env.close = lambda: None  # type: ignore[method-assign]
+
+  def _release_child_runner_references(
+    self, child_runner: VelocityOnPolicyRunner
+  ) -> None:
+    for attr in ("env", "alg", "logger"):
+      if hasattr(child_runner, attr):
+        setattr(child_runner, attr, None)
+
+  def _release_cuda_memory(self) -> None:
+    gc.collect()
+    if not (torch.cuda.is_available() and str(self.device).startswith("cuda")):
+      return
+    try:
+      wp.synchronize_device(self.device)
+    except Exception:  # noqa: BLE001
+      pass
+    try:
+      torch.cuda.synchronize(self.device)
+    except Exception:  # noqa: BLE001
+      pass
+    torch.cuda.empty_cache()
 
   def _release_bootstrap_env(self) -> None:
     if self._bootstrap_env_released:

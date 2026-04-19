@@ -11,7 +11,10 @@ import src.tasks  # noqa: F401
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 
 from src.tasks.velocity.rl.antifall_curriculum import CURRICULUM_TASK_ID
-from src.tasks.velocity.rl.curriculum_runner import AntiFallCurriculumRunner
+from src.tasks.velocity.rl.curriculum_runner import (
+  AntiFallCurriculumRunner,
+  _ReleasedStageEnv,
+)
 
 
 class DummyVecEnv:
@@ -272,6 +275,7 @@ def test_curriculum_runner_destroys_process_group_between_distributed_stages(
   rl_cfg = load_rl_cfg(CURRICULUM_TASK_ID)
   runner = AntiFallCurriculumRunner(DummyVecEnv(env_cfg), asdict(rl_cfg), str(tmp_path), "cpu")
 
+  barrier_calls: list[int] = []
   destroy_calls: list[int] = []
 
   class DistributedChildRunner(FakeChildRunner):
@@ -305,6 +309,11 @@ def test_curriculum_runner_destroys_process_group_between_distributed_stages(
   monkeypatch.setattr(AntiFallCurriculumRunner, "_save_root_checkpoint", lambda self: None)
   monkeypatch.setattr(AntiFallCurriculumRunner, "_copy_latest_policy", lambda self, stage_dir: None)
   monkeypatch.setattr(
+    AntiFallCurriculumRunner,
+    "_distributed_barrier",
+    lambda self, child_runner: barrier_calls.append(1),
+  )
+  monkeypatch.setattr(
     "src.tasks.velocity.rl.curriculum_runner.torch.distributed.is_available",
     lambda: True,
   )
@@ -323,4 +332,137 @@ def test_curriculum_runner_destroys_process_group_between_distributed_stages(
   )
   runner.learn(1)
 
+  assert len(barrier_calls) == 2
   assert len(destroy_calls) == 2
+
+
+def test_curriculum_runner_cleans_up_distributed_stage_after_stage_exception(
+  monkeypatch, tmp_path: Path
+) -> None:
+  env_cfg = load_env_cfg(CURRICULUM_TASK_ID)
+  rl_cfg = load_rl_cfg(CURRICULUM_TASK_ID)
+  runner = AntiFallCurriculumRunner(DummyVecEnv(env_cfg), asdict(rl_cfg), str(tmp_path), "cpu")
+
+  events: list[str] = []
+
+  class DistributedChildEnv(FakeChildEnv):
+    def close(self):
+      events.append("close_env")
+      super().close()
+
+  class DistributedChildRunner(FakeChildRunner):
+    def __init__(self):
+      super().__init__()
+      self.env = DistributedChildEnv()
+      self.is_distributed = True
+
+  def fake_build_stage_runner(self, *, stage_index, task_id, stage_name, stage_dir, reuse_bootstrap):
+    del self, stage_index, task_id, stage_name, stage_dir, reuse_bootstrap
+    return DistributedChildRunner()
+
+  def fake_load_child_runner(self, *, child_runner, stage_index, previous_checkpoint, resume_current_stage):
+    del child_runner, stage_index, previous_checkpoint, resume_current_stage
+    return "fresh"
+
+  def fake_run_stage(self, *, child_runner, stage_index, stage_name, stage_dir, load_mode, init_at_random_ep_len):
+    del child_runner, stage_index, stage_name, stage_dir, load_mode, init_at_random_ep_len
+    raise RuntimeError("boom")
+
+  monkeypatch.setattr(AntiFallCurriculumRunner, "_build_stage_runner", fake_build_stage_runner)
+  monkeypatch.setattr(AntiFallCurriculumRunner, "_load_child_runner", fake_load_child_runner)
+  monkeypatch.setattr(AntiFallCurriculumRunner, "_run_stage", fake_run_stage)
+  monkeypatch.setattr(
+    AntiFallCurriculumRunner,
+    "_distributed_barrier",
+    lambda self, child_runner: events.append("barrier"),
+  )
+  monkeypatch.setattr(
+    AntiFallCurriculumRunner,
+    "_destroy_distributed_process_group",
+    lambda self, child_runner: events.append("destroy_pg"),
+  )
+
+  runner.curriculum_cfg.stage_task_ids = ("Unitree-G1-AntiFall-Stage0",)
+
+  try:
+    runner.learn(1)
+  except RuntimeError as exc:
+    assert str(exc) == "boom"
+  else:
+    raise AssertionError("Expected stage failure to propagate")
+
+  assert events == ["close_env", "barrier", "destroy_pg"]
+
+
+def test_finalize_child_runner_releases_stage_resources(
+  monkeypatch, tmp_path: Path
+) -> None:
+  env_cfg = load_env_cfg(CURRICULUM_TASK_ID)
+  rl_cfg = load_rl_cfg(CURRICULUM_TASK_ID)
+  runner = AntiFallCurriculumRunner(DummyVecEnv(env_cfg), asdict(rl_cfg), str(tmp_path), "cpu")
+
+  events: list[str] = []
+
+  class ResourceTrackingChildEnv(FakeChildEnv):
+    def __init__(self) -> None:
+      super().__init__()
+      self.env = object()
+
+    def close(self):
+      events.append("close_env")
+      super().close()
+
+  class ResourceTrackingChildRunner(FakeChildRunner):
+    def __init__(self) -> None:
+      super().__init__()
+      self.env = ResourceTrackingChildEnv()
+      self.alg = object()
+      self.logger = object()
+
+  child_runner = ResourceTrackingChildRunner()
+
+  monkeypatch.setattr(
+    AntiFallCurriculumRunner,
+    "_distributed_barrier",
+    lambda self, runner: events.append("barrier"),
+  )
+  monkeypatch.setattr(
+    AntiFallCurriculumRunner,
+    "_destroy_distributed_process_group",
+    lambda self, runner: events.append("destroy_pg"),
+  )
+  monkeypatch.setattr(
+    AntiFallCurriculumRunner,
+    "_release_cuda_memory",
+    lambda self: events.append("release_cuda"),
+  )
+
+  runner._finalize_child_runner(child_runner)
+
+  assert events == ["close_env", "barrier", "destroy_pg", "release_cuda"]
+  assert child_runner.env is None
+  assert child_runner.alg is None
+  assert child_runner.logger is None
+
+
+def test_close_child_env_detaches_bootstrap_env_without_losing_render_mode(
+  tmp_path: Path,
+) -> None:
+  env_cfg = load_env_cfg(CURRICULUM_TASK_ID)
+  rl_cfg = load_rl_cfg(CURRICULUM_TASK_ID)
+
+  class BootstrapVecEnv(DummyVecEnv):
+    def __init__(self, cfg):
+      super().__init__(cfg)
+      self.render_mode = "rgb_array"
+      self.env = object()
+
+  runner = AntiFallCurriculumRunner(
+    BootstrapVecEnv(env_cfg), asdict(rl_cfg), str(tmp_path), "cpu"
+  )
+
+  runner._close_child_env(runner.env)
+
+  assert runner._bootstrap_env_released is True
+  assert isinstance(runner.env.env, _ReleasedStageEnv)
+  assert runner.env.render_mode == "rgb_array"
