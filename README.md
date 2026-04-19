@@ -124,6 +124,65 @@ logs/rsl_rl/g1_antifall/<date_time>_<stage>/...
 logs/rsl_rl/g1_antifall_curriculum/<date_time>_curriculum/...
 ```
 
+### 1.2 Replaying a trained G1 anti-fall policy
+
+After `Unitree-G1-AntiFall-Curriculum` finishes, **replay from a stage checkpoint**,
+not from the top-level
+`logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/model_*.pt`.
+
+Why:
+
+- `stages/<index>_<stage>/model_*.pt` contains the actual playable policy weights;
+- the top-level `model_*.pt` mainly stores curriculum progress metadata;
+- the top-level `policy.onnx` is the deployment export, not the input to
+  `scripts/play_antifall.py`.
+
+First locate the latest curriculum run:
+
+```bash
+LATEST_RUN=$(ls -dt logs/rsl_rl/g1_antifall_curriculum/*_curriculum | head -n1)
+ls "$LATEST_RUN/stages"
+```
+
+If the curriculum completed, replay the final `Stage4b` policy:
+
+```bash
+CKPT=$(ls -t "$LATEST_RUN"/stages/05_stage4b/model_*.pt | head -n1)
+
+python scripts/play_antifall.py \
+  --task Unitree-G1-AntiFall-Stage4b \
+  --checkpoint-file "$CKPT"
+```
+
+If training stopped earlier, use the matching stage directory and task ID:
+
+| Stage directory | Task ID for play |
+| --- | --- |
+| `stages/00_stage0` | `Unitree-G1-AntiFall-Stage0` |
+| `stages/01_stage1` | `Unitree-G1-AntiFall-Stage1` |
+| `stages/02_stage2` | `Unitree-G1-AntiFall-Stage2` |
+| `stages/03_stage3` | `Unitree-G1-AntiFall-Stage3` |
+| `stages/04_stage4a` | `Unitree-G1-AntiFall-Stage4a` |
+| `stages/05_stage4b` | `Unitree-G1-AntiFall-Stage4b` |
+
+Useful optional flags:
+
+- `--num-envs 1` to view a single robot;
+- `--device cpu` or `--device cuda:0` to select the inference device;
+- `scripts/play_antifall.py` always uses the MuJoCo native viewer, so it
+  requires a graphical display (`DISPLAY` or `WAYLAND_DISPLAY`).
+
+If you prefer the generic play entrypoint, you can also run:
+
+```bash
+python scripts/play.py Unitree-G1-AntiFall-Stage4b \
+  --checkpoint_file="$CKPT" \
+  --num_envs=1
+```
+
+`scripts/play.py` defaults to `--viewer=auto`: it prefers the native viewer when
+a graphical display is available and falls back to the viser viewer otherwise.
+
 For implementation details, stage semantics, and current caveats, see
 [`doc/g1_antifall.md`](doc/g1_antifall.md).
 

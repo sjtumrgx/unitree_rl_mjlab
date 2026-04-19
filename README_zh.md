@@ -122,6 +122,64 @@ logs/rsl_rl/g1_antifall/<date_time>_<stage>/...
 logs/rsl_rl/g1_antifall_curriculum/<date_time>_curriculum/...
 ```
 
+### 1.2 G1 抗摔任务回放（Play）
+
+完成 `Unitree-G1-AntiFall-Curriculum` 训练后，**请使用 stage 子目录里的
+checkpoint 回放**，不要直接拿顶层的
+`logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/model_*.pt` 去 play。
+
+原因是：
+
+- `stages/<index>_<stage>/model_*.pt` 保存的是实际可加载的策略权重；
+- 顶层 `model_*.pt` 主要用于记录 curriculum 进度元信息；
+- 顶层 `policy.onnx` 适合部署导出，不是 `scripts/play_antifall.py` 的输入。
+
+先找到最新一次 curriculum 训练目录：
+
+```bash
+LATEST_RUN=$(ls -dt logs/rsl_rl/g1_antifall_curriculum/*_curriculum | head -n1)
+ls "$LATEST_RUN/stages"
+```
+
+如果训练已经完整跑完，通常直接回放最后一阶段 `Stage4b`：
+
+```bash
+CKPT=$(ls -t "$LATEST_RUN"/stages/05_stage4b/model_*.pt | head -n1)
+
+python scripts/play_antifall.py \
+  --task Unitree-G1-AntiFall-Stage4b \
+  --checkpoint-file "$CKPT"
+```
+
+如果训练停在中间某个 stage，请改成对应的 stage 目录和任务名：
+
+| stage 目录 | play 时使用的 task |
+| --- | --- |
+| `stages/00_stage0` | `Unitree-G1-AntiFall-Stage0` |
+| `stages/01_stage1` | `Unitree-G1-AntiFall-Stage1` |
+| `stages/02_stage2` | `Unitree-G1-AntiFall-Stage2` |
+| `stages/03_stage3` | `Unitree-G1-AntiFall-Stage3` |
+| `stages/04_stage4a` | `Unitree-G1-AntiFall-Stage4a` |
+| `stages/05_stage4b` | `Unitree-G1-AntiFall-Stage4b` |
+
+常用附加参数：
+
+- `--num-envs 1`：只开一个可视化环境，便于观察动作；
+- `--device cpu` 或 `--device cuda:0`：指定推理设备；
+- `scripts/play_antifall.py` 强制使用 MuJoCo native viewer，因此需要图形显示环境
+  （`DISPLAY` 或 `WAYLAND_DISPLAY`）。
+
+如果你更想走通用入口，也可以直接调用：
+
+```bash
+python scripts/play.py Unitree-G1-AntiFall-Stage4b \
+  --checkpoint_file="$CKPT" \
+  --num_envs=1
+```
+
+`scripts/play.py` 默认 `--viewer=auto`：有图形界面时优先使用 native viewer，
+无图形界面时会自动切到 viser viewer。
+
 任务分阶段语义、benchmark 说明和已知限制，请参阅
 [`doc/g1_antifall.md`](doc/g1_antifall.md)。
 
