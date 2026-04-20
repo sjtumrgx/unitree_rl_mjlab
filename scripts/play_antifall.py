@@ -28,7 +28,10 @@ _NON_STAGE_ANTIFALL_TASKS = frozenset(
 
 def build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(
-    description="Launch a trained Unitree G1 AntiFall policy in the native MuJoCo viewer.",
+    description=(
+      "Launch a trained Unitree G1 AntiFall policy in the native MuJoCo viewer "
+      "with mouse-drag perturbation enabled."
+    ),
   )
   parser.add_argument(
     "--checkpoint-file",
@@ -114,13 +117,14 @@ def run_antifall_play(
       motion_file=None,
       num_envs=num_envs,
       device=device,
+      keyboard_impulse=False,
       video=False,
       video_length=200,
       video_height=None,
       video_width=None,
       camera=None,
       viewer="native",
-      no_terminations=False,
+      no_terminations=True,
       _demo_mode=False,
     ),
   )

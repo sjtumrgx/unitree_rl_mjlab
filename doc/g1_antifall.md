@@ -38,9 +38,9 @@ This branch wires the anti-fall helper stack into the actual `g1_antifall` task 
 | Stage0 | Flat | No external disturbance |
 | Stage1 | Flat | Mild tracked push recovery |
 | Stage2 | Flat | Harder tracked pushes + occasional near-failure reset starts |
-| Stage3 | Rough terrain | Rough terrain + occasional near-failure reset starts |
-| Stage4a | Flat low-friction | Slip-focused low-friction feet + occasional near-failure reset starts |
-| Stage4b | Flat | Forward-biased tracked trip-like pushes + occasional near-failure reset starts |
+| Stage3 | Flat | Walking-biased push / kick recovery + occasional near-failure reset starts |
+| Stage4a | Flat | Lateral / asymmetric push-kick recovery + occasional near-failure reset starts |
+| Stage4b | Flat | Hardest mixed standing / walking push-kick recovery + occasional near-failure reset starts |
 | Benchmark | Flat deterministic | Randomization disabled for reproducible evaluation |
 
 ## Automatic curriculum entrypoint
@@ -55,8 +55,7 @@ Current default behavior:
 - per-stage fallback budget: `10000` iterations
 - Stage0 promotion gate: controllable locomotion threshold
 - Stage1-Stage4b promotion gate: recovery-rate + recovery-latency threshold
-- `Stage2 -> Stage3` and `Stage3 -> Stage4a` use actor-only warm starts because
-  rough terrain reintroduces critic `height_scan`
+- the late-stage curriculum remains a flat push-kick ladder, so stage promotion no longer depends on rough/slip/trip-specific hazard families
 - every stage transition is written to `curriculum_manifest.json` in the run dir
 
 Example:
@@ -67,6 +66,10 @@ python scripts/train.py Unitree-G1-AntiFall-Curriculum --env.scene.num-envs=4096
 
 The original `Unitree-G1-AntiFall-Stage0` ... `Stage4b` tasks remain available
 for manual training and debug workflows.
+
+> Migration note: checkpoints produced before this push-kick semantic reset may still
+> be loadable, but late-stage runs from that era encode the older rough/slip/trip
+> semantics rather than the current mainline ladder.
 
 ## Benchmark CLI
 

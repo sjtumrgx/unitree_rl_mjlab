@@ -9,7 +9,6 @@ from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity import mdp
 from src.tasks.velocity.config.g1.env_cfgs import (
   unitree_g1_flat_env_cfg,
-  unitree_g1_rough_env_cfg,
 )
 
 _ALLOWED_ACTOR_TERMS = (
@@ -244,13 +243,6 @@ def _make_antifall_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   return cfg
 
 
-def _make_antifall_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  cfg = unitree_g1_rough_env_cfg(play=play)
-  _apply_antifall_actor_contract(cfg)
-  cfg.episode_length_s = 25.0
-  return cfg
-
-
 def unitree_g1_antifall_stage0_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create the Stage 0 stable flat-ground anti-fall scaffold."""
   cfg = _make_antifall_flat_env_cfg(play=play)
@@ -328,19 +320,31 @@ def unitree_g1_antifall_stage2_env_cfg(play: bool = False) -> ManagerBasedRlEnvC
 
 
 def unitree_g1_antifall_stage3_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create the Stage 3 rough-terrain recovery scaffold."""
-  cfg = _make_antifall_rough_env_cfg(play=play)
-  cfg.events.pop("push_robot", None)
+  """Create the Stage 3 walking-biased flat push-kick recovery scaffold."""
+  cfg = _make_antifall_flat_env_cfg(play=play)
   _tune_command_ranges(
     cfg,
-    rel_standing_envs=0.1,
-    lin_vel_x=(-0.75, 1.5),
-    lin_vel_y=(-0.5, 0.5),
-    ang_vel_z=(-1.0, 1.0),
+    rel_standing_envs=0.08,
+    lin_vel_x=(-0.9, 1.6),
+    lin_vel_y=(-0.6, 0.6),
+    ang_vel_z=(-1.1, 1.1),
   )
+  if not play:
+    _configure_push_profile(
+      cfg,
+      interval_range_s=(2.75, 4.25),
+      velocity_range={
+        "x": (-0.9, 0.9),
+        "y": (-0.85, 0.85),
+        "z": (-0.55, 0.55),
+        "roll": (-0.8, 0.8),
+        "pitch": (-0.8, 0.8),
+        "yaw": (-1.05, 1.05),
+      },
+    )
   _apply_antifall_helpers(
     cfg,
-    hard_reset_prob=0.15,
+    hard_reset_prob=0.25,
     hard_pose_range=_STAGE2_HARD_POSE_RANGE,
     hard_velocity_range=_STAGE2_HARD_VELOCITY_RANGE,
   )
@@ -348,20 +352,31 @@ def unitree_g1_antifall_stage3_env_cfg(play: bool = False) -> ManagerBasedRlEnvC
 
 
 def unitree_g1_antifall_stage4a_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create the Stage 4a low-friction recovery scaffold."""
+  """Create the Stage 4a lateral / asymmetric push-kick recovery scaffold."""
   cfg = _make_antifall_flat_env_cfg(play=play)
-  cfg.events.pop("push_robot", None)
   _tune_command_ranges(
     cfg,
-    rel_standing_envs=0.1,
-    lin_vel_x=(-0.75, 1.5),
-    lin_vel_y=(-0.5, 0.5),
-    ang_vel_z=(-1.0, 1.0),
+    rel_standing_envs=0.06,
+    lin_vel_x=(-1.0, 1.75),
+    lin_vel_y=(-0.7, 0.7),
+    ang_vel_z=(-1.2, 1.2),
   )
-  cfg.events["foot_friction"].params["ranges"] = (0.05, 0.35)
+  if not play:
+    _configure_push_profile(
+      cfg,
+      interval_range_s=(2.25, 3.75),
+      velocity_range={
+        "x": (-0.75, 0.75),
+        "y": (-1.15, 1.15),
+        "z": (-0.65, 0.65),
+        "roll": (-0.95, 0.95),
+        "pitch": (-0.75, 0.75),
+        "yaw": (-1.15, 1.15),
+      },
+    )
   _apply_antifall_helpers(
     cfg,
-    hard_reset_prob=0.15,
+    hard_reset_prob=0.3,
     hard_pose_range=_STAGE2_HARD_POSE_RANGE,
     hard_velocity_range=_STAGE2_HARD_VELOCITY_RANGE,
   )
@@ -369,31 +384,31 @@ def unitree_g1_antifall_stage4a_env_cfg(play: bool = False) -> ManagerBasedRlEnv
 
 
 def unitree_g1_antifall_stage4b_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create the Stage 4b trip-like recovery scaffold."""
+  """Create the Stage 4b hardest mixed push-kick recovery scaffold."""
   cfg = _make_antifall_flat_env_cfg(play=play)
   _tune_command_ranges(
     cfg,
-    rel_standing_envs=0.1,
-    lin_vel_x=(-0.75, 1.5),
-    lin_vel_y=(-0.5, 0.5),
-    ang_vel_z=(-1.0, 1.0),
+    rel_standing_envs=0.05,
+    lin_vel_x=(-1.1, 1.9),
+    lin_vel_y=(-0.8, 0.8),
+    ang_vel_z=(-1.25, 1.25),
   )
   if not play:
     _configure_push_profile(
       cfg,
-      interval_range_s=(3.5, 5.5),
+      interval_range_s=(1.75, 3.25),
       velocity_range={
-        "x": (0.35, 0.9),
-        "y": (-0.1, 0.1),
-        "z": (0.0, 0.2),
-        "roll": (-0.1, 0.1),
-        "pitch": (0.35, 0.85),
-        "yaw": (-0.2, 0.2),
+        "x": (-1.25, 1.25),
+        "y": (-1.25, 1.25),
+        "z": (-0.75, 0.75),
+        "roll": (-1.05, 1.05),
+        "pitch": (-1.05, 1.05),
+        "yaw": (-1.3, 1.3),
       },
     )
   _apply_antifall_helpers(
     cfg,
-    hard_reset_prob=0.1,
+    hard_reset_prob=0.35,
     hard_pose_range=_STAGE2_HARD_POSE_RANGE,
     hard_velocity_range=_STAGE2_HARD_VELOCITY_RANGE,
   )

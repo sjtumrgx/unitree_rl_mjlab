@@ -78,9 +78,9 @@ Available anti-fall tasks:
 - `Unitree-G1-AntiFall-Stage0` — flat standing / walking seed (no external disturbance)
 - `Unitree-G1-AntiFall-Stage1` — flat push / kick recovery
 - `Unitree-G1-AntiFall-Stage2` — harder flat recovery + near-failure reset starts
-- `Unitree-G1-AntiFall-Stage3` — rough terrain recovery
-- `Unitree-G1-AntiFall-Stage4a` — slip-focused low-friction recovery
-- `Unitree-G1-AntiFall-Stage4b` — trip-like recovery
+- `Unitree-G1-AntiFall-Stage3` — walking-biased flat push / kick recovery
+- `Unitree-G1-AntiFall-Stage4a` — off-center / lateral push-kick recovery
+- `Unitree-G1-AntiFall-Stage4b` — hardest mixed standing / walking push-kick recovery
 - `Unitree-G1-AntiFall-Benchmark` — deterministic benchmark configuration
 - `Unitree-G1-AntiFall-Curriculum` — single-entry curriculum task while keeping the stage tasks available for manual debugging / ablations
 
@@ -115,7 +115,7 @@ Default curriculum behavior:
 - Stage0 promotes on the stable controllable-locomotion gate.
 - Stage1 ~ Stage4b promote on recovery-rate / recovery-latency gates.
 - If a stage does not meet its gate before `--agent.max-iterations`, the curriculum advances at the per-stage limit.
-- `Stage2 → Stage3` and `Stage3 → Stage4a` automatically switch to actor-only warm starts because the rough-terrain critic observation contract changes there.
+- the curriculum now keeps a flat push-kick ladder all the way through `Stage4b`, so late-stage promotions do not depend on rough/slip/trip-specific critic changes.
 
 Training outputs are written to:
 
@@ -123,6 +123,10 @@ Training outputs are written to:
 logs/rsl_rl/g1_antifall/<date_time>_<stage>/...
 logs/rsl_rl/g1_antifall_curriculum/<date_time>_curriculum/...
 ```
+
+> **Migration note:** older checkpoints / manifests created before the push-kick reset may still load,
+> but they represent the previous rough/slip/trip-oriented late-stage semantics rather than the
+> current mainline ladder.
 
 ### 1.2 Replaying a trained G1 anti-fall policy
 
@@ -171,6 +175,8 @@ Useful optional flags:
 - `--device cpu` or `--device cuda:0` to select the inference device;
 - `scripts/play_antifall.py` always uses the MuJoCo native viewer, so it
   requires a graphical display (`DISPLAY` or `WAYLAND_DISPLAY`).
+- `scripts/play_antifall.py` now defaults to native **mouse drag perturbation**:
+  click / drag the robot in the MuJoCo viewer to simulate hand-push / foot-kick style disturbances.
 
 If you prefer the generic play entrypoint, you can also run:
 

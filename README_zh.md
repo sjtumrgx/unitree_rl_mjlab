@@ -76,9 +76,9 @@ benchmark 工具。
 - `Unitree-G1-AntiFall-Stage0` — 平地站立/行走种子任务（无外部扰动）
 - `Unitree-G1-AntiFall-Stage1` — 平地抗推 / 抗踢恢复
 - `Unitree-G1-AntiFall-Stage2` — 更强的平地恢复 + 近失稳重置
-- `Unitree-G1-AntiFall-Stage3` — 粗糙地形恢复
-- `Unitree-G1-AntiFall-Stage4a` — 以滑倒为主的低摩擦恢复
-- `Unitree-G1-AntiFall-Stage4b` — 以绊倒样式为主的恢复
+- `Unitree-G1-AntiFall-Stage3` — 以行走中抗推 / 抗踢为主的平地恢复
+- `Unitree-G1-AntiFall-Stage4a` — 偏侧向 / 偏心脚踢样式的恢复
+- `Unitree-G1-AntiFall-Stage4b` — 最难的站立 / 行走混合抗推抗踢恢复
 - `Unitree-G1-AntiFall-Benchmark` — 确定性 benchmark 配置
 - `Unitree-G1-AntiFall-Curriculum` — 单入口自动课程学习任务（保留上述 stage 任务用于手工调试 / 对比实验）
 
@@ -113,7 +113,7 @@ python scripts/train.py Unitree-G1-AntiFall-Curriculum \
 - Stage0 默认以稳定可控行走指标晋级。
 - Stage1 ~ Stage4b 默认以恢复率 / 恢复延迟指标晋级。
 - 若 stage 未达标但达到 `--agent.max-iterations`，则自动推进到下一 stage。
-- `Stage2 → Stage3` 与 `Stage3 → Stage4a` 会自动切换到 actor-only warm start，以兼容 rough-terrain critic 观测变化。
+- 当前课程主线已经统一为平地 push-kick 梯度，因此后续 stage 不再依赖 rough / slip / trip 特有的 critic 观测切换。
 
 训练输出目录：
 
@@ -121,6 +121,9 @@ python scripts/train.py Unitree-G1-AntiFall-Curriculum \
 logs/rsl_rl/g1_antifall/<date_time>_<stage>/...
 logs/rsl_rl/g1_antifall_curriculum/<date_time>_curriculum/...
 ```
+
+> **迁移提示：** push-kick 主线重置之前产生的老 checkpoint / manifest 仍然可能能加载，
+> 但它们对应的是旧的 rough / slip / trip 后期语义，而不是当前这套主线课程。
 
 ### 1.2 G1 抗摔任务回放（Play）
 
@@ -168,6 +171,8 @@ python scripts/play_antifall.py \
 - `--device cpu` 或 `--device cuda:0`：指定推理设备；
 - `scripts/play_antifall.py` 强制使用 MuJoCo native viewer，因此需要图形显示环境
   （`DISPLAY` 或 `WAYLAND_DISPLAY`）。
+- `scripts/play_antifall.py` 现在默认支持 **鼠标拖拽扰动**：
+  在 MuJoCo native viewer 里直接点击 / 拖拽机器人，即可模拟手推 / 脚踢式扰动。
 
 如果你更想走通用入口，也可以直接调用：
 
