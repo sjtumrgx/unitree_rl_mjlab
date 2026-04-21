@@ -23,6 +23,9 @@ from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 from mjlab.viewer.native.keys import KEY_BACKSPACE, KEY_I, KEY_J, KEY_K, KEY_L
 
+_DEFAULT_VIDEO_HEIGHT = 1080
+_DEFAULT_VIDEO_WIDTH = 1920
+
 
 def _suppress_external_wrench_visuals(target_data) -> None:
   """Hide GPU-side xfrc overlays in the native viewer without changing physics."""
@@ -36,6 +39,20 @@ def _configure_keyboard_impulse_viewer_visuals(viewer) -> None:
   viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
   viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTOBJ] = 0
   viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_SCLINERTIA] = 0
+
+
+def _resolve_video_dimensions(
+  *,
+  video_enabled: bool,
+  video_height: int | None,
+  video_width: int | None,
+) -> tuple[int | None, int | None]:
+  if not video_enabled:
+    return video_height, video_width
+  return (
+    _DEFAULT_VIDEO_HEIGHT if video_height is None else video_height,
+    _DEFAULT_VIDEO_WIDTH if video_width is None else video_width,
+  )
 
 
 def _peak_linear_push_speed_mps(
@@ -136,6 +153,60 @@ def _clamp_wrench_to_impulse_budget(
   return force * scale, torque * scale, remaining_linear_impulse_ns
 
 
+def _draw_drag_visual(
+  visualizer,
+  drag_state: dict[str, object] | None,
+  *,
+  max_force_n: float | None,
+) -> None:
+  if not drag_state or not drag_state.get("active", False):
+    return
+
+  point = np.asarray(drag_state["point"], dtype=np.float64)
+  force = np.asarray(drag_state["force"], dtype=np.float64)
+  force_mag = float(np.linalg.norm(force))
+  if force_mag <= 1e-8:
+    return
+
+  meansize = float(getattr(visualizer, "meansize", 1.0))
+  force_frac = min(1.0, force_mag / max_force_n) if max_force_n and max_force_n > 0 else 1.0
+  length = meansize * (0.35 + 0.65 * force_frac)
+  end = point + (force / force_mag) * length
+  visualizer.add_cylinder(
+    point,
+    end,
+    radius=max(0.004, 0.012 * meansize),
+    color=(1.0, 0.0, 0.0, 1.0),
+    label="play_drag_force",
+  )
+
+
+def _install_drag_video_visualization(
+  env: ManagerBasedRlEnv,
+  *,
+  max_force_n: float | None,
+) -> None:
+  if not hasattr(env, "update_visualizers"):
+    return
+  if getattr(env, "_play_drag_visual_hook_installed", False):
+    return
+
+  original_update_visualizers = env.update_visualizers
+
+  def wrapped_update_visualizers(visualizer) -> None:
+    original_update_visualizers(visualizer)
+    drag_state = getattr(env, "_play_drag_visual_state", None)
+    _draw_drag_visual(visualizer, drag_state, max_force_n=max_force_n)
+
+  env.update_visualizers = wrapped_update_visualizers  # type: ignore[method-assign]
+  env._play_drag_visual_hook_installed = True
+  env._play_drag_visual_state = {
+    "active": False,
+    "point": np.zeros(3, dtype=np.float64),
+    "force": np.zeros(3, dtype=np.float64),
+  }
+
+
 class _RecoveryTunedNativeViewer(NativeMujocoViewer):
   """Native viewer with reset shortcut parity and optional perturbation clamping."""
 
@@ -228,6 +299,8 @@ class _RecoveryTunedNativeViewer(NativeMujocoViewer):
     sim_data = self.env.unwrapped.sim.data
     pert = v.perturb
     perturb_active = pert.active != 0 and pert.select > 0
+    drag_force = np.zeros(3, dtype=np.float64)
+    drag_point = np.zeros(3, dtype=np.float64)
 
     if perturb_active and not self._drag_budget_active:
       self._remaining_linear_impulse_ns = self._max_linear_impulse_ns
@@ -257,6 +330,8 @@ class _RecoveryTunedNativeViewer(NativeMujocoViewer):
           self._remaining_linear_impulse_ns - impulse_used_ns,
         )
       point = self.mjd.xipos[body_id].copy()
+      drag_force = force.copy()
+      drag_point = point.copy()
 
       qfrc = np.zeros(self.mjm.nv)
       mujoco.mj_applyFT(self.mjm, self.mjd, force, torque, point, body_id, qfrc)
@@ -270,6 +345,16 @@ class _RecoveryTunedNativeViewer(NativeMujocoViewer):
       self._remaining_linear_impulse_ns = None
       self._last_applied_force_n = 0.0
       sim_data.qfrc_applied[self.env_idx] = 0.0
+
+    setattr(
+      self.env.unwrapped,
+      "_play_drag_visual_state",
+      {
+        "active": perturb_active and self._last_applied_force_n > 0.0,
+        "point": drag_point,
+        "force": drag_force,
+      },
+    )
 
 
 class _KeyboardImpulseController:
@@ -538,10 +623,23 @@ def run_play(task_id: str, cfg: PlayConfig):
 
   if cfg.num_envs is not None:
     env_cfg.scene.num_envs = cfg.num_envs
-  if cfg.video_height is not None:
-    env_cfg.viewer.height = cfg.video_height
-  if cfg.video_width is not None:
-    env_cfg.viewer.width = cfg.video_width
+  resolved_video_height, resolved_video_width = _resolve_video_dimensions(
+    video_enabled=bool(cfg.video),
+    video_height=cfg.video_height,
+    video_width=cfg.video_width,
+  )
+  if resolved_video_height is not None:
+    env_cfg.viewer.height = resolved_video_height
+  if resolved_video_width is not None:
+    env_cfg.viewer.width = resolved_video_width
+
+  # Handle "auto" viewer selection before env creation so video hooks can follow it.
+  if cfg.viewer == "auto":
+    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    resolved_viewer = "native" if has_display else "viser"
+    del has_display
+  else:
+    resolved_viewer = cfg.viewer
 
   render_mode = "rgb_array" if (TRAINED_MODE and cfg.video) else None
   if cfg.video and DUMMY_MODE:
@@ -549,6 +647,16 @@ def run_play(task_id: str, cfg: PlayConfig):
       "[WARN] Video recording with dummy agents is disabled (no checkpoint/log_dir)."
     )
   env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=render_mode)
+
+  video_drag_force_limit_n: float | None = None
+  if cfg.video and resolved_viewer == "native":
+    preview_env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    video_drag_force_limit_n = _resolve_recovery_tuned_push_limit_n(
+      task_id,
+      preview_env,
+      duration_s=cfg.keyboard_impulse_duration_s,
+    )
+    _install_drag_video_visualization(env.unwrapped, max_force_n=video_drag_force_limit_n)
 
   if TRAINED_MODE and cfg.video:
     print("[INFO] Recording videos during play")
@@ -587,14 +695,6 @@ def run_play(task_id: str, cfg: PlayConfig):
       str(resume_path), load_cfg={"actor": True}, strict=True, map_location=device
     )
     policy = runner.get_inference_policy(device=device)
-
-  # Handle "auto" viewer selection.
-  if cfg.viewer == "auto":
-    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-    resolved_viewer = "native" if has_display else "viser"
-    del has_display
-  else:
-    resolved_viewer = cfg.viewer
 
   try:
     if resolved_viewer == "native":

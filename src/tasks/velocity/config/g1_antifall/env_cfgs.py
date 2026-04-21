@@ -400,12 +400,12 @@ def unitree_g1_antifall_stage4b_env_cfg(play: bool = False) -> ManagerBasedRlEnv
       cfg,
       interval_range_s=(1.75, 3.25),
       velocity_range={
-        "x": (-1.25, 1.25),
-        "y": (-1.25, 1.25),
-        "z": (-0.75, 0.75),
-        "roll": (-1.05, 1.05),
-        "pitch": (-1.05, 1.05),
-        "yaw": (-1.3, 1.3),
+        "x": (-1.75, 1.75),
+        "y": (-1.75, 1.75),
+        "z": (-1, 1),
+        "roll": (-1.25, 1.25),
+        "pitch": (-1.25, 1.25),
+        "yaw": (-1.5, 1.5),
       },
     )
   _apply_antifall_helpers(
