@@ -181,6 +181,9 @@ Useful optional flags:
 - The native viewer prints the **current push limit in Newtons** at startup,
   clamps continuous drag to a training-aligned impulse budget, and supports
   both `Enter` and `Backspace` for reset.
+- Videos are written next to the checkpoint under `videos/play/`
+  (for example `stages/05_stage4b/videos/play/rl-video-step-0.mp4`), and
+  closing play with `Ctrl+C` still flushes the recording to disk.
 - Anti-fall play allocates extra contact headroom in play mode to avoid
   repeated `broadphase overflow` warnings during aggressive drag perturbations.
 

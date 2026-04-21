@@ -153,6 +153,7 @@ class _RecoveryTunedNativeViewer(NativeMujocoViewer):
     self._max_linear_impulse_ns = max_linear_impulse_ns
     self._remaining_linear_impulse_ns: float | None = None
     self._drag_budget_active = False
+    self._last_applied_force_n = 0.0
     super().__init__(
       env,
       policy,
@@ -174,6 +175,40 @@ class _RecoveryTunedNativeViewer(NativeMujocoViewer):
         "[INFO] Current drag impulse budget: "
         f"{self._max_linear_impulse_ns:.1f} N·s per continuous drag."
       )
+
+  def _set_status_overlay(self, viewer) -> None:
+    import mujoco
+
+    status = self.get_status()
+    capped = " [CAPPED]" if status.capped else ""
+    remaining_budget = (
+      self._remaining_linear_impulse_ns
+      if self._remaining_linear_impulse_ns is not None
+      else self._max_linear_impulse_ns
+    )
+
+    rows = [
+      ("Env", f"{self.env_idx + 1}/{self.env.num_envs}"),
+      ("Step", f"{status.step_count}"),
+      ("Status", f"{'PAUSED' if status.paused else 'RUNNING'}{capped}"),
+      ("Speed", f"{status.speed_label}"),
+      ("Target RT", f"{status.target_realtime:.2f}x"),
+      ("Actual RT", f"{status.actual_realtime:.2f}x ({status.smoothed_fps:.0f} FPS)"),
+    ]
+    if self.enable_perturbations and self._max_perturb_force_n is not None:
+      rows.append(("Push limit", f"{self._max_perturb_force_n:.1f} N"))
+    if self.enable_perturbations and remaining_budget is not None:
+      rows.append(("Drag left", f"{remaining_budget:.1f} N·s"))
+    if self.enable_perturbations:
+      rows.append(("Push now", f"{self._last_applied_force_n:.1f} N"))
+
+    overlay = (
+      mujoco.mjtFontScale.mjFONTSCALE_150.value,
+      mujoco.mjtGridPos.mjGRID_TOPLEFT.value,
+      "\n".join(label for label, _ in rows),
+      "\n".join(value for _, value in rows),
+    )
+    viewer.set_texts(overlay)
 
   def _safe_key_callback(self, key: int) -> None:
     if key == KEY_BACKSPACE:
@@ -215,6 +250,7 @@ class _RecoveryTunedNativeViewer(NativeMujocoViewer):
         remaining_linear_impulse_ns=self._remaining_linear_impulse_ns,
         step_dt=float(self.env.unwrapped.step_dt),
       )
+      self._last_applied_force_n = float(np.linalg.norm(force))
       if self._remaining_linear_impulse_ns is not None:
         self._remaining_linear_impulse_ns = max(
           0.0,
@@ -232,6 +268,7 @@ class _RecoveryTunedNativeViewer(NativeMujocoViewer):
       self.mjd.xfrc_applied[body_id] = 0.0
     else:
       self._remaining_linear_impulse_ns = None
+      self._last_applied_force_n = 0.0
       sim_data.qfrc_applied[self.env_idx] = 0.0
 
 
@@ -559,52 +596,53 @@ def run_play(task_id: str, cfg: PlayConfig):
   else:
     resolved_viewer = cfg.viewer
 
-  if resolved_viewer == "native":
-    recovery_tuned_push_budget_ns = _resolve_recovery_tuned_push_budget_ns(task_id, env)
-    recovery_tuned_push_limit_n = _resolve_recovery_tuned_push_limit_n(
-      task_id,
-      env,
-      duration_s=cfg.keyboard_impulse_duration_s,
-    )
-    if cfg.keyboard_impulse:
-      keyboard_impulse_magnitude_n = cfg.keyboard_impulse_magnitude
-      if recovery_tuned_push_limit_n is not None:
-        keyboard_impulse_magnitude_n = min(
-          keyboard_impulse_magnitude_n,
-          recovery_tuned_push_limit_n,
-        )
-        print(
-          "[INFO] Keyboard push cap aligned to training envelope: "
-          f"{keyboard_impulse_magnitude_n:.1f} N"
-        )
-      viewer = _KeyboardImpulseNativeViewer(
+  try:
+    if resolved_viewer == "native":
+      recovery_tuned_push_budget_ns = _resolve_recovery_tuned_push_budget_ns(task_id, env)
+      recovery_tuned_push_limit_n = _resolve_recovery_tuned_push_limit_n(
+        task_id,
         env,
-        policy,
-        _KeyboardImpulseController(
+        duration_s=cfg.keyboard_impulse_duration_s,
+      )
+      if cfg.keyboard_impulse:
+        keyboard_impulse_magnitude_n = cfg.keyboard_impulse_magnitude
+        if recovery_tuned_push_limit_n is not None:
+          keyboard_impulse_magnitude_n = min(
+            keyboard_impulse_magnitude_n,
+            recovery_tuned_push_limit_n,
+          )
+          print(
+            "[INFO] Keyboard push cap aligned to training envelope: "
+            f"{keyboard_impulse_magnitude_n:.1f} N"
+          )
+        viewer = _KeyboardImpulseNativeViewer(
           env,
-          magnitude_n=keyboard_impulse_magnitude_n,
-          duration_s=cfg.keyboard_impulse_duration_s,
-        ),
-      )
+          policy,
+          _KeyboardImpulseController(
+            env,
+            magnitude_n=keyboard_impulse_magnitude_n,
+            duration_s=cfg.keyboard_impulse_duration_s,
+          ),
+        )
+      else:
+        viewer = _RecoveryTunedNativeViewer(
+          env,
+          policy,
+          max_perturb_force_n=recovery_tuned_push_limit_n,
+          max_linear_impulse_ns=recovery_tuned_push_budget_ns,
+        )
+      viewer.run()
+    elif resolved_viewer == "viser":
+      if cfg.keyboard_impulse:
+        print(
+          "[WARN] Keyboard pushes are only available in the native MuJoCo viewer; "
+          "continuing without keyboard pushes in viser mode."
+        )
+      ViserPlayViewer(env, policy).run()
     else:
-      viewer = _RecoveryTunedNativeViewer(
-        env,
-        policy,
-        max_perturb_force_n=recovery_tuned_push_limit_n,
-        max_linear_impulse_ns=recovery_tuned_push_budget_ns,
-      )
-    viewer.run()
-  elif resolved_viewer == "viser":
-    if cfg.keyboard_impulse:
-      print(
-        "[WARN] Keyboard pushes are only available in the native MuJoCo viewer; "
-        "continuing without keyboard pushes in viser mode."
-      )
-    ViserPlayViewer(env, policy).run()
-  else:
-    raise RuntimeError(f"Unsupported viewer backend: {resolved_viewer}")
-
-  env.close()
+      raise RuntimeError(f"Unsupported viewer backend: {resolved_viewer}")
+  finally:
+    env.close()
 
 
 def main():

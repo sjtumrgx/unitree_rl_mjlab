@@ -176,6 +176,9 @@ python scripts/play_antifall.py \
   在 MuJoCo native viewer 里直接点击 / 拖拽机器人，即可模拟手推 / 脚踢式扰动。
 - native viewer 启动时会打印**当前推力上限（单位 N）**，并对连续拖拽施加与训练一致的
   impulse budget；同时 `Enter` 和 `Backspace` 都可以用来 reset。
+- 视频会保存在 checkpoint 同级目录下的 `videos/play/`（例如
+  `stages/05_stage4b/videos/play/rl-video-step-0.mp4`），即使用 `Ctrl+C`
+  退出也会在退出时正常落盘。
 - AntiFall 的 play 模式还会预留更大的 contact buffer，避免激烈拖拽时终端反复打印
   `broadphase overflow` 警告。
 
