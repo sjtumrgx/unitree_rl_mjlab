@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Literal
 
+import numpy as np
 import torch
 import tyro
 
@@ -20,7 +21,7 @@ from mjlab.utils.lab_api.math import quat_apply
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
-from mjlab.viewer.native.keys import KEY_I, KEY_J, KEY_K, KEY_L
+from mjlab.viewer.native.keys import KEY_BACKSPACE, KEY_I, KEY_J, KEY_K, KEY_L
 
 
 def _suppress_external_wrench_visuals(target_data) -> None:
@@ -35,6 +36,203 @@ def _configure_keyboard_impulse_viewer_visuals(viewer) -> None:
   viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
   viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTOBJ] = 0
   viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_SCLINERTIA] = 0
+
+
+def _peak_linear_push_speed_mps(
+  velocity_range: dict[str, tuple[float, float]] | None,
+) -> float | None:
+  if not velocity_range:
+    return None
+  peak = 0.0
+  for axis in ("x", "y", "z"):
+    lo, hi = velocity_range.get(axis, (0.0, 0.0))
+    peak = max(peak, abs(float(lo)), abs(float(hi)))
+  return peak if peak > 0.0 else None
+
+
+def _resolve_recovery_tuned_push_budget_ns(
+  task_id: str,
+  env: RslRlVecEnvWrapper,
+) -> float | None:
+  try:
+    train_env_cfg = load_env_cfg(task_id, play=False)
+  except Exception:
+    return None
+
+  push_event = getattr(train_env_cfg, "events", {}).get("push_robot")
+  if push_event is None:
+    return None
+
+  peak_speed_mps = _peak_linear_push_speed_mps(
+    getattr(push_event, "params", {}).get("velocity_range")
+  )
+  if peak_speed_mps is None:
+    return None
+
+  body_mass = getattr(getattr(env.unwrapped.sim, "model", None), "body_mass", None)
+  body_mass_shape = getattr(body_mass, "shape", None)
+  if body_mass is None or body_mass_shape is None or body_mass_shape[0] == 0:
+    return None
+
+  total_mass_kg = float(body_mass[0].sum().item())
+  if total_mass_kg <= 0.0:
+    return None
+
+  return total_mass_kg * peak_speed_mps
+
+
+def _resolve_recovery_tuned_push_limit_n(
+  task_id: str,
+  env: RslRlVecEnvWrapper,
+  duration_s: float,
+) -> float | None:
+  if duration_s <= 0.0:
+    return None
+  impulse_budget_ns = _resolve_recovery_tuned_push_budget_ns(task_id, env)
+  if impulse_budget_ns is None:
+    return None
+  return impulse_budget_ns / duration_s
+
+
+def _clamp_wrench_to_force_limit(
+  force: np.ndarray,
+  torque: np.ndarray,
+  *,
+  max_force_n: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+  if max_force_n is None or max_force_n <= 0.0:
+    return force, torque
+
+  force_mag = float(np.linalg.norm(force))
+  if force_mag <= max_force_n or force_mag <= 1e-8:
+    return force, torque
+
+  scale = max_force_n / force_mag
+  return force * scale, torque * scale
+
+
+def _clamp_wrench_to_impulse_budget(
+  force: np.ndarray,
+  torque: np.ndarray,
+  *,
+  remaining_linear_impulse_ns: float | None,
+  step_dt: float,
+) -> tuple[np.ndarray, np.ndarray, float]:
+  if (
+    remaining_linear_impulse_ns is None
+    or step_dt <= 0.0
+    or remaining_linear_impulse_ns == float("inf")
+  ):
+    return force, torque, float(np.linalg.norm(force)) * max(step_dt, 0.0)
+
+  if remaining_linear_impulse_ns <= 0.0:
+    return np.zeros_like(force), np.zeros_like(torque), 0.0
+
+  step_impulse_ns = float(np.linalg.norm(force)) * step_dt
+  if step_impulse_ns <= remaining_linear_impulse_ns or step_impulse_ns <= 1e-8:
+    return force, torque, step_impulse_ns
+
+  scale = remaining_linear_impulse_ns / step_impulse_ns
+  return force * scale, torque * scale, remaining_linear_impulse_ns
+
+
+class _RecoveryTunedNativeViewer(NativeMujocoViewer):
+  """Native viewer with reset shortcut parity and optional perturbation clamping."""
+
+  def __init__(
+    self,
+    env: RslRlVecEnvWrapper,
+    policy,
+    *,
+    max_perturb_force_n: float | None = None,
+    max_linear_impulse_ns: float | None = None,
+    key_callback=None,
+    enable_perturbations: bool = True,
+  ) -> None:
+    self._max_perturb_force_n = max_perturb_force_n
+    self._max_linear_impulse_ns = max_linear_impulse_ns
+    self._remaining_linear_impulse_ns: float | None = None
+    self._drag_budget_active = False
+    super().__init__(
+      env,
+      policy,
+      key_callback=key_callback,
+      enable_perturbations=enable_perturbations,
+    )
+
+  def setup(self) -> None:
+    super().setup()
+    print("[INFO] Native viewer shortcuts: Enter/Backspace=reset.")
+    if self._max_perturb_force_n is not None and self.enable_perturbations:
+      print(
+        "[INFO] Current push limit: "
+        f"{self._max_perturb_force_n:.1f} N "
+        "(training-aligned max external push)."
+      )
+    if self._max_linear_impulse_ns is not None and self.enable_perturbations:
+      print(
+        "[INFO] Current drag impulse budget: "
+        f"{self._max_linear_impulse_ns:.1f} N·s per continuous drag."
+      )
+
+  def _safe_key_callback(self, key: int) -> None:
+    if key == KEY_BACKSPACE:
+      self.request_reset()
+    super()._safe_key_callback(key)
+
+  def sync_viewer_to_env(self) -> None:
+    if self._max_perturb_force_n is None:
+      return super().sync_viewer_to_env()
+
+    import mujoco
+
+    v = self.viewer
+    if v is None or self.mjm is None or self.mjd is None:
+      return
+
+    sim_data = self.env.unwrapped.sim.data
+    pert = v.perturb
+    perturb_active = pert.active != 0 and pert.select > 0
+
+    if perturb_active and not self._drag_budget_active:
+      self._remaining_linear_impulse_ns = self._max_linear_impulse_ns
+    self._drag_budget_active = perturb_active
+
+    if perturb_active:
+      mujoco.mjv_applyPerturbForce(self.mjm, self.mjd, pert)
+
+      body_id = pert.select
+      force = self.mjd.xfrc_applied[body_id, :3].copy()
+      torque = self.mjd.xfrc_applied[body_id, 3:].copy()
+      force, torque = _clamp_wrench_to_force_limit(
+        force,
+        torque,
+        max_force_n=self._max_perturb_force_n,
+      )
+      force, torque, impulse_used_ns = _clamp_wrench_to_impulse_budget(
+        force,
+        torque,
+        remaining_linear_impulse_ns=self._remaining_linear_impulse_ns,
+        step_dt=float(self.env.unwrapped.step_dt),
+      )
+      if self._remaining_linear_impulse_ns is not None:
+        self._remaining_linear_impulse_ns = max(
+          0.0,
+          self._remaining_linear_impulse_ns - impulse_used_ns,
+        )
+      point = self.mjd.xipos[body_id].copy()
+
+      qfrc = np.zeros(self.mjm.nv)
+      mujoco.mj_applyFT(self.mjm, self.mjd, force, torque, point, body_id, qfrc)
+
+      sim_data.qfrc_applied[self.env_idx] = torch.from_numpy(qfrc).to(
+        device=sim_data.qfrc_applied.device,
+        dtype=sim_data.qfrc_applied.dtype,
+      )
+      self.mjd.xfrc_applied[body_id] = 0.0
+    else:
+      self._remaining_linear_impulse_ns = None
+      sim_data.qfrc_applied[self.env_idx] = 0.0
 
 
 class _KeyboardImpulseController:
@@ -156,7 +354,7 @@ class _KeyboardImpulseController:
     self._remaining_steps = 0
 
 
-class _KeyboardImpulseNativeViewer(NativeMujocoViewer):
+class _KeyboardImpulseNativeViewer(_RecoveryTunedNativeViewer):
   """Native viewer with AntiFall keyboard push shortcuts."""
 
   def __init__(
@@ -169,6 +367,8 @@ class _KeyboardImpulseNativeViewer(NativeMujocoViewer):
     super().__init__(
       env,
       policy,
+      max_perturb_force_n=None,
+      max_linear_impulse_ns=None,
       key_callback=self._handle_keyboard_impulse_key,
       enable_perturbations=False,
     )
@@ -216,7 +416,7 @@ class PlayConfig:
   keyboard_impulse_magnitude: float = 300.0
   keyboard_impulse_duration_s: float = 0.15
   video: bool = False
-  video_length: int = 200
+  video_length: int | None = 200
   video_height: int | None = None
   video_width: int | None = None
   camera: int | str | None = None
@@ -360,18 +560,39 @@ def run_play(task_id: str, cfg: PlayConfig):
     resolved_viewer = cfg.viewer
 
   if resolved_viewer == "native":
+    recovery_tuned_push_budget_ns = _resolve_recovery_tuned_push_budget_ns(task_id, env)
+    recovery_tuned_push_limit_n = _resolve_recovery_tuned_push_limit_n(
+      task_id,
+      env,
+      duration_s=cfg.keyboard_impulse_duration_s,
+    )
     if cfg.keyboard_impulse:
+      keyboard_impulse_magnitude_n = cfg.keyboard_impulse_magnitude
+      if recovery_tuned_push_limit_n is not None:
+        keyboard_impulse_magnitude_n = min(
+          keyboard_impulse_magnitude_n,
+          recovery_tuned_push_limit_n,
+        )
+        print(
+          "[INFO] Keyboard push cap aligned to training envelope: "
+          f"{keyboard_impulse_magnitude_n:.1f} N"
+        )
       viewer = _KeyboardImpulseNativeViewer(
         env,
         policy,
         _KeyboardImpulseController(
           env,
-          magnitude_n=cfg.keyboard_impulse_magnitude,
+          magnitude_n=keyboard_impulse_magnitude_n,
           duration_s=cfg.keyboard_impulse_duration_s,
         ),
       )
     else:
-      viewer = NativeMujocoViewer(env, policy)
+      viewer = _RecoveryTunedNativeViewer(
+        env,
+        policy,
+        max_perturb_force_n=recovery_tuned_push_limit_n,
+        max_linear_impulse_ns=recovery_tuned_push_budget_ns,
+      )
     viewer.run()
   elif resolved_viewer == "viser":
     if cfg.keyboard_impulse:

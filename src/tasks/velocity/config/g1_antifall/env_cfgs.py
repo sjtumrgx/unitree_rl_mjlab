@@ -240,6 +240,8 @@ def _make_antifall_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_flat_env_cfg(play=play)
   _apply_antifall_actor_contract(cfg)
   cfg.episode_length_s = 25.0
+  if play:
+    cfg.sim.nconmax = 256
   return cfg
 
 

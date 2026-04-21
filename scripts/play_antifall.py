@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
     "--device",
     help="Torch device override, for example cpu or cuda:0.",
   )
+  parser.add_argument(
+    "--video",
+    action="store_true",
+    help="Record play from start until exit and save the video next to the checkpoint.",
+  )
   return parser
 
 
@@ -103,6 +108,7 @@ def run_antifall_play(
   task: str = DEFAULT_TASK,
   num_envs: int | None = None,
   device: str | None = None,
+  video: bool = False,
 ) -> None:
   bootstrap_tasks()
   validated_task = validate_task(task)
@@ -118,8 +124,8 @@ def run_antifall_play(
       num_envs=num_envs,
       device=device,
       keyboard_impulse=False,
-      video=False,
-      video_length=200,
+      video=video,
+      video_length=None if video else 200,
       video_height=None,
       video_width=None,
       camera=None,
@@ -140,6 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
       task=args.task,
       num_envs=args.num_envs,
       device=args.device,
+      video=args.video,
     )
   except (FileNotFoundError, RuntimeError, ValueError) as exc:
     parser.exit(status=2, message=f"error: {exc}\n")

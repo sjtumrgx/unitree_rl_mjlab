@@ -169,10 +169,15 @@ python scripts/play_antifall.py \
 
 - `--num-envs 1`：只开一个可视化环境，便于观察动作；
 - `--device cpu` 或 `--device cuda:0`：指定推理设备；
+- `--video`：程序启动后立即开始录制，直到你关闭 play 才结束；
 - `scripts/play_antifall.py` 强制使用 MuJoCo native viewer，因此需要图形显示环境
   （`DISPLAY` 或 `WAYLAND_DISPLAY`）。
 - `scripts/play_antifall.py` 现在默认支持 **鼠标拖拽扰动**：
   在 MuJoCo native viewer 里直接点击 / 拖拽机器人，即可模拟手推 / 脚踢式扰动。
+- native viewer 启动时会打印**当前推力上限（单位 N）**，并对连续拖拽施加与训练一致的
+  impulse budget；同时 `Enter` 和 `Backspace` 都可以用来 reset。
+- AntiFall 的 play 模式还会预留更大的 contact buffer，避免激烈拖拽时终端反复打印
+  `broadphase overflow` 警告。
 
 如果你更想走通用入口，也可以直接调用：
 

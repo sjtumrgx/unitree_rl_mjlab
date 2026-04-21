@@ -173,10 +173,16 @@ Useful optional flags:
 
 - `--num-envs 1` to view a single robot;
 - `--device cpu` or `--device cuda:0` to select the inference device;
+- `--video` to start recording immediately and keep recording until you close play;
 - `scripts/play_antifall.py` always uses the MuJoCo native viewer, so it
   requires a graphical display (`DISPLAY` or `WAYLAND_DISPLAY`).
 - `scripts/play_antifall.py` now defaults to native **mouse drag perturbation**:
   click / drag the robot in the MuJoCo viewer to simulate hand-push / foot-kick style disturbances.
+- The native viewer prints the **current push limit in Newtons** at startup,
+  clamps continuous drag to a training-aligned impulse budget, and supports
+  both `Enter` and `Backspace` for reset.
+- Anti-fall play allocates extra contact headroom in play mode to avoid
+  repeated `broadphase overflow` warnings during aggressive drag perturbations.
 
 If you prefer the generic play entrypoint, you can also run:
 
