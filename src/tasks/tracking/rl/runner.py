@@ -89,8 +89,18 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
       dynamo=False,
     )
 
+  def _should_upload_model_artifacts(self) -> bool:
+    return bool(self.cfg.get("upload_model", True))
+
   def save(self, path: str, infos=None):
-    super().save(path, infos)
+    original_save_model = self.logger.save_model
+    if not self._should_upload_model_artifacts():
+      self.logger.save_model = lambda *args, **kwargs: None
+    try:
+      super().save(path, infos)
+    finally:
+      self.logger.save_model = original_save_model
+
     policy_path = path.split("model")[0]
     filename = policy_path.split("/")[-2] + ".onnx"
     self.export_motion_policy_to_onnx(policy_path, filename)
@@ -109,7 +119,7 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
       }
     )
     attach_metadata_to_onnx(os.path.join(policy_path, filename), metadata)
-    if self.logger.logger_type in ["wandb"]:
+    if self.logger.logger_type in ["wandb"] and self._should_upload_model_artifacts():
       wandb.save(policy_path + filename, base_path=os.path.dirname(policy_path))
       if self.registry_name is not None:
         wandb.run.use_artifact(self.registry_name)  # type: ignore
