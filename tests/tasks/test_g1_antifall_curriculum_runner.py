@@ -336,6 +336,22 @@ def test_curriculum_runner_destroys_process_group_between_distributed_stages(
   assert len(destroy_calls) == 2
 
 
+def test_copy_latest_policy_copies_deploy_yaml(tmp_path: Path) -> None:
+  env_cfg = load_env_cfg(CURRICULUM_TASK_ID)
+  rl_cfg = load_rl_cfg(CURRICULUM_TASK_ID)
+  runner = AntiFallCurriculumRunner(DummyVecEnv(env_cfg), asdict(rl_cfg), str(tmp_path), "cpu")
+
+  stage_dir = tmp_path / "stages" / "05_stage4b"
+  (stage_dir / "params").mkdir(parents=True, exist_ok=True)
+  (stage_dir / "policy.onnx").write_text("policy")
+  (stage_dir / "params" / "deploy.yaml").write_text("deploy: antifall")
+
+  runner._copy_latest_policy(stage_dir, child_runner=FakeChildRunner())
+
+  assert (tmp_path / "policy.onnx").read_text() == "policy"
+  assert (tmp_path / "params" / "deploy.yaml").read_text() == "deploy: antifall"
+
+
 def test_curriculum_runner_cleans_up_distributed_stage_after_stage_exception(
   monkeypatch, tmp_path: Path
 ) -> None:

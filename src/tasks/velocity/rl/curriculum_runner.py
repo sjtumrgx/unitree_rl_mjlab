@@ -681,6 +681,11 @@ class AntiFallCurriculumRunner:
     policy_path = stage_dir / "policy.onnx"
     if policy_path.exists():
       shutil.copy2(policy_path, self.log_dir / "policy.onnx")
+    deploy_yaml_path = stage_dir / "params" / "deploy.yaml"
+    if deploy_yaml_path.exists():
+      target_path = self.log_dir / "params" / "deploy.yaml"
+      target_path.parent.mkdir(parents=True, exist_ok=True)
+      shutil.copy2(deploy_yaml_path, target_path)
 
   def _relative_to_run(self, path: Path | None) -> str | None:
     if path is None or self.log_dir is None:

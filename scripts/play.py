@@ -108,7 +108,7 @@ def _resolve_recovery_tuned_push_limit_n(
   impulse_budget_ns = _resolve_recovery_tuned_push_budget_ns(task_id, env)
   if impulse_budget_ns is None:
     return None
-  return impulse_budget_ns / duration_s
+  return 1.2 * impulse_budget_ns / duration_s
 
 
 def _clamp_wrench_to_force_limit(

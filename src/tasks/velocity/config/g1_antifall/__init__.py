@@ -1,5 +1,5 @@
 from mjlab.tasks.registry import register_mjlab_task
-from src.tasks.velocity.rl.runner import VelocityOnPolicyRunner
+from src.tasks.velocity.rl.antifall_runner import AntiFallOnPolicyRunner
 from src.tasks.velocity.rl.curriculum_runner import AntiFallCurriculumRunner
 
 from src.tasks.velocity.rl.antifall_curriculum import CURRICULUM_TASK_ID
@@ -24,7 +24,7 @@ def _register_antifall_task(task_id: str, stage_name: str, env_cfg_factory) -> N
     env_cfg=env_cfg_factory(),
     play_env_cfg=env_cfg_factory(play=True),
     rl_cfg=unitree_g1_antifall_ppo_runner_cfg(stage_name=stage_name),
-    runner_cls=VelocityOnPolicyRunner,
+    runner_cls=AntiFallOnPolicyRunner,
   )
 
 

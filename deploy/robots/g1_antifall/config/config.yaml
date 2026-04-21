@@ -1,0 +1,68 @@
+FSM:
+  _:
+    Passive:
+      id: 1
+    FixStand:
+      id: 2
+    AntiFall:
+      id: 3
+      type: RLBase
+
+  Passive:
+    transitions:
+      FixStand: LT + up.on_pressed
+    keyboard_transitions:
+      FixStand: f.on_pressed
+    mode: [
+      1,1,1,1,1,1,
+      1,1,1,1,1,1,
+      1,1,1,
+      1,1,1,1,1,1,1,
+      1,1,1,1,1,1,1,
+    ]
+    kd: [
+      3,3,3,3,3,3,
+      3,3,3,3,3,3,
+      3,3,3,
+      3,3,3,3,3,3,3,
+      3,3,3,3,3,3,3,
+    ]
+
+  FixStand:
+    transitions:
+      Passive: LT + B.on_pressed
+      AntiFall: RT + A.on_pressed
+    keyboard_transitions:
+      Passive: p.on_pressed
+      AntiFall: v.on_pressed
+    kp: [
+      100,100,100,150,40,40,
+      100,100,100,150,40,40,
+      200,200,200,
+      40,40,40,40,40,40,40,
+      40,40,40,40,40,40,40,
+    ]
+    kd: [
+      2,2,2,4,2,2,
+      2,2,2,4,2,2,
+      5,5,5,
+      10,10,10,10,10,10,10,
+      10,10,10,10,10,10,10,
+    ]
+    ts: [0, 2]
+    qs: [
+      [],
+      [ -0.1, 0,0,0.3,-0.2,0,
+        -0.1, 0,0,0.3,-0.2,0,
+        0,0,0,
+        0.35, 0.18,0,0.87,0,0,0,
+        0.35,-0.18,0,0.87,0,0,0
+      ]
+    ]
+
+  AntiFall:
+    transitions:
+      Passive: LT + B.on_pressed
+    keyboard_transitions:
+      Passive: p.on_pressed
+    policy_dir: config/policy/antifall/stage4b/v0
