@@ -4,6 +4,8 @@
 #pragma once
 
 #include <eigen3/Eigen/Dense>
+#include <string>
+#include <unordered_map>
 #include "unitree/dds_wrapper/common/unitree_joystick.hpp"
 
 namespace isaaclab
@@ -39,6 +41,9 @@ struct ArticulationData
     std::vector<float> joint_ids_map;
 
     unitree::common::UnitreeJoystick* joystick = nullptr;
+
+    // Named sensor/observation buffers for deploy-only modalities (e.g. depth-derived SGI).
+    std::unordered_map<std::string, std::vector<float>> named_observations;
 };
 
 class Articulation

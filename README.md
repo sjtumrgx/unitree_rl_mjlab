@@ -201,6 +201,181 @@ a graphical display is available and falls back to the viser viewer otherwise.
 For implementation details, stage semantics, and current caveats, see
 [`doc/g1_antifall.md`](doc/g1_antifall.md).
 
+### 1.3 G1 Topology Get-Up Training
+
+The repo now also includes a dedicated **terrain-indexed get-up** task family for
+G1. This family stays separate from AntiFall and targets:
+
+- get-up on unseen support topology
+- onboard-only student observations
+- mandatory depth-conditioned deployment
+- teacher / main / naive / distill experimental lanes
+
+Available topology-getup tasks:
+
+- `Unitree-G1-TopologyGetUp-Stage0` — main topology-bottleneck student lane
+- `Unitree-G1-TopologyGetUp-Benchmark` — held-out topology benchmark task
+- `Unitree-G1-TopologyGetUp-Stage0-NaiveDepth` — deployable plain depth-conditioned baseline
+- `Unitree-G1-TopologyGetUp-Stage0-Teacher` — richer PPO teacher lane
+- `Unitree-G1-TopologyGetUp-Stage0-Distill` — teacher-student distillation lane
+
+Recommended training order:
+
+`Teacher → Main → NaiveDepth → Distill → Benchmark / Analysis → Promote deploy bundle`
+
+#### 1.3.1 Teacher training
+
+Train the richer teacher first:
+
+```bash
+python scripts/train_topology_getup_teacher.py -- \
+  --agent.max-iterations=5000 \
+  --env.scene.num-envs=4096
+```
+
+#### 1.3.2 Main method training
+
+Train the deployable topology-bottleneck student:
+
+```bash
+python scripts/train_topology_getup_main.py -- \
+  --agent.max-iterations=5000 \
+  --env.scene.num-envs=4096
+```
+
+#### 1.3.3 Naive depth baseline training
+
+Train the matched deployable baseline without the topology bottleneck:
+
+```bash
+python scripts/train_topology_getup_naive.py -- \
+  --agent.max-iterations=5000 \
+  --env.scene.num-envs=4096
+```
+
+#### 1.3.4 Distillation training
+
+The distillation wrapper accepts either a direct teacher checkpoint or a teacher run
+directory containing `topology_getup_artifacts.json`.
+
+Using a teacher checkpoint:
+
+```bash
+python scripts/train_topology_getup_distill.py \
+  --teacher-checkpoint path/to/teacher.pt -- \
+  --agent.max-iterations=5000 \
+  --env.scene.num-envs=4096
+```
+
+Using a teacher run directory (recommended):
+
+```bash
+python scripts/train_topology_getup_distill.py \
+  --teacher-run-dir path/to/teacher_run -- \
+  --agent.max-iterations=5000 \
+  --env.scene.num-envs=4096
+```
+
+#### 1.3.5 Benchmark protocol utilities
+
+Print the canonical teacher / main / naive / distill suite:
+
+```bash
+python scripts/benchmark_topology_getup.py suite-plan \
+  --teacher-run-dir path/to/teacher_run \
+  --iterations 5000 \
+  --num-envs 4096
+```
+
+Inspect the held-out benchmark scenarios:
+
+```bash
+python scripts/benchmark_topology_getup.py scenarios Unitree-G1-TopologyGetUp-Benchmark
+```
+
+Compare main vs naive summary JSONs:
+
+```bash
+python scripts/benchmark_topology_getup.py compare-summary \
+  path/to/main_summary.json \
+  path/to/naive_summary.json
+```
+
+The compare step now requires:
+
+- aggregate margin pass
+- every required held-out family bucket present
+- every required held-out family bucket passing
+
+Current required held-out families:
+
+- `stair-height-heldout`
+- `edge-geometry-heldout`
+- `support-arrangement-heldout`
+
+#### 1.3.6 Mechanism-analysis utilities
+
+Summarize exported topology latents and optionally save reviewable plots:
+
+```bash
+python scripts/analyze_topology_latent.py \
+  path/to/latents.npz \
+  --output latent_summary.json \
+  --plot-dir latent_plots
+```
+
+Saved plots include:
+
+- `centroid_distance_heatmap.png`
+- `within_scatter.png`
+
+#### 1.3.7 Deploy bundle promotion
+
+Training/export runs stay run-local. To stage a deployable student bundle into the
+dedicated `g1_getup` runtime tree:
+
+```bash
+python scripts/promote_topology_getup_artifact.py \
+  --run-dir path/to/topology_getup_run
+```
+
+This stages files into:
+
+- `deploy/robots/g1_getup/config/policy/topology_getup/v0/exported/policy.onnx`
+- `deploy/robots/g1_getup/config/policy/topology_getup/v0/exported/policy_analysis.onnx`
+- `deploy/robots/g1_getup/config/policy/topology_getup/v0/params/deploy.yaml`
+
+#### 1.3.8 Live depth-feed deploy helpers
+
+Patch the runtime depth topic:
+
+```bash
+python scripts/configure_topology_getup_depth_topic.py \
+  --topic-name /your/depth/points \
+  --pointcloud-mode euclidean_norm \
+  --timeout-ms 500 \
+  --retain-last-valid-frame
+```
+
+Inspect saved support-depth captures and produce calibration artifacts:
+
+```bash
+python scripts/inspect_topology_getup_depth_capture.py \
+  path/to/capture.npz \
+  --deploy-yaml deploy/robots/g1_getup/config/policy/topology_getup/v0/params/deploy.yaml \
+  --output depth_capture_summary.json \
+  --artifact-dir depth_capture_artifacts
+```
+
+This saves:
+
+- `first_frame.png`
+- `last_frame.png`
+- `mean_frame.png`
+
+For the full topology-getup design notes, deploy contract, and current caveats, see
+[`doc/g1_topology_getup.md`](doc/g1_topology_getup.md).
+
 ### 2. Motion Imitation Training
 
 Train a Unitree G1 to mimic reference motion sequences.

@@ -1,19 +1,15 @@
 FSM:
-  _: # enabled fsms
+  _:
     Passive:
       id: 1
     FixStand:
       id: 2
-    Velocity:
+    TopologyGetUp:
       id: 3
       type: RLBase
-    Mimic_Dance1_subject2:
-      id: 5
-      type: Mimic
-
 
   Passive:
-    transitions: 
+    transitions:
       FixStand: LT + up.on_pressed
     keyboard_transitions:
       FixStand: f.on_pressed
@@ -28,19 +24,17 @@ FSM:
       3,3,3,3,3,3,
       3,3,3,3,3,3,
       3,3,3,
-      3,3,3,3,3,3,3,  
-      3,3,3,3,3,3,3,  
+      3,3,3,3,3,3,3,
+      3,3,3,3,3,3,3,
     ]
 
-
   FixStand:
-    transitions: 
+    transitions:
       Passive: LT + B.on_pressed
-      Velocity: RT + A.on_pressed
+      TopologyGetUp: RT + Y.on_pressed
     keyboard_transitions:
       Passive: p.on_pressed
-      Velocity: v.on_pressed
-
+      TopologyGetUp: g.on_pressed
     kp: [
       100,100,100,150,40,40,
       100,100,100,150,40,40,
@@ -66,27 +60,9 @@ FSM:
       ]
     ]
 
-
-  Velocity:
-    transitions: 
-      Passive: LT + B.on_pressed
-      Mimic_Dance1_subject2: RB + A.on_pressed
-    keyboard_transitions:
-      Passive: p.on_pressed
-      Mimic_Dance1_subject2: m.on_pressed
-
-    policy_dir: config/policy/velocity
-
-
-  Mimic_Dance1_subject2:
+  TopologyGetUp:
     transitions:
       Passive: LT + B.on_pressed
-      Velocity: RT + A.on_pressed
     keyboard_transitions:
       Passive: p.on_pressed
-      Velocity: v.on_pressed
-
-    motion_file: config/policy/mimic/dance1_subject2/params/dance1_subject2.npz
-    policy_dir: config/policy/mimic/dance1_subject2/
-    time_start: 0.0
-    time_end: 1000.0
+    policy_dir: config/policy/topology_getup/v0

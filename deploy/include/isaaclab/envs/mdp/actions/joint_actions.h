@@ -7,6 +7,7 @@
 #include <yaml-cpp/yaml.h>
 #include "isaaclab/envs/manager_based_rl_env.h"
 #include "isaaclab/manager/action_manager.h"
+#include "FSM/rl_reset_utils.h"
 
 namespace isaaclab
 {
@@ -78,6 +79,7 @@ public:
     void reset()
     {
         _raw_actions.assign(_action_dim, 0.0f);
+        _processed_actions = rl_reset::reset_processed_actions(_action_dim, _offset, _clip);
     }
 
 protected:

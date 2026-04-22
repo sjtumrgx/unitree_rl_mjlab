@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from typing import Sequence
+
+from scripts.play import PlayConfig, run_play
+
+DEFAULT_TASK = "Unitree-G1-TopologyGetUp-Stage0"
+ALLOWED_TASKS = (
+  "Unitree-G1-TopologyGetUp-Stage0",
+  "Unitree-G1-TopologyGetUp-Benchmark",
+  "Unitree-G1-TopologyGetUp-Stage0-NaiveDepth",
+)
+ALLOWED_TASKS_TEXT = ", ".join(ALLOWED_TASKS)
+_ALLOWED_TASK_SET = frozenset(ALLOWED_TASKS)
+
+
+def build_parser() -> argparse.ArgumentParser:
+  parser = argparse.ArgumentParser(
+    description=(
+      "Launch a trained Unitree G1 topology-getup policy in the native MuJoCo viewer "
+      "with the mandatory depth-conditioned observation contract."
+    ),
+  )
+  parser.add_argument(
+    "--checkpoint-file",
+    type=Path,
+    required=True,
+    help="Path to a trained topology-getup checkpoint file.",
+  )
+  parser.add_argument(
+    "--task",
+    default=DEFAULT_TASK,
+    help=(
+      "TopologyGetUp task to launch. Allowed values: " + ALLOWED_TASKS_TEXT
+    ),
+  )
+  parser.add_argument("--num-envs", type=int, help="Override the number of play environments.")
+  parser.add_argument("--device", help="Torch device override, for example cpu or cuda:0.")
+  parser.add_argument(
+    "--video",
+    action="store_true",
+    help="Record play from start until exit and save the video next to the checkpoint.",
+  )
+  return parser
+
+
+def bootstrap_tasks() -> None:
+  import mjlab.tasks  # noqa: F401
+  import src.tasks  # noqa: F401
+
+
+def validate_task(task_id: str) -> str:
+  if task_id in _ALLOWED_TASK_SET:
+    return task_id
+  if "TopologyGetUp" in task_id:
+    raise ValueError(
+      f"Unsupported TopologyGetUp task '{task_id}'; allowed tasks: {ALLOWED_TASKS_TEXT}"
+    )
+  raise ValueError(
+    f"Non-TopologyGetUp task '{task_id}' is not supported; allowed tasks: {ALLOWED_TASKS_TEXT}"
+  )
+
+
+def validate_checkpoint(path: Path) -> Path:
+  checkpoint_path = path.expanduser()
+  if not checkpoint_path.exists():
+    raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+  if not checkpoint_path.is_file():
+    raise FileNotFoundError(f"Checkpoint path is not a file: {checkpoint_path}")
+  return checkpoint_path
+
+
+def require_graphical_display() -> None:
+  if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+    return
+  raise RuntimeError(
+    "Native viewer requires a graphical display; DISPLAY or WAYLAND_DISPLAY must be set."
+  )
+
+
+def run_topology_getup_play(
+  *,
+  checkpoint_file: Path,
+  task: str = DEFAULT_TASK,
+  num_envs: int | None = None,
+  device: str | None = None,
+  video: bool = False,
+) -> None:
+  bootstrap_tasks()
+  validated_task = validate_task(task)
+  validated_checkpoint = validate_checkpoint(checkpoint_file)
+  require_graphical_display()
+
+  run_play(
+    task_id=validated_task,
+    cfg=PlayConfig(
+      agent="trained",
+      checkpoint_file=str(validated_checkpoint),
+      motion_file=None,
+      num_envs=num_envs,
+      device=device,
+      keyboard_impulse=False,
+      video=video,
+      video_length=None if video else 200,
+      video_height=None,
+      video_width=None,
+      camera=None,
+      viewer="native",
+      no_terminations=True,
+      _demo_mode=False,
+    ),
+  )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+  parser = build_parser()
+  args = parser.parse_args(argv)
+
+  try:
+    run_topology_getup_play(
+      checkpoint_file=args.checkpoint_file,
+      task=args.task,
+      num_envs=args.num_envs,
+      device=args.device,
+      video=args.video,
+    )
+  except (FileNotFoundError, RuntimeError, ValueError) as exc:
+    parser.exit(status=2, message=f"error: {exc}\n")
+
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
