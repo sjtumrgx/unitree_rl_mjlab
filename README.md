@@ -219,9 +219,16 @@ Available topology-getup tasks:
 - `Unitree-G1-TopologyGetUp-Stage0-Teacher` — richer PPO teacher lane
 - `Unitree-G1-TopologyGetUp-Stage0-Distill` — teacher-student distillation lane
 
-Recommended training order:
+Recommended dependency-aware training structure:
 
-`Teacher → Main → NaiveDepth → Distill → Benchmark / Analysis → Promote deploy bundle`
+- `Teacher → Distill`
+- `Main`
+- `NaiveDepth`
+- then `Benchmark / Analysis → Promote deploy bundle`
+
+In other words, `Distill` depends on the teacher checkpoint, while `Main` and
+`NaiveDepth` are peer deployable baselines that can be trained independently
+(and in parallel if you have the compute budget).
 
 #### 1.3.1 Teacher training
 
@@ -229,6 +236,7 @@ Train the richer teacher first:
 
 ```bash
 python scripts/train_topology_getup_teacher.py -- \
+  --gpu-ids "[0]" \
   --agent.max-iterations=5000 \
   --env.scene.num-envs=4096
 ```
@@ -239,6 +247,7 @@ Train the deployable topology-bottleneck student:
 
 ```bash
 python scripts/train_topology_getup_main.py -- \
+  --gpu-ids "[0]" \
   --agent.max-iterations=5000 \
   --env.scene.num-envs=4096
 ```
@@ -249,6 +258,7 @@ Train the matched deployable baseline without the topology bottleneck:
 
 ```bash
 python scripts/train_topology_getup_naive.py -- \
+  --gpu-ids "[0]" \
   --agent.max-iterations=5000 \
   --env.scene.num-envs=4096
 ```
@@ -263,6 +273,7 @@ Using a teacher checkpoint:
 ```bash
 python scripts/train_topology_getup_distill.py \
   --teacher-checkpoint path/to/teacher.pt -- \
+  --gpu-ids "[0]" \
   --agent.max-iterations=5000 \
   --env.scene.num-envs=4096
 ```
@@ -272,13 +283,15 @@ Using a teacher run directory (recommended):
 ```bash
 python scripts/train_topology_getup_distill.py \
   --teacher-run-dir path/to/teacher_run -- \
+  --gpu-ids "[0]" \
   --agent.max-iterations=5000 \
   --env.scene.num-envs=4096
 ```
 
 #### 1.3.5 Benchmark protocol utilities
 
-Print the canonical teacher / main / naive / distill suite:
+Print the canonical topology-getup lane inventory (teacher-fed distill branch
+plus independent `main` / `naive_depth` baselines):
 
 ```bash
 python scripts/benchmark_topology_getup.py suite-plan \

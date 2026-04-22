@@ -16,6 +16,7 @@ ALLOWED_TASKS = (
   "Unitree-G1-TopologyGetUp-Stage0",
   "Unitree-G1-TopologyGetUp-Benchmark",
   "Unitree-G1-TopologyGetUp-Stage0-NaiveDepth",
+  "Unitree-G1-TopologyGetUp-Stage0-Distill",
 )
 
 REJECTED_TASKS = (

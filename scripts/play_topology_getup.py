@@ -12,6 +12,7 @@ ALLOWED_TASKS = (
   "Unitree-G1-TopologyGetUp-Stage0",
   "Unitree-G1-TopologyGetUp-Benchmark",
   "Unitree-G1-TopologyGetUp-Stage0-NaiveDepth",
+  "Unitree-G1-TopologyGetUp-Stage0-Distill",
 )
 ALLOWED_TASKS_TEXT = ", ".join(ALLOWED_TASKS)
 _ALLOWED_TASK_SET = frozenset(ALLOWED_TASKS)

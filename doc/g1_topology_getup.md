@@ -235,7 +235,7 @@ If a required held-out family bucket is missing from the evaluation summary, `co
 
 ## Experiment suite planner
 
-To print the canonical teacher / main / naive / distill training sequence:
+To print the canonical topology-getup lane inventory:
 
 ```bash
 python scripts/benchmark_topology_getup.py suite-plan \
@@ -244,6 +244,14 @@ python scripts/benchmark_topology_getup.py suite-plan \
 ```
 
 This emits the additive experiment lanes without touching the existing anti-fall tasks.
+Read the output as a dependency-aware lane set, not a strict serial order:
+
+- `teacher -> distill`
+- `main`
+- `naive_depth`
+
+`distill` depends on the teacher artifact, while `main` and `naive_depth` are
+independent deployable baselines.
 
 ## Scenario summary aggregator
 
