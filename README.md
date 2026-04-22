@@ -288,7 +288,53 @@ python scripts/train_topology_getup_distill.py \
   --env.scene.num-envs=4096
 ```
 
-#### 1.3.5 Benchmark protocol utilities
+#### 1.3.5 Replaying trained topology-getup policies
+
+Use the dedicated topology-getup play wrapper to replay trained checkpoints in the
+native MuJoCo viewer:
+
+Replay the main topology-bottleneck student:
+
+```bash
+python scripts/play_topology_getup.py \
+  --task Unitree-G1-TopologyGetUp-Stage0 \
+  --checkpoint-file path/to/main_model.pt
+```
+
+Replay the deployable naive-depth baseline:
+
+```bash
+python scripts/play_topology_getup.py \
+  --task Unitree-G1-TopologyGetUp-Stage0-NaiveDepth \
+  --checkpoint-file path/to/naive_model.pt
+```
+
+Replay the distillation student:
+
+```bash
+python scripts/play_topology_getup.py \
+  --task Unitree-G1-TopologyGetUp-Stage0-Distill \
+  --checkpoint-file path/to/distill_model.pt
+```
+
+Replay the held-out benchmark configuration:
+
+```bash
+python scripts/play_topology_getup.py \
+  --task Unitree-G1-TopologyGetUp-Benchmark \
+  --checkpoint-file path/to/benchmark_model.pt
+```
+
+Notes:
+
+- `scripts/play_topology_getup.py` currently supports `Stage0`, `Benchmark`,
+  `NaiveDepth`, and `Distill`.
+- The teacher lane is intended for training / distillation handoff and is not
+  exposed by the dedicated play wrapper.
+- The wrapper uses the native MuJoCo viewer, so `DISPLAY` or `WAYLAND_DISPLAY`
+  must be available.
+
+#### 1.3.6 Benchmark protocol utilities
 
 Print the canonical topology-getup lane inventory (teacher-fed distill branch
 plus independent `main` / `naive_depth` baselines):
@@ -326,7 +372,7 @@ Current required held-out families:
 - `edge-geometry-heldout`
 - `support-arrangement-heldout`
 
-#### 1.3.6 Mechanism-analysis utilities
+#### 1.3.7 Mechanism-analysis utilities
 
 Summarize exported topology latents and optionally save reviewable plots:
 
@@ -342,7 +388,7 @@ Saved plots include:
 - `centroid_distance_heatmap.png`
 - `within_scatter.png`
 
-#### 1.3.7 Deploy bundle promotion
+#### 1.3.8 Deploy bundle promotion
 
 Training/export runs stay run-local. To stage a deployable student bundle into the
 dedicated `g1_getup` runtime tree:
@@ -358,7 +404,7 @@ This stages files into:
 - `deploy/robots/g1_getup/config/policy/topology_getup/v0/exported/policy_analysis.onnx`
 - `deploy/robots/g1_getup/config/policy/topology_getup/v0/params/deploy.yaml`
 
-#### 1.3.8 Live depth-feed deploy helpers
+#### 1.3.9 Live depth-feed deploy helpers
 
 Patch the runtime depth topic:
 
