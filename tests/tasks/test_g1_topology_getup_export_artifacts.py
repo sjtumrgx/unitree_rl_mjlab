@@ -67,9 +67,24 @@ def test_teacher_export_writes_artifact_manifest_for_distillation_handoff(tmp_pa
     assert payload["lane"] == "teacher"
     assert payload["checkpoint"] == "model_0.pt"
     assert payload["policy_onnx"] == "policy.onnx"
-    assert payload["policy_analysis_onnx"] == "policy_analysis.onnx"
+    assert "policy_analysis_onnx" not in payload
     assert payload["deploy_yaml"] == "params/deploy.yaml"
     assert payload["support_geometry_interface_version"] == "sgi_v1"
+  finally:
+    runner.env.close()
+
+
+def test_naive_export_manifest_does_not_claim_missing_analysis_onnx(tmp_path: Path) -> None:
+  runner = _build_runner("Unitree-G1-TopologyGetUp-Stage0-NaiveDepth", TopologyGetupOnPolicyRunner, tmp_path)
+  try:
+    runner.save(str(tmp_path / "model_0.pt"))
+    manifest_path = tmp_path / "topology_getup_artifacts.json"
+    assert manifest_path.exists()
+    payload = json.loads(manifest_path.read_text())
+    assert payload["lane"] == "naive_depth"
+    assert payload["policy_onnx"] == "policy.onnx"
+    assert "policy_analysis_onnx" not in payload
+    assert not (tmp_path / "policy_analysis.onnx").exists()
   finally:
     runner.env.close()
 

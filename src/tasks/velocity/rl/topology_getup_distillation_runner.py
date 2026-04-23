@@ -48,7 +48,7 @@ class TopologyGetupDistillationRunner(DistillationRunner):
     policy_path = path.split("model")[0]
     filename = "policy.onnx"
     self.export_policy_to_onnx(policy_path, filename)
-    export_topology_analysis_to_onnx(self.alg.get_policy(), policy_path)
+    analysis_path = export_topology_analysis_to_onnx(self.alg.get_policy(), policy_path)
     logger_type = getattr(self.logger, "logger_type", self.cfg.get("logger", "tensorboard")).lower()
     run_name: str = (
       wandb.run.name if logger_type == "wandb" and wandb.run else "local"
@@ -56,7 +56,8 @@ class TopologyGetupDistillationRunner(DistillationRunner):
     onnx_path = os.path.join(policy_path, filename)
     metadata = get_base_metadata(self.env.unwrapped, run_name)
     metadata.update(get_support_geometry_metadata(self.env.unwrapped))
-    metadata["topology_analysis_export"] = "policy_analysis.onnx"
+    if analysis_path is not None:
+      metadata["topology_analysis_export"] = os.path.basename(analysis_path)
     metadata["distillation_mode"] = "teacher_student_topology_bottleneck"
     attach_metadata_to_onnx(onnx_path, metadata)
     write_topology_getup_deploy_yaml(
@@ -68,6 +69,7 @@ class TopologyGetupDistillationRunner(DistillationRunner):
       experiment_name=self.cfg.get("experiment_name", ""),
       checkpoint_path=path,
       support_geometry_interface_version=metadata["support_geometry_interface_version"],
+      policy_analysis_path=analysis_path,
       distillation_mode=metadata["distillation_mode"],
       teacher_checkpoint=self._teacher_load_path,
     )

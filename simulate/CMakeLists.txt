@@ -23,6 +23,7 @@ link_directories(mujoco/lib)
 
 file(GLOB SIM_SRC
   src/joystick/joystick.cc
+  src/parkour_depth_bridge.cc
 
   # exclude mujoco/simulate/main.cc
   mujoco/simulate/glfw_*.cc
@@ -42,5 +43,6 @@ link_libraries(
 )
 
 add_executable(unitree_mujoco ${SIM_SRC} src/main.cc)
+add_executable(unitree_mujoco_parkour ${SIM_SRC} src/main.cc)
 
 add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)

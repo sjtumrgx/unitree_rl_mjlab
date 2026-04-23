@@ -1,0 +1,37 @@
+robot: "g1"
+robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml"
+
+domain_id: 0
+interface: "lo"
+
+use_joystick: 1
+joystick_type: "xbox"
+joystick_device: "/dev/input/js0"
+joystick_bits: 16
+
+print_scene_information: 1
+wait_for_lowcmd_before_physics: 1
+enable_elastic_band: 0
+initial_base_pos: [0.0, 0.0, 0.9]
+initial_base_quat: [1.0, 0.0, 0.0, 0.0]
+initial_joint_pos: [
+  -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
+  -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
+  0.0, 0.0, 0.0,
+  0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
+  0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
+]
+
+enable_depth_camera: 1
+depth_camera_name: "parkour_depth_camera"
+depth_pointcloud_topic: "rt/parkour_depth/points"
+depth_camera_width: 64
+depth_camera_height: 36
+depth_window_scale: 10
+depth_max_distance: 2.5
+depth_camera_min_distance: 0.1
+depth_camera_ray_alignment: "yaw"
+depth_debug_crop_top: 0
+depth_debug_crop_left: 0
+depth_debug_crop_width: 64
+depth_debug_crop_height: 36

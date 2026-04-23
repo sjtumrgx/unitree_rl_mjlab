@@ -111,3 +111,26 @@ def test_main_promotes_from_cli_args(tmp_path: Path) -> None:
   )
   assert result == 0
   assert (staging_root / "exported" / "policy.onnx").exists()
+
+
+def test_promote_allows_student_lane_without_analysis_export(tmp_path: Path) -> None:
+  module = _load_module()
+  run_dir = tmp_path / "naive_run"
+  _write_run_artifacts(run_dir, lane="naive_depth")
+  (run_dir / "policy_analysis.onnx").unlink()
+  manifest = json.loads((run_dir / "topology_getup_artifacts.json").read_text())
+  manifest.pop("policy_analysis_onnx", None)
+  (run_dir / "topology_getup_artifacts.json").write_text(json.dumps(manifest))
+
+  staging_root = tmp_path / "staging"
+  promoted = module.promote_topology_getup_artifact(
+    run_dir=run_dir,
+    destination_root=staging_root,
+  )
+
+  assert promoted == staging_root
+  assert (staging_root / "exported" / "policy.onnx").read_text() == "policy"
+  assert not (staging_root / "exported" / "policy_analysis.onnx").exists()
+  staged_manifest = json.loads((staging_root / "topology_getup_artifacts.json").read_text())
+  assert staged_manifest["lane"] == "naive_depth"
+  assert "policy_analysis_onnx" not in staged_manifest

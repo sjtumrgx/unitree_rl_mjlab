@@ -1,0 +1,102 @@
+seed: 42
+device: cuda:0
+num_steps_per_env: 24
+max_iterations: 30000
+ckpt_manipulator: null
+policy:
+  class_name: EncoderMoEActorCritic
+  init_noise_std: 1.0
+  actor_hidden_dims:
+  - 256
+  - 128
+  - 64
+  critic_hidden_dims:
+  - 256
+  - 128
+  - 64
+  activation: elu
+  num_moe_experts: 4
+  moe_gate_hidden_dims: []
+  encoder_configs:
+    depth_encoder:
+      class_name: Conv2dHeadModel
+      component_names:
+      - depth_image
+      output_size: 128
+      takeout_input_components: true
+      channels:
+      - 4
+      kernel_sizes:
+      - 3
+      strides:
+      - 1
+      hidden_sizes:
+      - 256
+      - 256
+      paddings:
+      - 1
+      nonlinearity: ReLU
+      use_maxpool: true
+  critic_encoder_configs:
+    depth_encoder:
+      class_name: Conv2dHeadModel
+      component_names:
+      - depth_image
+      output_size: 128
+      takeout_input_components: true
+      channels:
+      - 4
+      kernel_sizes:
+      - 3
+      strides:
+      - 1
+      hidden_sizes:
+      - 256
+      - 256
+      paddings:
+      - 1
+      nonlinearity: ReLU
+      use_maxpool: true
+algorithm:
+  class_name: WasabiPPO
+  value_loss_coef: 1.0
+  use_clipped_value_loss: true
+  clip_param: 0.2
+  entropy_coef: 0.006
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 0.001
+  optimizer_class_name: AdamW
+  schedule: adaptive
+  gamma: 0.99
+  lam: 0.95
+  advantage_mixing_weights: 1.0
+  desired_kl: 0.01
+  max_grad_norm: 1.0
+  clip_min_std: 1.0e-12
+  discriminator_kwargs:
+    hidden_sizes:
+    - 1024
+    - 512
+    nonlinearity: ReLU
+  discriminator_reward_coef: 0.25
+  discriminator_reward_type: quad
+  discriminator_loss_func: MSELoss
+  discriminator_gradient_penalty_coef: 5.0
+  discriminator_optimizer_class_name: AdamW
+  discriminator_weight_decay_coef: 0.0003
+  discriminator_logit_weight_decay_coef: 0.04
+  discriminator_optimizer_kwargs:
+    lr: 0.0001
+    betas:
+    - 0.9
+    - 0.999
+save_interval: 5000
+log_interval: 1
+experiment_name: g1_parkour
+run_name: ''
+resume: false
+load_run: ''
+load_checkpoint: model_.*.pt
+normalizers: {}
+empirical_normalization: false

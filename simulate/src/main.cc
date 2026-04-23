@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <atomic>
 #include <string>
 #include <thread>
 
@@ -34,6 +35,7 @@
 #include "array_safety.h"
 #include "unitree_sdk2_bridge.h"
 #include "param.h"
+#include "parkour_depth_bridge.h"
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 #define NUM_MOTOR_IDL_GO 20
@@ -91,6 +93,15 @@ namespace
   namespace mj = ::mujoco;
   namespace mju = ::mujoco::sample_util;
 
+  std::filesystem::path config_path_for_executable(const char* argv0)
+  {
+    const std::string executable_name = std::filesystem::path(argv0).filename().string();
+    if (executable_name.find("parkour") != std::string::npos) {
+      return "config_parkour.yaml";
+    }
+    return "config.yaml";
+  }
+
   // constants
   const double syncMisalign = 0.1;       // maximum mis-alignment before re-sync (simulation seconds)
   const double simRefreshFraction = 0.7; // fraction of refresh available for simulation
@@ -99,6 +110,7 @@ namespace
   // model and data
   mjModel *m = nullptr;
   mjData *d = nullptr;
+  std::atomic<bool> unitree_channel_ready{false};
 
   // control noise variables
   mjtNum *ctrlnoise = nullptr;
@@ -325,6 +337,43 @@ namespace
   }
 
   // simulate in background thread (while rendering in main thread)
+  void apply_initial_joint_pose()
+  {
+    if (!m || !d || param::config.initial_joint_pos.empty()) {
+      if (!param::config.initial_base_pos.empty() && param::config.initial_base_pos.size() == 3) {
+        d->qpos[0] = param::config.initial_base_pos[0];
+        d->qpos[1] = param::config.initial_base_pos[1];
+        d->qpos[2] = param::config.initial_base_pos[2];
+      }
+      if (!param::config.initial_base_quat.empty() && param::config.initial_base_quat.size() == 4) {
+        d->qpos[3] = param::config.initial_base_quat[0];
+        d->qpos[4] = param::config.initial_base_quat[1];
+        d->qpos[5] = param::config.initial_base_quat[2];
+        d->qpos[6] = param::config.initial_base_quat[3];
+      }
+      return;
+    }
+    if (!param::config.initial_base_pos.empty() && param::config.initial_base_pos.size() == 3) {
+      d->qpos[0] = param::config.initial_base_pos[0];
+      d->qpos[1] = param::config.initial_base_pos[1];
+      d->qpos[2] = param::config.initial_base_pos[2];
+    }
+    if (!param::config.initial_base_quat.empty() && param::config.initial_base_quat.size() == 4) {
+      d->qpos[3] = param::config.initial_base_quat[0];
+      d->qpos[4] = param::config.initial_base_quat[1];
+      d->qpos[5] = param::config.initial_base_quat[2];
+      d->qpos[6] = param::config.initial_base_quat[3];
+    }
+    size_t joint_index = 0;
+    for (int joint_id = 0; joint_id < m->njnt && joint_index < param::config.initial_joint_pos.size(); ++joint_id)
+    {
+      if (m->jnt_type[joint_id] == mjJNT_FREE) {
+        continue;
+      }
+      d->qpos[m->jnt_qposadr[joint_id]] = param::config.initial_joint_pos[joint_index++];
+    }
+  }
+
   void PhysicsLoop(mj::Simulate &sim)
   {
     // cpu-sim syncronization point
@@ -355,6 +404,7 @@ namespace
 
           m = mnew;
           d = dnew;
+          apply_initial_joint_pose();
           mj_forward(m, d);
 
           // allocate ctrlnoise
@@ -385,6 +435,7 @@ namespace
 
           m = mnew;
           d = dnew;
+          apply_initial_joint_pose();
           mj_forward(m, d);
 
           // allocate ctrlnoise
@@ -419,6 +470,15 @@ namespace
           // running
           if (sim.run)
           {
+            if (
+              param::config.wait_for_lowcmd_before_physics == 1 &&
+              (!param::lowcmd_connected.load() || !param::lowcmd_has_active_control.load())
+            )
+            {
+              mj_forward(m, d);
+              sim.speed_changed = true;
+              continue;
+            }
             bool stepped = false;
 
             // record cpu time at start of iteration
@@ -548,6 +608,7 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
     if (d)
     {
       sim->Load(m, d, filename);
+      apply_initial_joint_pose();
       mj_forward(m, d);
 
       // allocate ctrlnoise
@@ -585,6 +646,7 @@ void *UnitreeSdk2BridgeThread(void *arg)
   }
 
   unitree::robot::ChannelFactory::Instance()->Init(param::config.domain_id, param::config.interface);
+  unitree_channel_ready.store(true);
 
 
   int body_id = mj_name2id(m, mjOBJ_BODY, "torso_link");
@@ -633,6 +695,7 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
     }
     if(key==GLFW_KEY_BACKSPACE) {
       mj_resetData(m, d);
+      apply_initial_joint_pose();
       mj_forward(m, d);
     }
   }
@@ -672,8 +735,10 @@ int main(int argc, char **argv)
 
   // Load simulation configuration
   std::filesystem::path proj_dir = std::filesystem::path(getExecutableDir()).parent_path();
-  param::config.load_from_yaml(proj_dir / "config.yaml");
+  param::config.load_from_yaml((proj_dir / config_path_for_executable(argv[0])).string());
   param::helper(argc, argv);
+  param::lowcmd_connected.store(false);
+  param::lowcmd_has_active_control.store(false);
   if(param::config.robot_scene.is_relative()) {
     param::config.robot_scene = proj_dir.parent_path() / param::config.robot_scene;
   }
@@ -687,9 +752,25 @@ int main(int argc, char **argv)
 
   // start physics thread
   std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str());
+  std::unique_ptr<ParkourDepthBridge> depth_bridge;
+  if (param::config.enable_depth_camera == 1) {
+    while (!unitree_channel_ready.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    depth_bridge = std::make_unique<ParkourDepthBridge>(
+      sim.get(),
+      static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_,
+      &m,
+      &d
+    );
+    depth_bridge->start();
+  }
   // start simulation UI loop (blocking call)
   glfwSetKeyCallback(static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_,user_key_cb);
   sim->RenderLoop();
+  if (depth_bridge) {
+    depth_bridge->stop();
+  }
   physicsthreadhandle.join();
 
   pthread_exit(NULL);

@@ -9,6 +9,7 @@
 #include <unitree/idl/hg/BmsState_.hpp>
 #include <unitree/idl/hg/IMUState_.hpp>
 
+#include <cmath>
 #include <iostream>
 
 #include "param.h"
@@ -175,16 +176,22 @@ public:
     {
         if(!mj_data_) return;
         if(lowstate->joystick) { lowstate->joystick->update(); }
+        if (!lowcmd->isTimeout()) {
+            param::lowcmd_connected.store(true);
+        }
+        bool lowcmd_active = false;
         // lowcmd
         {
             std::lock_guard<std::mutex> lock(lowcmd->mutex_);
             for(int i(0); i<num_motor_; i++) {
                 auto & m = lowcmd->msg_.motor_cmd()[i];
+                lowcmd_active = lowcmd_active || m.kp() > 0.0f || std::abs(m.tau()) > 0.0f;
                 mj_data_->ctrl[i] = m.tau() +
                                     m.kp() * (m.q() - mj_data_->sensordata[i]) +
                                     m.kd() * (m.dq() - mj_data_->sensordata[i + num_motor_]);
             }
         }
+        param::lowcmd_has_active_control.store(lowcmd_active);
 
         // lowstate
         if(lowstate->trylock()) {

@@ -61,20 +61,28 @@ def promote_topology_getup_artifact(*, run_dir: Path, destination_root: Path) ->
     raise ValueError(f"Lane '{lane}' is not a deployable student lane.")
 
   policy_onnx = source_root / str(payload["policy_onnx"])
-  policy_analysis_onnx = source_root / str(payload["policy_analysis_onnx"])
   deploy_yaml = source_root / str(payload["deploy_yaml"])
-  for path in (policy_onnx, policy_analysis_onnx, deploy_yaml):
+  policy_analysis_rel = payload.get("policy_analysis_onnx")
+  policy_analysis_onnx = source_root / str(policy_analysis_rel) if policy_analysis_rel is not None else None
+  required_paths = [policy_onnx, deploy_yaml]
+  if policy_analysis_onnx is not None:
+    required_paths.append(policy_analysis_onnx)
+  for path in required_paths:
     if not path.exists():
       raise FileNotFoundError(f"Expected artifact file not found: {path}")
 
   destination = destination_root.expanduser()
   _copy(policy_onnx, destination / "exported" / "policy.onnx")
-  _copy(policy_analysis_onnx, destination / "exported" / "policy_analysis.onnx")
+  if policy_analysis_onnx is not None:
+    _copy(policy_analysis_onnx, destination / "exported" / "policy_analysis.onnx")
   _copy(deploy_yaml, destination / "params" / "deploy.yaml")
   staged_manifest = dict(payload)
   staged_manifest.pop("checkpoint", None)
   staged_manifest["policy_onnx"] = "exported/policy.onnx"
-  staged_manifest["policy_analysis_onnx"] = "exported/policy_analysis.onnx"
+  if policy_analysis_onnx is not None:
+    staged_manifest["policy_analysis_onnx"] = "exported/policy_analysis.onnx"
+  else:
+    staged_manifest.pop("policy_analysis_onnx", None)
   staged_manifest["deploy_yaml"] = "params/deploy.yaml"
   staged_manifest["promoted_from_run_dir"] = str(source_root)
   if "checkpoint" in payload:

@@ -235,7 +235,7 @@ In other words, `Distill` depends on the teacher checkpoint, while `Main` and
 Train the richer teacher first:
 
 ```bash
-python scripts/train_topology_getup_teacher.py -- \
+python scripts/train_topology_getup_teacher.py \
   --gpu-ids "[0]" \
   --agent.max-iterations=5000 \
   --env.scene.num-envs=4096
@@ -246,7 +246,7 @@ python scripts/train_topology_getup_teacher.py -- \
 Train the deployable topology-bottleneck student:
 
 ```bash
-python scripts/train_topology_getup_main.py -- \
+python scripts/train_topology_getup_main.py \
   --gpu-ids "[0]" \
   --agent.max-iterations=5000 \
   --env.scene.num-envs=4096
@@ -257,7 +257,7 @@ python scripts/train_topology_getup_main.py -- \
 Train the matched deployable baseline without the topology bottleneck:
 
 ```bash
-python scripts/train_topology_getup_naive.py -- \
+python scripts/train_topology_getup_naive.py \
   --gpu-ids "[0]" \
   --agent.max-iterations=5000 \
   --env.scene.num-envs=4096
@@ -272,7 +272,7 @@ Using a teacher checkpoint:
 
 ```bash
 python scripts/train_topology_getup_distill.py \
-  --teacher-checkpoint path/to/teacher.pt -- \
+  --teacher-checkpoint path/to/teacher.pt \
   --gpu-ids "[0]" \
   --agent.max-iterations=5000 \
   --env.scene.num-envs=4096
@@ -282,7 +282,7 @@ Using a teacher run directory (recommended):
 
 ```bash
 python scripts/train_topology_getup_distill.py \
-  --teacher-run-dir path/to/teacher_run -- \
+  --teacher-run-dir path/to/teacher_run \
   --gpu-ids "[0]" \
   --agent.max-iterations=5000 \
   --env.scene.num-envs=4096

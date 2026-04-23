@@ -21,6 +21,10 @@ public:
     CtrlFSM(YAML::Node cfg)
     {
         auto fsms = cfg["_"]; // enabled FSMs
+        if (cfg["start_state"])
+        {
+            start_state_ = cfg["start_state"].as<std::string>();
+        }
 
         // register FSM string map; used for state transition
         for (auto it = fsms.begin(); it != fsms.end(); ++it)
@@ -47,8 +51,19 @@ public:
 
     void start() 
     {
-        // Start From State_Passive
+        // Start from configured state, fallback to first registered state.
         currentState = states[0];
+        if (!start_state_.empty())
+        {
+            for (auto & state : states)
+            {
+                if (state->getStateString() == start_state_)
+                {
+                    currentState = state;
+                    break;
+                }
+            }
+        }
         currentState->enter();
 
         fsm_thread_ = std::make_shared<unitree::common::RecurrentThread>(
@@ -78,6 +93,7 @@ public:
     std::vector<std::shared_ptr<BaseState>> states;
 private:
     const double dt = 0.001;
+    std::string start_state_;
 
     void run_()
     {

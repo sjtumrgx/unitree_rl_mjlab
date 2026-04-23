@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <iostream>
+
 #include "isaaclab/envs/manager_based_rl_env.h"
 #include "param.h"
 
@@ -21,6 +23,59 @@ inline std::vector<float> keyboard_velocity_command(ManagerBasedRLEnv* env)
 
     const auto cfg = env->cfg["commands"]["base_velocity"]["ranges"];
     const std::string key = param::active_keyboard->key();
+    const auto keyboard_cfg = env->cfg["commands"]["base_velocity"]["keyboard"];
+    if (keyboard_cfg)
+    {
+        static std::vector<float> parkour_keyboard_command(3, 0.0f);
+        static std::string last_logged_key = "";
+        const float lin_vel_x_min = keyboard_cfg["lin_vel_x_min"].as<float>();
+        const float lin_vel_x_max = keyboard_cfg["lin_vel_x_max"].as<float>();
+        const float ang_vel_z_min = keyboard_cfg["ang_vel_z_min"].as<float>();
+        const float ang_vel_z_max = keyboard_cfg["ang_vel_z_max"].as<float>();
+        const float lin_vel_step = keyboard_cfg["lin_vel_step"].as<float>(0.1f);
+
+        if (key == "w")
+        {
+            parkour_keyboard_command[0] = std::clamp(
+                parkour_keyboard_command[0] + lin_vel_step,
+                lin_vel_x_min,
+                lin_vel_x_max
+            );
+        }
+        else if (key == "f")
+        {
+            parkour_keyboard_command[2] = ang_vel_z_max;
+        }
+        else if (key == "g")
+        {
+            parkour_keyboard_command[2] = ang_vel_z_min;
+        }
+        else if (key == "s")
+        {
+            parkour_keyboard_command[2] = 0.0f;
+        }
+        else if (key == "x")
+        {
+            parkour_keyboard_command[0] = 0.0f;
+            parkour_keyboard_command[1] = 0.0f;
+            parkour_keyboard_command[2] = 0.0f;
+        }
+
+        if (key != last_logged_key && !key.empty())
+        {
+            std::cout << "[parkour keyboard] key=" << key
+                      << " command=[" << parkour_keyboard_command[0] << ","
+                      << parkour_keyboard_command[1] << ","
+                      << parkour_keyboard_command[2] << "]" << std::endl;
+            last_logged_key = key;
+        }
+        if (key.empty())
+        {
+            last_logged_key.clear();
+        }
+
+        return parkour_keyboard_command;
+    }
 
     if (key == "w")
     {

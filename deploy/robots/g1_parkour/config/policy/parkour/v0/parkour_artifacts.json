@@ -1,0 +1,9 @@
+{
+  "actor_onnx": "exported/actor.onnx",
+  "agent_yaml": "params/agent.yaml",
+  "deploy_yaml": "params/deploy.yaml",
+  "depth_encoder_onnx": "exported/0-depth_encoder.onnx",
+  "env_yaml": "params/env.yaml",
+  "promoted_from_run_dir": "/home/eilab/instinctlab/logs/instinct_rl/g1_parkour/20260327_163647",
+  "schema_version": "g1_parkour_artifacts_v1"
+}

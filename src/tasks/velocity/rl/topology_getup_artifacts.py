@@ -35,6 +35,7 @@ def write_topology_getup_artifact_manifest(
   experiment_name: str,
   checkpoint_path: str | Path,
   support_geometry_interface_version: str,
+  policy_analysis_path: str | Path | None = None,
   distillation_mode: str | None = None,
   teacher_checkpoint: str | Path | None = None,
 ) -> Path:
@@ -46,10 +47,11 @@ def write_topology_getup_artifact_manifest(
     "experiment_name": experiment_name,
     "checkpoint": _relative_to(output_dir_path, checkpoint_path),
     "policy_onnx": "policy.onnx",
-    "policy_analysis_onnx": "policy_analysis.onnx",
     "deploy_yaml": "params/deploy.yaml",
     "support_geometry_interface_version": support_geometry_interface_version,
   }
+  if policy_analysis_path is not None:
+    payload["policy_analysis_onnx"] = _relative_to(output_dir_path, Path(policy_analysis_path))
   if distillation_mode is not None:
     payload["distillation_mode"] = distillation_mode
   if teacher_checkpoint is not None:
