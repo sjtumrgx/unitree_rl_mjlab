@@ -201,32 +201,36 @@ a graphical display is available and falls back to the viser viewer otherwise.
 For implementation details, stage semantics, and current caveats, see
 [`doc/g1_antifall.md`](doc/g1_antifall.md).
 
-### 1.3 G1 HoST Get-Up Training
+### 1.3 G1 Get-Up Training
 
-The repo includes a single **HoST-derived get-up** task for Unitree G1:
+The repo includes a single get-up task for Unitree G1:
 
 - `Unitree-G1-GetUp` — public mjlab task id
 - terrain variants: `ground`, `platform`, `wall`, `slope`
 
 The terrain is selected with `--getup-terrain` on the generic scripts or with the
-thin get-up wrappers. HoST `g1_ground_prone` is intentionally out of scope for
-this first migration pass.
+thin get-up wrappers. The prone variant is intentionally out of scope for this
+first pass.
 
-Train the default ground variant:
+Train the default ground variant on GPU 0:
 
 ```bash
 python scripts/train.py Unitree-G1-GetUp \
+  --gpu-ids "[0]" \
   --getup-terrain=ground \
   --env.scene.num-envs=4096
 ```
 
-Train another HoST terrain variant:
+Train another terrain variant on GPU 1:
 
 ```bash
 python scripts/train_getup.py --terrain platform -- \
+  --gpu-ids "[1]" \
   --env.scene.num-envs=4096 \
   --agent.max-iterations=5000
 ```
+
+For multi-GPU training, pass a list such as `--gpu-ids "[0,1]"`.
 
 Replay a trained checkpoint:
 
@@ -234,9 +238,6 @@ Replay a trained checkpoint:
 python scripts/play_getup.py --terrain slope -- \
   --checkpoint-file path/to/model.pt
 ```
-
-The migration notes and HoST-to-mjlab mapping are in
-[`doc/g1_getup_host_migration.md`](doc/g1_getup_host_migration.md).
 
 ### 2. Motion Imitation Training
 
