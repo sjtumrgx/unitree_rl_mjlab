@@ -1522,7 +1522,10 @@ observations:
       - 1.0
       - 1.0
       history_length: 0
-support_geometry_interface:
+getup_policy_interface:
+  version: getup_v1
+  default_terrain: ground
+legacy_support_geometry_interface:
   version: sgi_v1
   anchor_names:
   - trunk
@@ -1553,3 +1556,6 @@ support_geometry_interface:
       x: x
       y: y
       z: z
+
+getup_terrain: ground
+host_source_task: g1_ground

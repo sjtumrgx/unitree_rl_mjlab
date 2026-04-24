@@ -4,7 +4,7 @@ import ast
 import logging
 import os
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -32,6 +32,7 @@ class TrainConfig:
   enable_nan_guard: bool = False
   torchrunx_log_dir: str | None = None
   gpu_ids: str | None = "[0]"
+  getup_terrain: str | None = None
 
   @staticmethod
   def from_task(task_id: str) -> "TrainConfig":
@@ -228,6 +229,15 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
 
 def launch_training(task_id: str, args: TrainConfig | None = None):
   args = args or TrainConfig.from_task(task_id)
+  if task_id == "Unitree-G1-GetUp" and args.getup_terrain is not None:
+    from src.tasks.velocity.config.g1_getup.env_cfgs import unitree_g1_getup_env_cfg
+    from src.tasks.velocity.config.g1_getup.rl_cfg import unitree_g1_getup_ppo_runner_cfg
+
+    args = replace(
+      args,
+      env=unitree_g1_getup_env_cfg(terrain=args.getup_terrain),
+      agent=unitree_g1_getup_ppo_runner_cfg(terrain=args.getup_terrain),
+    )
 
   # Create log directory once before launching workers.
   log_root_path = Path("logs") / "rsl_rl" / args.agent.experiment_name

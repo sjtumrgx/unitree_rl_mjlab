@@ -201,239 +201,42 @@ a graphical display is available and falls back to the viser viewer otherwise.
 For implementation details, stage semantics, and current caveats, see
 [`doc/g1_antifall.md`](doc/g1_antifall.md).
 
-### 1.3 G1 Topology Get-Up Training
+### 1.3 G1 HoST Get-Up Training
 
-The repo now also includes a dedicated **terrain-indexed get-up** task family for
-G1. This family stays separate from AntiFall and targets:
+The repo includes a single **HoST-derived get-up** task for Unitree G1:
 
-- get-up on unseen support topology
-- onboard-only student observations
-- mandatory depth-conditioned deployment
-- teacher / main / naive / distill experimental lanes
+- `Unitree-G1-GetUp` — public mjlab task id
+- terrain variants: `ground`, `platform`, `wall`, `slope`
 
-Available topology-getup tasks:
+The terrain is selected with `--getup-terrain` on the generic scripts or with the
+thin get-up wrappers. HoST `g1_ground_prone` is intentionally out of scope for
+this first migration pass.
 
-- `Unitree-G1-TopologyGetUp-Stage0` — main topology-bottleneck student lane
-- `Unitree-G1-TopologyGetUp-Benchmark` — held-out topology benchmark task
-- `Unitree-G1-TopologyGetUp-Stage0-NaiveDepth` — deployable plain depth-conditioned baseline
-- `Unitree-G1-TopologyGetUp-Stage0-Teacher` — richer PPO teacher lane
-- `Unitree-G1-TopologyGetUp-Stage0-Distill` — teacher-student distillation lane
-
-Recommended dependency-aware training structure:
-
-- `Teacher → Distill`
-- `Main`
-- `NaiveDepth`
-- then `Benchmark / Analysis → Promote deploy bundle`
-
-In other words, `Distill` depends on the teacher checkpoint, while `Main` and
-`NaiveDepth` are peer deployable baselines that can be trained independently
-(and in parallel if you have the compute budget).
-
-#### 1.3.1 Teacher training
-
-Train the richer teacher first:
+Train the default ground variant:
 
 ```bash
-python scripts/train_topology_getup_teacher.py \
-  --gpu-ids "[0]" \
-  --agent.max-iterations=5000 \
+python scripts/train.py Unitree-G1-GetUp \
+  --getup-terrain=ground \
   --env.scene.num-envs=4096
 ```
 
-#### 1.3.2 Main method training
-
-Train the deployable topology-bottleneck student:
+Train another HoST terrain variant:
 
 ```bash
-python scripts/train_topology_getup_main.py \
-  --gpu-ids "[0]" \
-  --agent.max-iterations=5000 \
-  --env.scene.num-envs=4096
+python scripts/train_getup.py --terrain platform -- \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=5000
 ```
 
-#### 1.3.3 Naive depth baseline training
-
-Train the matched deployable baseline without the topology bottleneck:
+Replay a trained checkpoint:
 
 ```bash
-python scripts/train_topology_getup_naive.py \
-  --gpu-ids "[0]" \
-  --agent.max-iterations=5000 \
-  --env.scene.num-envs=4096
+python scripts/play_getup.py --terrain slope -- \
+  --checkpoint-file path/to/model.pt
 ```
 
-#### 1.3.4 Distillation training
-
-The distillation wrapper accepts either a direct teacher checkpoint or a teacher run
-directory containing `topology_getup_artifacts.json`.
-
-Using a teacher checkpoint:
-
-```bash
-python scripts/train_topology_getup_distill.py \
-  --teacher-checkpoint path/to/teacher.pt \
-  --gpu-ids "[0]" \
-  --agent.max-iterations=5000 \
-  --env.scene.num-envs=4096
-```
-
-Using a teacher run directory (recommended):
-
-```bash
-python scripts/train_topology_getup_distill.py \
-  --teacher-run-dir path/to/teacher_run \
-  --gpu-ids "[0]" \
-  --agent.max-iterations=5000 \
-  --env.scene.num-envs=4096
-```
-
-#### 1.3.5 Replaying trained topology-getup policies
-
-Use the dedicated topology-getup play wrapper to replay trained checkpoints in the
-native MuJoCo viewer:
-
-Replay the main topology-bottleneck student:
-
-```bash
-python scripts/play_topology_getup.py \
-  --task Unitree-G1-TopologyGetUp-Stage0 \
-  --checkpoint-file path/to/main_model.pt
-```
-
-Replay the deployable naive-depth baseline:
-
-```bash
-python scripts/play_topology_getup.py \
-  --task Unitree-G1-TopologyGetUp-Stage0-NaiveDepth \
-  --checkpoint-file path/to/naive_model.pt
-```
-
-Replay the distillation student:
-
-```bash
-python scripts/play_topology_getup.py \
-  --task Unitree-G1-TopologyGetUp-Stage0-Distill \
-  --checkpoint-file path/to/distill_model.pt
-```
-
-Replay the held-out benchmark configuration:
-
-```bash
-python scripts/play_topology_getup.py \
-  --task Unitree-G1-TopologyGetUp-Benchmark \
-  --checkpoint-file path/to/benchmark_model.pt
-```
-
-Notes:
-
-- `scripts/play_topology_getup.py` currently supports `Stage0`, `Benchmark`,
-  `NaiveDepth`, and `Distill`.
-- The teacher lane is intended for training / distillation handoff and is not
-  exposed by the dedicated play wrapper.
-- The wrapper uses the native MuJoCo viewer, so `DISPLAY` or `WAYLAND_DISPLAY`
-  must be available.
-
-#### 1.3.6 Benchmark protocol utilities
-
-Print the canonical topology-getup lane inventory (teacher-fed distill branch
-plus independent `main` / `naive_depth` baselines):
-
-```bash
-python scripts/benchmark_topology_getup.py suite-plan \
-  --teacher-run-dir path/to/teacher_run \
-  --iterations 5000 \
-  --num-envs 4096
-```
-
-Inspect the held-out benchmark scenarios:
-
-```bash
-python scripts/benchmark_topology_getup.py scenarios Unitree-G1-TopologyGetUp-Benchmark
-```
-
-Compare main vs naive summary JSONs:
-
-```bash
-python scripts/benchmark_topology_getup.py compare-summary \
-  path/to/main_summary.json \
-  path/to/naive_summary.json
-```
-
-The compare step now requires:
-
-- aggregate margin pass
-- every required held-out family bucket present
-- every required held-out family bucket passing
-
-Current required held-out families:
-
-- `stair-height-heldout`
-- `edge-geometry-heldout`
-- `support-arrangement-heldout`
-
-#### 1.3.7 Mechanism-analysis utilities
-
-Summarize exported topology latents and optionally save reviewable plots:
-
-```bash
-python scripts/analyze_topology_latent.py \
-  path/to/latents.npz \
-  --output latent_summary.json \
-  --plot-dir latent_plots
-```
-
-Saved plots include:
-
-- `centroid_distance_heatmap.png`
-- `within_scatter.png`
-
-#### 1.3.8 Deploy bundle promotion
-
-Training/export runs stay run-local. To stage a deployable student bundle into the
-dedicated `g1_getup` runtime tree:
-
-```bash
-python scripts/promote_topology_getup_artifact.py \
-  --run-dir path/to/topology_getup_run
-```
-
-This stages files into:
-
-- `deploy/robots/g1_getup/config/policy/topology_getup/v0/exported/policy.onnx`
-- `deploy/robots/g1_getup/config/policy/topology_getup/v0/exported/policy_analysis.onnx`
-- `deploy/robots/g1_getup/config/policy/topology_getup/v0/params/deploy.yaml`
-
-#### 1.3.9 Live depth-feed deploy helpers
-
-Patch the runtime depth topic:
-
-```bash
-python scripts/configure_topology_getup_depth_topic.py \
-  --topic-name /your/depth/points \
-  --pointcloud-mode euclidean_norm \
-  --timeout-ms 500 \
-  --retain-last-valid-frame
-```
-
-Inspect saved support-depth captures and produce calibration artifacts:
-
-```bash
-python scripts/inspect_topology_getup_depth_capture.py \
-  path/to/capture.npz \
-  --deploy-yaml deploy/robots/g1_getup/config/policy/topology_getup/v0/params/deploy.yaml \
-  --output depth_capture_summary.json \
-  --artifact-dir depth_capture_artifacts
-```
-
-This saves:
-
-- `first_frame.png`
-- `last_frame.png`
-- `mean_frame.png`
-
-For the full topology-getup design notes, deploy contract, and current caveats, see
-[`doc/g1_topology_getup.md`](doc/g1_topology_getup.md).
+The migration notes and HoST-to-mjlab mapping are in
+[`doc/g1_getup_host_migration.md`](doc/g1_getup_host_migration.md).
 
 ### 2. Motion Imitation Training
 

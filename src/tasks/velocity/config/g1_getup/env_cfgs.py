@@ -1,7 +1,7 @@
 """Terrain get-up environment scaffolds for Unitree G1.
 
 This family is intentionally isolated from the existing flat anti-fall tasks so the
-new mandatory-depth get-up work does not change current training task behavior.
+new HoST get-up work does not change current training task behavior.
 """
 
 from __future__ import annotations
@@ -29,6 +29,22 @@ from src.tasks.velocity.config.g1_antifall.env_cfgs import (
   _apply_antifall_helpers,
 )
 
+
+GETUP_TERRAIN_VARIANTS = ("ground", "platform", "wall", "slope")
+HOST_SOURCE_TASKS = {
+  "ground": "g1_ground",
+  "platform": "g1_platform",
+  "wall": "g1_wall",
+  "slope": "g1_slope",
+}
+
+HOST_TERRAIN_PARITY = {
+  "ground": {"num_rows": 1, "num_cols": 20, "terrain_proportions": (1, 0.0, 0, 0, 0), "max_init_terrain_level": 5, "target_base_height_phase1": 0.45, "target_base_height_phase2": 0.45, "target_base_height_phase3": 0.65, "pull_force_n": 100},
+  "platform": {"num_rows": 8, "num_cols": 8, "terrain_proportions": (0, 0.0, 1, 0, 0), "max_init_terrain_level": 3, "target_base_height_phase1": 0.45, "target_base_height_phase2": 0.45, "target_base_height_phase3": 0.65, "pull_force_n": 100},
+  "wall": {"num_rows": 4, "num_cols": 5, "terrain_proportions": (1, 0.0, 0, 0, 0), "max_init_terrain_level": 3, "target_base_height_phase1": 0.45, "target_base_height_phase2": 0.45, "target_base_height_phase3": 0.65, "pull_force_n": 100},
+  "slope": {"num_rows": 4, "num_cols": 8, "terrain_proportions": (1, 0, 0, 0, 0), "max_init_terrain_level": 3, "target_base_height_phase1": 0.4, "target_base_height_phase2": 0.4, "target_base_height_phase3": 0.6, "pull_force_n": 100},
+}
+
 _GETUP_HARD_POSE_RANGE = {
   "x": (-0.3, 0.3),
   "y": (-0.3, 0.3),
@@ -49,29 +65,49 @@ _DEFAULT_GETUP_DEMO_NPZ = str(Path("src/assets/motions/g1/getup_synthetic_demo.n
 
 
 
-_SEEN_TOPOLOGY_TERRAINS = (
+_HOST_GETUP_TERRAINS = (
   "flat",
   "pyramid_stairs",
   "hf_pyramid_slope",
   "random_rough",
 )
-_HOLDOUT_TOPOLOGY_TERRAINS = (
+_HOST_GETUP_HOLDOUT_TERRAINS = (
   "open_stairs",
   "random_stairs",
   "random_spread_boxes",
 )
 
 
-def _set_train_topology_terrain_mix(cfg: ManagerBasedRlEnvCfg) -> None:
+def _set_train_getup_terrain_mix(cfg: ManagerBasedRlEnvCfg) -> None:
   terrain = cfg.scene.terrain
   assert terrain is not None
   terrain_generator = terrain.terrain_generator
   assert terrain_generator is not None
   sub_terrains = {
-    name: replace(ROUGH_TERRAINS_CFG.sub_terrains[name], proportion=1.0 / len(_SEEN_TOPOLOGY_TERRAINS))
-    for name in _SEEN_TOPOLOGY_TERRAINS
+    name: replace(ROUGH_TERRAINS_CFG.sub_terrains[name], proportion=1.0 / len(_HOST_GETUP_TERRAINS))
+    for name in _HOST_GETUP_TERRAINS
   }
   terrain.terrain_generator = replace(terrain_generator, sub_terrains=sub_terrains)
+
+
+def _apply_host_terrain_variant(cfg: ManagerBasedRlEnvCfg, terrain_variant: str) -> None:
+  if terrain_variant not in GETUP_TERRAIN_VARIANTS:
+    raise ValueError(
+      f"Unsupported Unitree-G1-GetUp terrain {terrain_variant!r}; "
+      f"expected one of {GETUP_TERRAIN_VARIANTS}."
+    )
+  parity = HOST_TERRAIN_PARITY[terrain_variant]
+  # Attach explicit metadata for tests, scripts, export/deploy, and mapping docs.
+  cfg.getup_terrain = terrain_variant  # type: ignore[attr-defined]
+  cfg.host_source_task = HOST_SOURCE_TASKS[terrain_variant]  # type: ignore[attr-defined]
+  cfg.host_parity = parity  # type: ignore[attr-defined]
+  if cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None:
+    generator = cfg.scene.terrain.terrain_generator
+    cfg.scene.terrain.terrain_generator = replace(
+      generator,
+      num_rows=parity["num_rows"],
+      num_cols=parity["num_cols"],
+    )
 
 
 def _set_benchmark_holdout_terrain_mix(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -80,8 +116,8 @@ def _set_benchmark_holdout_terrain_mix(cfg: ManagerBasedRlEnvCfg) -> None:
   terrain_generator = terrain.terrain_generator
   assert terrain_generator is not None
   sub_terrains = {
-    name: replace(ALL_TERRAINS_CFG.sub_terrains[name], proportion=1.0 / len(_HOLDOUT_TOPOLOGY_TERRAINS))
-    for name in _HOLDOUT_TOPOLOGY_TERRAINS
+    name: replace(ALL_TERRAINS_CFG.sub_terrains[name], proportion=1.0 / len(_HOST_GETUP_HOLDOUT_TERRAINS))
+    for name in _HOST_GETUP_HOLDOUT_TERRAINS
   }
   terrain.terrain_generator = replace(terrain_generator, sub_terrains=sub_terrains, curriculum=False)
 
@@ -224,11 +260,12 @@ def _add_head_contact_guard(cfg: ManagerBasedRlEnvCfg) -> None:
     },
   )
 
-def _make_g1_topology_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_rough_env_cfg(play=play)
   _apply_antifall_actor_contract(cfg)
   _apply_zero_command_profile(cfg)
-  _set_train_topology_terrain_mix(cfg)
+  _set_train_getup_terrain_mix(cfg)
+  _apply_host_terrain_variant(cfg, terrain)
   cfg.curriculum.pop("command_vel", None)
   _add_support_depth_camera(cfg)
   _add_support_body_contact_sensor(cfg)
@@ -241,7 +278,7 @@ def _make_g1_topology_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       func=mdp.apply_getup_assist_force,
       mode="step",
       params={
-        "force_n": 75.0,
+        "force_n": HOST_TERRAIN_PARITY[terrain]["pull_force_n"],
         "activation_height": 0.35,
         "alignment_threshold": 0.0,
         "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
@@ -501,14 +538,14 @@ def _make_g1_topology_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   return cfg
 
 
-def unitree_g1_topology_getup_stage0_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create the Stage 0 terrain get-up scaffold with mandatory onboard depth."""
-  return _make_g1_topology_getup_env_cfg(play=play)
+def unitree_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create the Unitree G1 HoST get-up configuration for one terrain variant."""
+  return _make_g1_getup_env_cfg(terrain=terrain, play=play)
 
 
-def unitree_g1_topology_getup_benchmark_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create a deterministic terrain get-up benchmark scaffold."""
-  cfg = _make_g1_topology_getup_env_cfg(play=play)
+def unitree_g1_getup_benchmark_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create a deterministic HoST get-up benchmark scaffold."""
+  cfg = _make_g1_getup_env_cfg(terrain=terrain, play=play)
   _set_benchmark_holdout_terrain_mix(cfg)
   cfg.curriculum = {}
   cfg.observations["actor"].enable_corruption = False

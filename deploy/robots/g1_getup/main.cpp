@@ -17,13 +17,13 @@ void print_control_help()
     {
         std::cout << "Keyboard mode enabled. Keep this terminal focused.\n";
         std::cout << "  f : enter FixStand\n";
-        std::cout << "  g : enter TopologyGetUp control\n";
+        std::cout << "  g : enter GetUp control\n";
         std::cout << "  p : return to Passive mode\n";
         return;
     }
 
     std::cout << "Press [L2 + Up] to enter FixStand mode.\n";
-    std::cout << "And then press [R2 + Y] to start topology get-up control.\n";
+    std::cout << "And then press [R2 + Y] to start get-up control.\n";
 }
 
 }
@@ -59,7 +59,7 @@ int main(int argc, char** argv)
     }
 
     std::cout << " --- Unitree Robotics --- \n";
-    std::cout << "     G1-29dof Topology Get-Up Controller \n";
+    std::cout << "     G1-29dof Get-Up Controller \n";
 
     unitree::robot::ChannelFactory::Instance()->Init(0, vm["network"].as<std::string>());
     print_control_help();

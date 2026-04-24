@@ -6,4 +6,4 @@ from .observations import *  # noqa: F403
 from .rewards import *  # noqa: F403
 from .terminations import *  # noqa: F403
 from .velocity_command import *  # noqa: F403
-from .topology_getup import *  # noqa: F403
+from .getup import *  # noqa: F403

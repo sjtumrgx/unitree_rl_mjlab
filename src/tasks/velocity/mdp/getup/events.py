@@ -144,17 +144,17 @@ _DEFAULT_JOINT_PRESET_TARGETS: dict[str, dict[str, float]] = {
 }
 
 
-def get_topology_getup_reset_state(
+def get_getup_reset_state(
   env: ManagerBasedRlEnv,
   preset_names: Sequence[str] | None = None,
 ) -> dict[str, object]:
-  state = getattr(env, "_topology_getup_reset_state", None)
+  state = getattr(env, "_getup_reset_state", None)
   if state is None or state["preset_index"].shape[0] != env.num_envs:
     state = {
       "preset_index": torch.full((env.num_envs,), -1, dtype=torch.long, device=env.device),
       "preset_names": tuple(preset_names or ()),
     }
-    setattr(env, "_topology_getup_reset_state", state)
+    setattr(env, "_getup_reset_state", state)
   elif preset_names is not None:
     state["preset_names"] = tuple(preset_names)
   return state
@@ -255,7 +255,7 @@ def reset_root_state_from_presets(
     preset_indices = torch.multinomial(weights, ids.numel(), replacement=True)
   else:
     preset_indices = torch.randint(len(preset_list), (ids.numel(),), device=env.device)
-  state = get_topology_getup_reset_state(
+  state = get_getup_reset_state(
     env,
     preset_names=tuple(str(preset["name"]) for preset in preset_list),
   )
@@ -300,7 +300,7 @@ def reset_joints_from_presets(
   joint_pos = default_joint_pos[ids][:, asset_cfg.joint_ids].clone()
   joint_vel = default_joint_vel[ids][:, asset_cfg.joint_ids].clone()
 
-  state = get_topology_getup_reset_state(env)
+  state = get_getup_reset_state(env)
   preset_names = tuple(state["preset_names"])
   preset_indices: torch.Tensor = state["preset_index"][ids]
   joint_targets = _DEFAULT_JOINT_PRESET_TARGETS if preset_joint_targets is None else preset_joint_targets
