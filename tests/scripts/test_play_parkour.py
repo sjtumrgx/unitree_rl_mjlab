@@ -43,6 +43,9 @@ def test_help_documents_parkour_contract_and_diagnostic_flags() -> None:
     "--exported-dir",
     "--depth-mode",
     "--constant-depth",
+    "--viewer",
+    "--viewer-frame-rate",
+    "--viewer-run-until-closed",
     "--check-contract",
     "--smoke-step",
     "--validate-walk",
@@ -61,6 +64,27 @@ def test_parser_defaults_use_gray_depth_and_onnx_training_order() -> None:
   assert args.constant_depth == 0.5
   assert args.joint_order == "isaac"
   assert args.action_order == "isaac"
+  assert args.viewer == "none"
+
+
+def test_native_viewer_requires_graphical_display(monkeypatch) -> None:
+  module = _load_module()
+  monkeypatch.delenv("DISPLAY", raising=False)
+  monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+  try:
+    module._require_graphical_display()
+  except RuntimeError as exc:
+    assert "DISPLAY or WAYLAND_DISPLAY" in str(exc)
+  else:  # pragma: no cover - this branch is the failure condition.
+    raise AssertionError("native viewer should require a graphical display")
+
+
+def test_native_viewer_uses_rsl_rl_wrapper_for_observations() -> None:
+  module = _load_module()
+  source = inspect.getsource(module.run_native_viewer)
+
+  assert "RslRlVecEnvWrapper" in source
 
 
 def test_constant_depth_contract_shape_and_clipping() -> None:

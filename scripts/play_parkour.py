@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections import deque
 from pathlib import Path
 from typing import Any, Sequence
@@ -131,6 +132,23 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--check-contract", action="store_true", help="Check deploy YAML and ONNX metadata, then exit.")
   parser.add_argument("--smoke-step", action="store_true", help="Run one synthetic ONNX step with zero proprio and constant depth.")
   parser.add_argument("--validate-walk", action="store_true", help="Run the MuJoCo fixed-command walking validation loop.")
+  parser.add_argument(
+    "--viewer",
+    choices=("none", "native"),
+    default="none",
+    help="Open a realtime viewer instead of the headless validation loop. 'native' requires DISPLAY or WAYLAND_DISPLAY.",
+  )
+  parser.add_argument(
+    "--viewer-frame-rate",
+    type=float,
+    default=60.0,
+    help="Target render frame rate for --viewer native.",
+  )
+  parser.add_argument(
+    "--viewer-run-until-closed",
+    action="store_true",
+    help="Keep --viewer native running until the MuJoCo window is closed; otherwise --max-seconds/--max-steps bounds the run.",
+  )
   parser.add_argument("--debug-parkour", action="store_true", help="Print detailed first-step and periodic diagnostics.")
   parser.add_argument("--diagnostic-json", type=Path, help="Write diagnostics summary JSON to this path.")
   parser.add_argument(
@@ -240,6 +258,215 @@ def _load_env(args: argparse.Namespace):
     print("[parkour] Env terminations disabled; independent fall checks remain active.")
   assert_no_stale_sensor_references(env_cfg)
   return ManagerBasedRlEnv(cfg=env_cfg, device=args.device, render_mode=None)
+
+
+def _require_graphical_display() -> None:
+  if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+    return
+  raise RuntimeError(
+    "Native viewer requires a graphical display; DISPLAY or WAYLAND_DISPLAY must be set."
+  )
+
+
+class ParkourNativeViewerPolicy:
+  """Realtime native-viewer policy adapter for the exported parkour ONNX actor."""
+
+  def __init__(
+    self,
+    *,
+    env: Any,
+    contract: Any,
+    policy: Any | None,
+    depth_provider: Any,
+    args: argparse.Namespace,
+  ) -> None:
+    self.env = env
+    self.contract = contract
+    self.policy = policy
+    self.depth_provider = depth_provider
+    self.args = args
+    self.adapter: Any | None = None
+    self.step_count = 0
+    self.start_x = 0.0
+    self.distance_x = 0.0
+    self.last_action = np.zeros(contract.action_size, dtype=np.float32)
+    self.latest_frame_diag: Any = None
+    self.latest_policy_diag: dict[str, Any] = {}
+    self.latest_fall_signals: dict[str, Any] = {}
+    self.mapping_proof: dict[str, Any] | None = None
+    self.action_delay_buffer: deque[np.ndarray] = deque(maxlen=max(1, args.action_delay_steps + 1))
+    self._has_stepped = False
+    self.reset()
+
+  def reset(self) -> None:
+    if self.args.action_delay_steps < 0:
+      raise ValueError("--action-delay-steps must be non-negative")
+    from src.tasks.velocity.rl.parkour_play import ParkourObservationAdapter
+
+    self.adapter = ParkourObservationAdapter(
+      self.env,
+      self.contract,
+      command=(self.args.command_x, self.args.command_y, self.args.command_yaw),
+      frame_mode=self.args.policy_frame,
+      joint_order=self.args.joint_order,
+      action_order=self.args.action_order,
+    )
+    self.last_action = np.zeros(self.contract.action_size, dtype=np.float32)
+    self.adapter.set_fixed_command()
+    self.latest_frame_diag = self.adapter.warm_start(last_policy_action=self.last_action)
+    self.latest_fall_signals = self.adapter.fall_signals()
+    self.start_x = float(self.latest_fall_signals["base_pos"][0])
+    self.distance_x = 0.0
+    self.step_count = 0
+    self.mapping_proof = self.adapter.mapping_proof().as_dict()
+    self.latest_policy_diag = {}
+    self.action_delay_buffer.clear()
+    for _ in range(self.args.action_delay_steps):
+      self.action_delay_buffer.append(np.zeros(self.contract.action_size, dtype=np.float32))
+    self._has_stepped = False
+
+  def __call__(self, obs: Any) -> torch.Tensor:
+    del obs
+    from src.tasks.velocity.rl.parkour_play import assert_depth_contract, vector_stats
+
+    if self.adapter is None:
+      self.reset()
+    assert self.adapter is not None
+
+    # After the previous env.step(), append the current MuJoCo state with the
+    # action that was just applied, matching the headless validation history.
+    if self._has_stepped:
+      self.adapter.set_fixed_command()
+      self.latest_frame_diag = self.adapter.append_current(last_policy_action=self.last_action)
+      self.latest_fall_signals = self.adapter.fall_signals()
+      self.distance_x = float(self.latest_fall_signals["base_pos"][0]) - self.start_x
+
+    self.adapter.set_fixed_command()
+    proprio = self.adapter.proprio()
+    depth = self.depth_provider.stack(self.adapter)
+    assert_depth_contract(depth)
+
+    if self.policy is None:
+      raw_policy_action = np.zeros(self.contract.action_size, dtype=np.float32)
+      self.latest_policy_diag = {
+        "action_stats": vector_stats(raw_policy_action),
+        "actor_input_stats": None,
+        "depth_stats": vector_stats(depth),
+        "proprio_stats": vector_stats(proprio),
+        "zero_action_baseline": True,
+      }
+    else:
+      output = self.policy.act(proprio, depth)
+      raw_policy_action = output.action
+      self.latest_policy_diag = dict(output.diagnostics)
+
+    raw_policy_action = raw_policy_action * np.float32(self.args.action_gain)
+    blend_alpha = 1.0
+    if self.args.startup_blend_seconds > 0.0:
+      blend_alpha = min(
+        1.0,
+        (self.step_count + 1) * self.env.step_dt / self.args.startup_blend_seconds,
+      )
+    if self.args.action_clip is not None:
+      raw_policy_action = np.clip(raw_policy_action, -self.args.action_clip, self.args.action_clip)
+    applied_policy_action = raw_policy_action * np.float32(blend_alpha)
+    if self.args.action_delay_steps > 0:
+      self.action_delay_buffer.append(applied_policy_action.copy())
+      env_policy_action = self.action_delay_buffer[0].copy()
+    else:
+      env_policy_action = applied_policy_action
+
+    self.latest_policy_diag.update(
+      {
+        "startup_blend_alpha": float(blend_alpha),
+        "applied_action_stats": vector_stats(applied_policy_action),
+        "env_action_delay_steps": int(self.args.action_delay_steps),
+        "env_policy_action_stats": vector_stats(env_policy_action),
+      }
+    )
+    env_action = self.adapter.env_action_from_policy_action(env_policy_action)
+    self.last_action = applied_policy_action.copy()
+    self.step_count += 1
+    self._has_stepped = True
+    return torch.tensor(env_action, dtype=torch.float32, device=self.env.device)
+
+  def diagnostics(self) -> dict[str, Any]:
+    return {
+      "mode": "viewer",
+      "status": "closed",
+      "task": self.args.task,
+      "agent": self.args.agent,
+      "depth": self.depth_provider.diagnostics(),
+      "command": [self.args.command_x, self.args.command_y, self.args.command_yaw],
+      "policy_frame": self.args.policy_frame,
+      "joint_order": self.args.joint_order,
+      "action_order": self.args.action_order,
+      "step": self.step_count,
+      "elapsed_seconds": self.step_count * self.env.step_dt,
+      "distance_x": self.distance_x,
+      "fall_signals": self.latest_fall_signals,
+      "latest_frame": self.latest_frame_diag.__dict__ if self.latest_frame_diag is not None else None,
+      "latest_policy": self.latest_policy_diag,
+      "mapping_proof": self.mapping_proof,
+    }
+
+
+def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
+  if args.num_envs != 1:
+    raise ValueError("--viewer native currently supports --num-envs 1")
+  _require_graphical_display()
+
+  from mjlab.rl import RslRlVecEnvWrapper
+  from mjlab.viewer import NativeMujocoViewer
+  from src.parkour.contract import load_deploy_contract, resolve_model_paths
+  from src.parkour.onnx_policy import ParkourOnnxPolicy
+  from src.tasks.velocity.rl.parkour_play import make_depth_provider
+
+  paths = resolve_model_paths(policy_dir=args.policy_dir, exported_dir=args.exported_dir)
+  contract = load_deploy_contract(paths.deploy_yaml)
+  policy = None
+  if args.agent == "policy":
+    policy = ParkourOnnxPolicy(policy_dir=paths.policy_dir, exported_dir=paths.exported_dir)
+  raw_env = _load_env(args)
+  depth_provider = make_depth_provider(args.depth_mode, args.constant_depth, env=raw_env)
+  viewer_env = RslRlVecEnvWrapper(raw_env, clip_actions=None)
+  viewer_policy = ParkourNativeViewerPolicy(
+    env=raw_env,
+    contract=contract,
+    policy=policy,
+    depth_provider=depth_provider,
+    args=args,
+  )
+  raw_env.reset()
+  viewer_policy.reset()
+  num_steps = None
+  if not args.viewer_run_until_closed:
+    num_steps = args.max_steps or max(1, int(round(args.max_seconds / raw_env.step_dt)))
+  print(
+    "[parkour] Launching native MuJoCo viewer. "
+    "Close the window to stop; use --viewer-run-until-closed for no max-seconds cap."
+  )
+  try:
+    NativeMujocoViewer(
+      viewer_env,
+      viewer_policy,
+      frame_rate=args.viewer_frame_rate,
+      enable_perturbations=True,
+    ).run(num_steps=num_steps)
+    payload = viewer_policy.diagnostics()
+    payload.update(
+      {
+        "policy_dir": paths.policy_dir,
+        "exported_dir": paths.exported_dir,
+        "onnx": policy.metadata.as_dict() if policy is not None else None,
+        "viewer": args.viewer,
+        "viewer_frame_rate": args.viewer_frame_rate,
+        "viewer_run_until_closed": args.viewer_run_until_closed,
+      }
+    )
+    return True, payload
+  finally:
+    raw_env.close()
 
 
 def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
@@ -489,6 +716,11 @@ def run_parkour_play(args: argparse.Namespace) -> int:
     payload = run_smoke_step(args)
     _write_diagnostics(args.diagnostic_json, payload)
     return 0
+  if args.viewer != "none":
+    accepted, payload = run_native_viewer(args)
+    _print_json(payload)
+    _write_diagnostics(args.diagnostic_json, payload)
+    return 0 if accepted else 1
   accepted, payload = run_validate_walk(args)
   _print_json(payload)
   _write_diagnostics(args.diagnostic_json, payload)
