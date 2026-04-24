@@ -23,16 +23,57 @@ G1_XML: Path = (
 )
 assert G1_XML.exists()
 
+G1_PARKOUR_XML: Path = (
+  SRC_PATH / "assets" / "robots" / "unitree_g1" / "xmls" / "scene_g1_parkour.xml"
+)
+assert G1_PARKOUR_XML.exists()
 
-def get_assets(meshdir: str) -> dict[str, bytes]:
+
+def get_assets(meshdir: str, *, xml_path: Path = G1_XML) -> dict[str, bytes]:
   assets: dict[str, bytes] = {}
-  update_assets(assets, G1_XML.parent / "assets", meshdir)
+  update_assets(assets, xml_path.parent / "assets", meshdir)
   return assets
 
 
 def get_spec() -> mujoco.MjSpec:
   spec = mujoco.MjSpec.from_file(str(G1_XML))
-  spec.assets = get_assets(spec.meshdir)
+  spec.assets = get_assets(spec.meshdir, xml_path=G1_XML)
+  return spec
+
+
+def get_g1_parkour_flat_debug_spec() -> mujoco.MjSpec:
+  """Load the parkour-training G1 XML as a robot-only MJLab entity spec.
+
+  ``scene_g1_parkour.xml`` intentionally contains the torso-root parkour robot,
+  depth camera, IMU sensors, XML torque motors, and a small obstacle course for
+  the standalone Unitree simulator.  MJLab entity configs add their own
+  actuators and terrain when the robot is attached to a scene, so the first-stage
+  flat-debug task strips the standalone motors and world obstacles while keeping
+  the torso-root robot, camera, collision proxies, and parkour IMU sensors.
+  """
+  spec = mujoco.MjSpec.from_file(str(G1_PARKOUR_XML))
+  spec.assets = get_assets(spec.meshdir, xml_path=G1_PARKOUR_XML)
+
+  for actuator in list(spec.actuators):
+    spec.delete(actuator)
+
+  for body in list(spec.worldbody.bodies):
+    if body.name != "torso_link":
+      spec.delete(body)
+
+  for geom in list(spec.worldbody.geoms):
+    spec.delete(geom)
+
+  # The standalone MuJoCo scene carries XML-default passive joint properties
+  # used by the C++ lowcmd simulator.  MJLab adds its own actuator armature,
+  # damping, and stiffness from ``G1_ARTICULATION`` below; keeping the XML
+  # defaults would add root/free-joint damping/friction and duplicate hinge
+  # damping relative to the IsaacLab training contract.
+  for joint in spec.joints:
+    joint.damping[:] = 0.0
+    joint.armature = 0.0
+    joint.frictionloss = 0.0
+
   return spec
 
 
@@ -219,6 +260,21 @@ KNEES_BENT_KEYFRAME = EntityCfg.InitialStateCfg(
   joint_vel={".*": 0.0},
 )
 
+PARKOUR_DEBUG_KEYFRAME = EntityCfg.InitialStateCfg(
+  pos=(0.0, 0.0, 0.9),
+  joint_pos={
+    ".*_hip_pitch_joint": -0.312,
+    ".*_knee_joint": 0.669,
+    ".*_ankle_pitch_joint": -0.363,
+    ".*_elbow_joint": 0.6,
+    "left_shoulder_roll_joint": 0.2,
+    "left_shoulder_pitch_joint": 0.2,
+    "right_shoulder_roll_joint": -0.2,
+    "right_shoulder_pitch_joint": 0.2,
+  },
+  joint_vel={".*": 0.0},
+)
+
 ##
 # Collision config.
 ##
@@ -231,6 +287,14 @@ FULL_COLLISION = CollisionCfg(
   condim={r"^(left|right)_foot[1-7]_collision$": 3, ".*_collision": 1},
   priority={r"^(left|right)_foot[1-7]_collision$": 1},
   friction={r"^(left|right)_foot[1-7]_collision$": (0.6,)},
+)
+
+PARKOUR_COLLISION = CollisionCfg(
+  geom_names_expr=(".*_collision",),
+  condim={r"^(?:robot/)?(left|right)_foot_collision_[1-7]$": 3, ".*_collision": 1},
+  priority={r"^(?:robot/)?(left|right)_foot_collision_[1-7]$": 1},
+  friction={r"^(?:robot/)?(left|right)_foot_collision_[1-7]$": (1.0,)},
+  disable_other_geoms=False,
 )
 
 FULL_COLLISION_WITHOUT_SELF = CollisionCfg(
@@ -280,6 +344,16 @@ def get_g1_robot_cfg() -> EntityCfg:
     init_state=HOME_KEYFRAME,
     collisions=(FULL_COLLISION,),
     spec_fn=get_spec,
+    articulation=G1_ARTICULATION,
+  )
+
+
+def get_g1_parkour_robot_cfg() -> EntityCfg:
+  """Get the torso-root G1 parkour robot for flat MuJoCo debug play."""
+  return EntityCfg(
+    init_state=PARKOUR_DEBUG_KEYFRAME,
+    collisions=(PARKOUR_COLLISION,),
+    spec_fn=get_g1_parkour_flat_debug_spec,
     articulation=G1_ARTICULATION,
   )
 
