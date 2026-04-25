@@ -52,6 +52,9 @@ def test_help_documents_parkour_contract_and_diagnostic_flags() -> None:
     "--depth-contract-only",
     "--diagnostic-json",
     "--depth-debug-dir",
+    "--depth-viewer",
+    "--depth-viewer-frame",
+    "--depth-viewer-frame-rate",
     "--policy-frame",
     "--startup-blend-seconds",
   ):
@@ -67,6 +70,8 @@ def test_parser_defaults_use_gray_depth_and_onnx_training_order() -> None:
   assert args.joint_order == "isaac"
   assert args.action_order == "isaac"
   assert args.viewer == "none"
+  assert args.depth_viewer is False
+  assert args.depth_viewer_frame == "policy"
 
 
 def test_native_viewer_requires_graphical_display(monkeypatch) -> None:
@@ -116,3 +121,31 @@ def test_native_viewer_resets_depth_provider_after_env_reset() -> None:
   assert "raw_env.reset()" in source
   assert "viewer_policy.reset()" in source
   assert "debug_dir=args.depth_debug_dir" in source
+
+
+def test_depth_viewer_is_wired_into_native_and_validation_loops() -> None:
+  module = _load_module()
+  native_source = inspect.getsource(module.run_native_viewer)
+  validate_source = inspect.getsource(module.run_validate_walk)
+  policy_source = inspect.getsource(module.ParkourNativeViewerPolicy.__call__)
+
+  assert "LiveDepthViewer(" in native_source
+  assert "LiveDepthViewer(" in validate_source
+  assert "depth_viewer.update" in validate_source
+  assert "depth_viewer.update" in policy_source
+  assert "_depth_display_frame" in validate_source
+  assert "_depth_display_frame" in policy_source
+
+
+def test_depth_viewer_requires_display_for_headless_validation(monkeypatch) -> None:
+  module = _load_module()
+  monkeypatch.delenv("DISPLAY", raising=False)
+  monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+  args = module.build_parser().parse_args(["--validate-walk", "--depth-viewer"])
+
+  try:
+    module.run_validate_walk(args)
+  except RuntimeError as exc:
+    assert "DISPLAY or WAYLAND_DISPLAY" in str(exc)
+  else:  # pragma: no cover - this branch is the failure condition.
+    raise AssertionError("depth viewer should require a graphical display")

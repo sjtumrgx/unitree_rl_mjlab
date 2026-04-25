@@ -90,6 +90,10 @@ class ConstantDepthProvider:
   def stack(self, adapter: "ParkourObservationAdapter | None" = None) -> np.ndarray:
     return self._stack.copy()
 
+  def latest_frame(self, frame_kind: str = "policy") -> np.ndarray:
+    del frame_kind
+    return self._stack[-1].copy()
+
   def diagnostics(self) -> dict[str, Any]:
     return {
       "mode": "constant",
@@ -129,6 +133,10 @@ class FlatGroundDepthProvider:
 
   def __init__(self) -> None:
     self._last_stack = constant_depth_stack(1.0)
+
+  def latest_frame(self, frame_kind: str = "policy") -> np.ndarray:
+    del frame_kind
+    return self._last_stack[-1].copy()
 
   @staticmethod
   def _quat_wxyz_to_matrix(quat: np.ndarray) -> np.ndarray:
@@ -232,6 +240,7 @@ class MujocoRendererDepthProvider:
     self._render_data: Any | None = None
     self._camera_name: str | None = None
     self._source_history: Deque[np.ndarray] = deque(maxlen=self.contract.history_source_length)
+    self._last_raw_frame = np.ones((self.contract.raw_height, self.contract.raw_width), dtype=np.float32)
     self._last_frame = np.ones((self.contract.output_height, self.contract.output_width), dtype=np.float32)
     self._last_stack = constant_depth_stack(1.0)
     self._last_baseline: np.ndarray | None = None
@@ -243,6 +252,7 @@ class MujocoRendererDepthProvider:
 
   def reset(self) -> None:
     self._source_history.clear()
+    self._last_raw_frame = np.ones((self.contract.raw_height, self.contract.raw_width), dtype=np.float32)
     self._last_frame = np.ones((self.contract.output_height, self.contract.output_width), dtype=np.float32)
     self._last_stack = constant_depth_stack(1.0)
     self._last_baseline = None
@@ -318,6 +328,7 @@ class MujocoRendererDepthProvider:
     normalized = (np.asarray(raw_depth_m, dtype=np.float32) - depth_min) / (depth_max - depth_min)
     normalized = np.clip(normalized, 0.0, 1.0)
     normalized = output_min + normalized * (output_max - output_min)
+    self._last_raw_frame = normalized.astype(np.float32, copy=True)
     top, bottom, left, right = self.contract.crop_region
     cropped = normalized[
       top : self.contract.raw_height - bottom,
@@ -327,6 +338,11 @@ class MujocoRendererDepthProvider:
     if cropped.shape != expected:
       raise RuntimeError(f"mujoco depth frame shape {cropped.shape}; expected {expected}")
     return cropped.astype(np.float32, copy=False)
+
+  def latest_frame(self, frame_kind: str = "policy") -> np.ndarray:
+    if frame_kind == "raw":
+      return self._last_raw_frame.copy()
+    return self._last_frame.copy()
 
   def _append_source_frame(self, frame: np.ndarray) -> None:
     if not self._source_history:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Sequence
@@ -169,6 +170,29 @@ def build_parser() -> argparse.ArgumentParser:
     ),
   )
   parser.add_argument(
+    "--depth-viewer",
+    action="store_true",
+    help=(
+      "Open a live grayscale window for the current normalized depth image. "
+      "Use with --depth-mode mujoco to inspect the real parkour_depth_camera stream."
+    ),
+  )
+  parser.add_argument(
+    "--depth-viewer-frame",
+    choices=("policy", "raw"),
+    default="policy",
+    help=(
+      "Depth image shown by --depth-viewer: 'policy' is the cropped 18x32 "
+      "policy input, 'raw' is the normalized 64x36 renderer frame when available."
+    ),
+  )
+  parser.add_argument(
+    "--depth-viewer-frame-rate",
+    type=float,
+    default=15.0,
+    help="Maximum refresh rate for --depth-viewer.",
+  )
+  parser.add_argument(
     "--no-terminations",
     action="store_true",
     help="Disable env terminations for debugging; independent fall checks still run.",
@@ -210,6 +234,91 @@ def _prepare_mujoco_renderer_env(args: argparse.Namespace) -> None:
     # Must be set before imports that transitively load ``mujoco``.  MJLab task
     # and runner packages can import MuJoCo before the renderer provider exists.
     os.environ["MUJOCO_GL"] = "egl"
+
+
+class LiveDepthViewer:
+  """Small optional Matplotlib window for live normalized depth inspection."""
+
+  def __init__(
+    self,
+    *,
+    enabled: bool,
+    title: str,
+    frame_kind: str,
+    frame_rate: float,
+  ) -> None:
+    self.enabled = enabled
+    self.title = title
+    self.frame_kind = frame_kind
+    self.min_interval = 1.0 / max(frame_rate, 1.0)
+    self._last_update = 0.0
+    self._plt: Any | None = None
+    self._figure: Any | None = None
+    self._axes: Any | None = None
+    self._image: Any | None = None
+    if not enabled:
+      return
+    _require_graphical_display()
+    try:
+      import matplotlib.pyplot as plt
+    except ImportError as exc:
+      raise RuntimeError("--depth-viewer requires matplotlib") from exc
+
+    self._plt = plt
+    plt.ion()
+    self._figure, self._axes = plt.subplots(num=title)
+    self._axes.set_axis_off()
+    self._figure.canvas.manager.set_window_title(title)
+
+  def update(self, frame: np.ndarray, diagnostics: dict[str, Any] | None = None) -> None:
+    if not self.enabled or self._plt is None or self._figure is None or self._axes is None:
+      return
+    if not self._plt.fignum_exists(self._figure.number):
+      self.enabled = False
+      return
+    now = time.monotonic()
+    if now - self._last_update < self.min_interval:
+      return
+    self._last_update = now
+    image = np.clip(np.asarray(frame, dtype=np.float32), 0.0, 1.0)
+    if self._image is None:
+      self._image = self._axes.imshow(
+        image,
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        origin="upper",
+        interpolation="nearest",
+      )
+    else:
+      self._image.set_data(image)
+    stats = {
+      "min": float(np.nanmin(image)),
+      "max": float(np.nanmax(image)),
+      "mean": float(np.nanmean(image)),
+    }
+    camera_name = ""
+    if diagnostics:
+      camera = diagnostics.get("camera") or {}
+      camera_name = camera.get("resolved_camera_name") or camera.get("camera_name") or ""
+    self._axes.set_title(
+      f"{self.title} [{self.frame_kind}] {camera_name} "
+      f"min={stats['min']:.3f} mean={stats['mean']:.3f} max={stats['max']:.3f}\n"
+      "0=near/dark, 1=far/bright"
+    )
+    self._figure.canvas.draw_idle()
+    self._plt.pause(0.001)
+
+  def close(self) -> None:
+    if self._plt is not None and self._figure is not None and self._plt.fignum_exists(self._figure.number):
+      self._plt.close(self._figure)
+
+
+def _depth_display_frame(depth_provider: Any, fallback_stack: np.ndarray, frame_kind: str) -> np.ndarray:
+  latest_frame = getattr(depth_provider, "latest_frame", None)
+  if callable(latest_frame):
+    return latest_frame(frame_kind)
+  return np.asarray(fallback_stack[-1], dtype=np.float32)
 
 
 def _load_contract_and_policy(args: argparse.Namespace):
@@ -306,12 +415,14 @@ class ParkourNativeViewerPolicy:
     contract: Any,
     policy: Any | None,
     depth_provider: Any,
+    depth_viewer: LiveDepthViewer | None,
     args: argparse.Namespace,
   ) -> None:
     self.env = env
     self.contract = contract
     self.policy = policy
     self.depth_provider = depth_provider
+    self.depth_viewer = depth_viewer
     self.args = args
     self.adapter: Any | None = None
     self.step_count = 0
@@ -375,6 +486,11 @@ class ParkourNativeViewerPolicy:
     proprio = self.adapter.proprio()
     depth = self.depth_provider.stack(self.adapter)
     assert_depth_contract(depth)
+    if self.depth_viewer is not None:
+      self.depth_viewer.update(
+        _depth_display_frame(self.depth_provider, depth, self.args.depth_viewer_frame),
+        self.depth_provider.diagnostics(),
+      )
 
     if self.policy is None:
       raw_policy_action = np.zeros(self.contract.action_size, dtype=np.float32)
@@ -465,12 +581,19 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     env=raw_env,
     debug_dir=args.depth_debug_dir,
   )
+  depth_viewer = LiveDepthViewer(
+    enabled=args.depth_viewer,
+    title=f"Parkour depth: {args.task}",
+    frame_kind=args.depth_viewer_frame,
+    frame_rate=args.depth_viewer_frame_rate,
+  )
   viewer_env = RslRlVecEnvWrapper(raw_env, clip_actions=None)
   viewer_policy = ParkourNativeViewerPolicy(
     env=raw_env,
     contract=contract,
     policy=policy,
     depth_provider=depth_provider,
+    depth_viewer=depth_viewer,
     args=args,
   )
   raw_env.reset()
@@ -502,6 +625,7 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     )
     return True, payload
   finally:
+    depth_viewer.close()
     if hasattr(depth_provider, "close"):
       depth_provider.close()
     raw_env.close()
@@ -509,6 +633,8 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
 
 def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
   _prepare_mujoco_renderer_env(args)
+  if args.depth_viewer:
+    _require_graphical_display()
 
   from src.parkour.contract import load_deploy_contract, resolve_model_paths
   from src.parkour.onnx_policy import ParkourOnnxPolicy
@@ -531,6 +657,12 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     args.constant_depth,
     env=env,
     debug_dir=args.depth_debug_dir,
+  )
+  depth_viewer = LiveDepthViewer(
+    enabled=args.depth_viewer,
+    title=f"Parkour depth: {args.task}",
+    frame_kind=args.depth_viewer_frame,
+    frame_rate=args.depth_viewer_frame_rate,
   )
 
   summary: dict[str, Any] = {
@@ -613,6 +745,10 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       proprio = adapter.proprio()
       depth = depth_provider.stack(adapter)
       assert_depth_contract(depth)
+      depth_viewer.update(
+        _depth_display_frame(depth_provider, depth, args.depth_viewer_frame),
+        depth_provider.diagnostics(),
+      )
       proprio_finite = bool(np.isfinite(proprio).all())
       if not proprio_finite:
         summary["status"] = "failed"
@@ -765,6 +901,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       )
     return accepted, summary
   finally:
+    depth_viewer.close()
     if hasattr(depth_provider, "close"):
       depth_provider.close()
     env.close()

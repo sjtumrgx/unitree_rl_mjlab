@@ -37,6 +37,8 @@ def test_mujoco_provider_normalizes_crops_and_seeds_history() -> None:
   stack = provider._compose_history_stack()
 
   assert frame.shape == (18, 32)
+  assert provider.latest_frame("policy").shape == (18, 32)
+  assert provider.latest_frame("raw").shape == (36, 64)
   assert frame.dtype == np.float32
   assert 0.0 <= float(frame.min()) <= float(frame.max()) <= 1.0
   assert stack.shape == DEPTH_SHAPE
@@ -54,6 +56,7 @@ def test_mujoco_depth_mode_is_backed_by_renderer_provider() -> None:
   assert "endswith(\"/\" + self.contract.camera_name)" in source
   assert "history_skip_frames" in source
   assert "visibility_best" in source
+  assert "latest_frame" in source
 
 
 def test_play_script_sets_egl_before_importing_renderer_depth_dependencies() -> None:
