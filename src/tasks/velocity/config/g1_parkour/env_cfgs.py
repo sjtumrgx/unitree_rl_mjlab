@@ -9,7 +9,12 @@ from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 
-from src.assets.robots import get_g1_parkour_obstacle_robot_cfg, get_g1_parkour_robot_cfg
+from src.assets.robots import (
+  PARKOUR_COMPLEX_TERRAIN_GEOM_NAMES,
+  get_g1_parkour_complex_terrain_robot_cfg,
+  get_g1_parkour_obstacle_robot_cfg,
+  get_g1_parkour_robot_cfg,
+)
 from src.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 
 from src.parkour.contract import (
@@ -21,12 +26,57 @@ from src.parkour.contract import (
 
 PARKOUR_FLAT_DEBUG_TASK_ID = "Unitree-G1-Parkour-FlatDebug"
 PARKOUR_OBSTACLE_DEBUG_TASK_ID = "Unitree-G1-Parkour-ObstacleDebug"
+PARKOUR_COMPLEX_TERRAIN_DEBUG_TASK_ID = "Unitree-G1-Parkour-ComplexTerrainDebug"
 DEFAULT_COMMAND_X = 0.25
 PARKOUR_OBSTACLE_DEBUG_GEOMS = (
   "robot/parkour_debug_low_block",
   "robot/parkour_debug_gap_near_lip",
   "robot/parkour_debug_gap_far_lip",
 )
+PARKOUR_COMPLEX_TERRAIN_DEBUG_GEOMS = tuple(
+  f"robot/{name}" for name in PARKOUR_COMPLEX_TERRAIN_GEOM_NAMES
+)
+PARKOUR_COMPLEX_TERRAIN_INSTINCTLAB_REFERENCE = {
+  "source": (
+    "/home/eilab/instinctlab/source/instinctlab/instinctlab/tasks/"
+    "parkour/config/parkour_env_cfg.py::ROUGH_TERRAINS_CFG"
+  ),
+  "approximated_sub_terrains": (
+    "pyramid_stairs",
+    "pyramid_stairs_inv",
+    "square_gaps",
+    "boxes",
+    "mesh_boxes",
+  ),
+  "instinctlab_params": {
+    "pyramid_stairs": {
+      "step_height_range_m": (0.05, 0.23),
+      "step_width_m": 0.3,
+      "platform_width_m": 2.5,
+    },
+    "pyramid_stairs_inv": {
+      "step_height_range_m": (0.05, 0.23),
+      "step_width_m": 0.3,
+      "platform_width_m": 2.5,
+    },
+    "square_gaps": {
+      "gap_distance_range_m": (0.1, 0.4),
+      "gap_depth_m": (0.4, 0.6),
+      "platform_width_m": 2.5,
+    },
+    "boxes": {
+      "num_obstacles": 20,
+      "obstacle_width_range_m": (0.8, 1.5),
+      "obstacle_height_range_m": (0.05, 0.45),
+    },
+    "mesh_boxes": {
+      "box_height_mean_m": (0.1, 0.4),
+      "box_height_range_m": 0.05,
+      "box_length_mean_m": 0.4,
+      "box_width_mean_m": 0.4,
+    },
+  },
+}
 
 
 def _apply_parkour_observation_contract(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -158,5 +208,44 @@ def unitree_g1_parkour_obstacle_debug_env_cfg(play: bool = False) -> ManagerBase
     "low_block_height_m": 0.05,
     "gap_width_m": 0.10,
     "target_distance_m": 3.0,
+  }
+  return cfg
+
+
+def unitree_g1_parkour_complex_terrain_debug_env_cfg(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Create an InstinctLab-inspired complex terrain debug env.
+
+  This task intentionally uses deterministic MJCF boxes instead of the
+  procedural IsaacLab height-field generator.  It gives the depth renderer and
+  policy loop a repeatable course with up/down stairs, a square-gap surrogate,
+  discrete boxes, and mesh-box stepping stones.
+  """
+  cfg = unitree_g1_parkour_flat_debug_env_cfg(play=play)
+  cfg.scene.entities = {"robot": get_g1_parkour_complex_terrain_robot_cfg()}
+  cfg.sim.nconmax = max(cfg.sim.nconmax, 512)
+  cfg.sim.contact_sensor_maxmatch = max(cfg.sim.contact_sensor_maxmatch, 512)
+  cfg.g1_parkour_flat_debug = False  # type: ignore[attr-defined]
+  cfg.g1_parkour_obstacle_debug = False  # type: ignore[attr-defined]
+  cfg.g1_parkour_complex_terrain_debug = True  # type: ignore[attr-defined]
+  cfg.g1_parkour_complex_terrain_geoms = (  # type: ignore[attr-defined]
+    PARKOUR_COMPLEX_TERRAIN_DEBUG_GEOMS
+  )
+  cfg.g1_parkour_complex_terrain_contract = {  # type: ignore[attr-defined]
+    "target_distance_m": 7.0,
+    "up_stairs": {"steps": 4, "step_run_m": 0.30, "max_height_m": 0.20},
+    "down_stairs": {"steps": 4, "step_run_m": 0.30, "max_height_m": 0.20},
+    "gap": {
+      "platform_height_m": 0.08,
+      "lower_strip_width_m": 0.24,
+      "keeps_global_floor": True,
+    },
+    "box_field": {
+      "discrete_boxes": 3,
+      "mesh_style_boxes": 3,
+      "height_range_m": (0.06, 0.10),
+    },
+    "instinctlab_reference": PARKOUR_COMPLEX_TERRAIN_INSTINCTLAB_REFERENCE,
   }
   return cfg

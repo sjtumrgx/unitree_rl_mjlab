@@ -14,7 +14,13 @@ from .unitree_g1.g1_constants import (
   G1_ACTION_SCALE as G1_ACTION_SCALE,
 )
 from .unitree_g1.g1_constants import (
+  PARKOUR_COMPLEX_TERRAIN_GEOM_NAMES as PARKOUR_COMPLEX_TERRAIN_GEOM_NAMES,
+)
+from .unitree_g1.g1_constants import (
   get_g1_robot_cfg as get_g1_robot_cfg,
+)
+from .unitree_g1.g1_constants import (
+  get_g1_parkour_complex_terrain_robot_cfg as get_g1_parkour_complex_terrain_robot_cfg,
 )
 from .unitree_g1.g1_constants import (
   get_g1_parkour_robot_cfg as get_g1_parkour_robot_cfg,
