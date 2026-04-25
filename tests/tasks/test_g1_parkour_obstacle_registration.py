@@ -6,51 +6,19 @@ from mjlab.tasks.registry import list_tasks, load_env_cfg
 
 from src.assets.robots.unitree_g1.g1_constants import (
   get_g1_parkour_complex_terrain_debug_spec,
-  get_g1_parkour_obstacle_debug_spec,
 )
 from src.parkour.contract import ACTION_SIZE, assert_no_stale_sensor_references
 from src.tasks.velocity.config.g1_parkour.env_cfgs import (
-  PARKOUR_COMPLEX_TERRAIN_DEBUG_GEOMS,
-  PARKOUR_COMPLEX_TERRAIN_DEBUG_TASK_ID,
-  PARKOUR_OBSTACLE_DEBUG_GEOMS,
-  PARKOUR_OBSTACLE_DEBUG_TASK_ID,
+  PARKOUR_COMPLEX_TERRAIN_GEOMS,
   PARKOUR_TASK_ID,
 )
 
 
-def test_g1_parkour_obstacle_debug_task_is_registered() -> None:
-  assert PARKOUR_OBSTACLE_DEBUG_TASK_ID in list_tasks()
+def test_only_formal_g1_parkour_task_is_publicly_registered() -> None:
+  parkour_tasks = [task for task in list_tasks() if "Parkour" in task]
 
-
-def test_g1_parkour_obstacle_debug_cfg_marks_conservative_contract() -> None:
-  cfg = load_env_cfg(PARKOUR_OBSTACLE_DEBUG_TASK_ID, play=True)
-
-  assert getattr(cfg, "g1_parkour_obstacle_debug") is True
-  assert getattr(cfg, "g1_parkour_flat_debug") is False
-  assert getattr(cfg, "g1_parkour_obstacle_geoms") == PARKOUR_OBSTACLE_DEBUG_GEOMS
-  assert getattr(cfg, "g1_parkour_obstacle_contract") == {
-    "low_block_height_m": 0.05,
-    "gap_width_m": 0.10,
-    "target_distance_m": 3.0,
-  }
-  assert "robot" in cfg.scene.entities
-  assert len(cfg.actions["joint_pos"].scale) == ACTION_SIZE
-  assert_no_stale_sensor_references(cfg)
-
-
-def test_g1_parkour_obstacle_spec_contains_deterministic_low_block_and_gap() -> None:
-  spec = get_g1_parkour_obstacle_debug_spec()
-  geom_names = {geom.name for geom in spec.worldbody.geoms}
-
-  assert {
-    "parkour_debug_low_block",
-    "parkour_debug_gap_near_lip",
-    "parkour_debug_gap_far_lip",
-  }.issubset(geom_names)
-
-
-def test_g1_parkour_complex_terrain_debug_task_is_registered() -> None:
-  assert PARKOUR_COMPLEX_TERRAIN_DEBUG_TASK_ID in list_tasks()
+  assert parkour_tasks == [PARKOUR_TASK_ID]
+  assert not any("Debug" in task for task in parkour_tasks)
 
 
 def test_g1_parkour_formal_task_defaults_to_complex_route_terrain() -> None:
@@ -72,15 +40,17 @@ def test_g1_parkour_formal_task_defaults_to_complex_route_terrain() -> None:
 
 
 def test_g1_parkour_complex_terrain_cfg_marks_instinctlab_reference() -> None:
-  cfg = load_env_cfg(PARKOUR_COMPLEX_TERRAIN_DEBUG_TASK_ID, play=True)
+  cfg = load_env_cfg(PARKOUR_TASK_ID, play=True)
   contract = getattr(cfg, "g1_parkour_complex_terrain_contract")
 
-  assert getattr(cfg, "g1_parkour_complex_terrain_debug") is True
+  assert getattr(cfg, "g1_parkour_official") is True
+  assert getattr(cfg, "g1_parkour_complex_terrain") is True
+  assert getattr(cfg, "g1_parkour_complex_terrain_debug") is False
   assert getattr(cfg, "g1_parkour_flat_debug") is False
   assert getattr(cfg, "g1_parkour_obstacle_debug") is False
   assert (
     getattr(cfg, "g1_parkour_complex_terrain_geoms")
-    == PARKOUR_COMPLEX_TERRAIN_DEBUG_GEOMS
+    == PARKOUR_COMPLEX_TERRAIN_GEOMS
   )
   assert contract["target_distance_m"] >= 18.0
   assert contract["up_stairs"] == {
@@ -94,6 +64,8 @@ def test_g1_parkour_complex_terrain_cfg_marks_instinctlab_reference() -> None:
     "max_height_m": 0.30,
   }
   assert contract["gap"]["keeps_global_floor"] is True
+  assert contract["gap"]["lower_strip_width_m"] <= 0.40
+  assert contract["gap"]["second_lower_strip_width_m"] <= 0.40
   assert "pyramid_stairs" in contract["instinctlab_reference"][
     "approximated_sub_terrains"
   ]
@@ -102,6 +74,14 @@ def test_g1_parkour_complex_terrain_cfg_marks_instinctlab_reference() -> None:
   ]
   assert len(cfg.actions["joint_pos"].scale) == ACTION_SIZE
   assert_no_stale_sensor_references(cfg)
+
+
+def _gap_distance(spec, near_name: str, far_name: str) -> float:
+  near = next(geom for geom in spec.worldbody.geoms if geom.name == near_name)
+  far = next(geom for geom in spec.worldbody.geoms if geom.name == far_name)
+  near_far_edge = float(near.pos[0] + near.size[0])
+  far_near_edge = float(far.pos[0] - far.size[0])
+  return far_near_edge - near_far_edge
 
 
 def test_g1_parkour_complex_terrain_spec_contains_expected_assets() -> None:
@@ -124,3 +104,18 @@ def test_g1_parkour_complex_terrain_spec_contains_expected_assets() -> None:
     "parkour_complex_mesh_box_01",
     "parkour_complex_mesh_box_06",
   }.issubset(geom_names)
+
+
+def test_g1_parkour_complex_terrain_gaps_are_no_more_than_40cm() -> None:
+  spec = get_g1_parkour_complex_terrain_debug_spec()
+
+  assert _gap_distance(
+    spec,
+    "parkour_complex_gap_near_platform",
+    "parkour_complex_gap_far_platform",
+  ) <= 0.40
+  assert _gap_distance(
+    spec,
+    "parkour_complex_second_gap_near_platform",
+    "parkour_complex_second_gap_far_platform",
+  ) <= 0.40

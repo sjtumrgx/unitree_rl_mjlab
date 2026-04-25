@@ -215,13 +215,13 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
   )
   add_box(
     "parkour_complex_gap_floor_marker",
-    pos=(7.45, 0.0, 0.004),
-    size=(0.18, 0.66, 0.004),
+    pos=(7.345, 0.0, 0.004),
+    size=(0.195, 0.66, 0.004),
     rgba=(0.05, 0.05, 0.06, 1.0),
   )
   add_box(
     "parkour_complex_gap_far_platform",
-    pos=(8.10, 0.0, 0.055),
+    pos=(7.89, 0.0, 0.055),
     size=(0.35, stair_half_width, 0.055),
     rgba=(0.42, 0.43, 0.48, 1.0),
   )
@@ -280,13 +280,13 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
   )
   add_box(
     "parkour_complex_second_gap_floor_marker",
-    pos=(19.75, 0.0, 0.004),
-    size=(0.22, 0.66, 0.004),
+    pos=(19.645, 0.0, 0.004),
+    size=(0.195, 0.66, 0.004),
     rgba=(0.04, 0.04, 0.05, 1.0),
   )
   add_box(
     "parkour_complex_second_gap_far_platform",
-    pos=(20.40, 0.0, 0.055),
+    pos=(20.19, 0.0, 0.055),
     size=(0.35, stair_half_width, 0.055),
     rgba=(0.38, 0.40, 0.46, 1.0),
   )

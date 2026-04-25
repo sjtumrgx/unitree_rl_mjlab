@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -78,6 +79,8 @@ def test_parser_defaults_use_mujoco_viewer_policy_depth_and_route_command() -> N
   assert args.depth_viewer is True
   assert args.depth_viewer_frame == "policy"
   assert args.command_mode == "terrain-route"
+  assert args.walk_distance is None
+  assert args.max_seconds is None
 
 
 def test_parser_keeps_headless_debug_overrides_available() -> None:
@@ -137,6 +140,17 @@ def test_terrain_route_command_steers_back_to_centerline() -> None:
   assert command[1] < 0.0
   assert command[2] < 0.0
   assert diagnostics["target_waypoint"] == [2.0, 0.0]
+
+
+def test_default_play_targets_use_route_endpoint_and_enough_time() -> None:
+  module = _load_module()
+  env = SimpleNamespace(
+    cfg=SimpleNamespace(g1_parkour_route_waypoints=((0.0, 0.0), (25.2, 0.0))),
+  )
+  args = module.build_parser().parse_args([])
+
+  assert module._resolve_walk_distance(args, env) == 25.2
+  assert module._resolve_max_seconds(args, env) > 100.0
 
 
 def test_native_viewer_requires_graphical_display(monkeypatch) -> None:

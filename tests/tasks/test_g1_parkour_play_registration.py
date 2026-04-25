@@ -12,18 +12,21 @@ from src.parkour.contract import (
   assert_no_stale_sensor_references,
   load_deploy_contract,
 )
-from src.tasks.velocity.config.g1_parkour.env_cfgs import PARKOUR_FLAT_DEBUG_TASK_ID
+from src.tasks.velocity.config.g1_parkour.env_cfgs import PARKOUR_TASK_ID
 from src.tasks.velocity.rl import VelocityOnPolicyRunner
 
 
-def test_g1_parkour_flat_debug_task_is_registered() -> None:
-  assert PARKOUR_FLAT_DEBUG_TASK_ID in list_tasks()
+def test_g1_parkour_task_is_registered_without_debug_aliases() -> None:
+  parkour_tasks = [task for task in list_tasks() if "Parkour" in task]
+
+  assert parkour_tasks == [PARKOUR_TASK_ID]
 
 
-def test_g1_parkour_flat_debug_cfg_uses_parkour_robot_and_no_stale_scene_sensors() -> None:
-  cfg = load_env_cfg(PARKOUR_FLAT_DEBUG_TASK_ID, play=True)
+def test_g1_parkour_cfg_uses_parkour_robot_and_no_stale_scene_sensors() -> None:
+  cfg = load_env_cfg(PARKOUR_TASK_ID, play=True)
   assert "robot" in cfg.scene.entities
-  assert getattr(cfg, "g1_parkour_flat_debug") is True
+  assert getattr(cfg, "g1_parkour_official") is True
+  assert getattr(cfg, "g1_parkour_flat_debug") is False
   assert_no_stale_sensor_references(cfg)
 
   actor_terms = cfg.observations["actor"].terms
@@ -39,7 +42,7 @@ def test_g1_parkour_flat_debug_cfg_uses_parkour_robot_and_no_stale_scene_sensors
 
 
 def test_g1_parkour_action_contract_matches_deploy_yaml() -> None:
-  cfg = load_env_cfg(PARKOUR_FLAT_DEBUG_TASK_ID, play=True)
+  cfg = load_env_cfg(PARKOUR_TASK_ID, play=True)
   contract = load_deploy_contract()
   action = cfg.actions["joint_pos"]
 
@@ -49,7 +52,7 @@ def test_g1_parkour_action_contract_matches_deploy_yaml() -> None:
     assert action.scale[name] == scale
 
 
-def test_g1_parkour_rl_cfg_loads_as_dedicated_onnx_debug_task() -> None:
-  rl_cfg = load_rl_cfg(PARKOUR_FLAT_DEBUG_TASK_ID)
-  assert rl_cfg.experiment_name == "g1_parkour_flat_debug"
-  assert load_runner_cls(PARKOUR_FLAT_DEBUG_TASK_ID) is VelocityOnPolicyRunner
+def test_g1_parkour_rl_cfg_loads_as_dedicated_onnx_play_task() -> None:
+  rl_cfg = load_rl_cfg(PARKOUR_TASK_ID)
+  assert rl_cfg.experiment_name == "g1_parkour"
+  assert load_runner_cls(PARKOUR_TASK_ID) is VelocityOnPolicyRunner

@@ -202,11 +202,12 @@ python scripts/play.py Unitree-G1-AntiFall-Stage4b \
 
 - 默认任务：`Unitree-G1-Parkour`
 - 默认地形：更长的、参考 InstinctLab 的 MuJoCo 复杂地形序列
-  （上楼梯、下楼梯、gap 近似、方块障碍、mesh-box stepping stones）
+  （上楼梯、下楼梯、gap 近似、方块障碍、mesh-box stepping stones；gap 最大 0.40 m）
 - 默认显示：MuJoCo native viewer + 实时 **policy 输入深度图**窗口
 - 默认速度指令：`terrain-route`，会沿着任务里的
   `g1_parkour_route_waypoints` 生成速度指令，尽量让机器人按地形资产顺序走过去，
   而不是只给固定 x 方向速度导致越走越偏。
+- 默认停止方式：按路线终点自动计算足够的运行时间，避免旧的短 debug 时长还没走完就停止。
 
 直接运行默认可视化：
 
@@ -222,10 +223,6 @@ python scripts/play_parkour.py --validate-walk \
   --viewer none \
   --no-depth-viewer \
   --max-steps 20
-
-# 查看较小的复杂地形 debug 任务。
-python scripts/play_parkour.py \
-  --task Unitree-G1-Parkour-ComplexTerrainDebug
 
 # 关闭路线跟随，改用固定速度指令。
 python scripts/play_parkour.py \

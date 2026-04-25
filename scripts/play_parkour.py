@@ -135,9 +135,23 @@ def build_parser() -> argparse.ArgumentParser:
     default="policy",
     help="Use the ONNX policy or a zero-action hold baseline for asset/init diagnostics.",
   )
-  parser.add_argument("--max-seconds", type=float, default=20.0, help="Validation duration.")
+  parser.add_argument(
+    "--max-seconds",
+    type=float,
+    help=(
+      "Validation/viewer duration. Default auto-computes enough time for the "
+      "terrain route endpoint, or 20s when no route is available."
+    ),
+  )
   parser.add_argument("--max-steps", type=int, help="Override validation step count.")
-  parser.add_argument("--walk-distance", type=float, default=5.0, help="Forward displacement acceptance target.")
+  parser.add_argument(
+    "--walk-distance",
+    type=float,
+    help=(
+      "Forward displacement acceptance target. Default is the route endpoint "
+      "distance, or 5m when no route is available."
+    ),
+  )
   parser.add_argument(
     "--startup-blend-seconds",
     type=float,
@@ -450,6 +464,30 @@ def _route_waypoints_from_env(env: Any) -> tuple[tuple[float, float], ...]:
   cfg = getattr(env, "cfg", None)
   waypoints = getattr(cfg, "g1_parkour_route_waypoints", ()) if cfg is not None else ()
   return tuple((float(point[0]), float(point[1])) for point in waypoints)
+
+
+def _route_endpoint_distance(env: Any) -> float | None:
+  waypoints = _route_waypoints_from_env(env)
+  if len(waypoints) < 2:
+    return None
+  return max(0.0, waypoints[-1][0] - waypoints[0][0])
+
+
+def _resolve_walk_distance(args: argparse.Namespace, env: Any) -> float:
+  if args.walk_distance is not None:
+    return float(args.walk_distance)
+  route_distance = _route_endpoint_distance(env)
+  return route_distance if route_distance is not None else 5.0
+
+
+def _resolve_max_seconds(args: argparse.Namespace, env: Any) -> float:
+  if args.max_seconds is not None:
+    return float(args.max_seconds)
+  route_distance = _route_endpoint_distance(env)
+  if route_distance is None:
+    return 20.0
+  speed = max(abs(float(args.command_x)), 0.05)
+  return max(20.0, route_distance / speed + 10.0)
 
 
 def _make_route_follower(
@@ -791,12 +829,13 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
   )
   raw_env.reset()
   viewer_policy.reset()
+  resolved_max_seconds = _resolve_max_seconds(args, raw_env)
   num_steps = None
   if not args.viewer_run_until_closed:
-    num_steps = args.max_steps or max(1, int(round(args.max_seconds / raw_env.step_dt)))
+    num_steps = args.max_steps or max(1, int(round(resolved_max_seconds / raw_env.step_dt)))
   print(
     "[parkour] Launching native MuJoCo viewer. "
-    "Close the window to stop; use --viewer-run-until-closed for no max-seconds cap."
+    "Close the window to stop; default duration follows the terrain route endpoint."
   )
   try:
     NativeMujocoViewer(
@@ -814,6 +853,8 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "viewer": args.viewer,
         "viewer_frame_rate": args.viewer_frame_rate,
         "viewer_run_until_closed": args.viewer_run_until_closed,
+        "max_seconds": resolved_max_seconds,
+        "max_steps": num_steps,
       }
     )
     return True, payload
@@ -857,6 +898,8 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     frame_kind=args.depth_viewer_frame,
     frame_rate=args.depth_viewer_frame_rate,
   )
+  walk_distance = _resolve_walk_distance(args, env)
+  max_seconds = _resolve_max_seconds(args, env)
 
   summary: dict[str, Any] = {
     "mode": "validate-walk",
@@ -871,8 +914,8 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     "policy_frame": args.policy_frame,
     "joint_order": args.joint_order,
     "action_order": args.action_order,
-    "max_seconds": args.max_seconds,
-    "walk_distance": args.walk_distance,
+    "max_seconds": max_seconds,
+    "walk_distance": walk_distance,
     "depth_contract_only": args.depth_contract_only,
     "startup_blend_seconds": args.startup_blend_seconds,
     "action_clip": args.action_clip,
@@ -936,7 +979,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       summary["fall_signals"] = initial_fall
       return False, summary
 
-    max_steps = args.max_steps or max(1, int(round(args.max_seconds / env.step_dt)))
+    max_steps = args.max_steps or max(1, int(round(max_seconds / env.step_dt)))
     if args.action_delay_steps < 0:
       raise ValueError("--action-delay-steps must be non-negative")
     action_delay_buffer = deque(
@@ -1071,7 +1114,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         )
         return False, summary
 
-      if distance >= args.walk_distance:
+      if distance >= walk_distance:
         break
 
     depth_diag = depth_provider.diagnostics()
@@ -1081,7 +1124,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       and depth_diag.get("size") == contract.depth_size
       and all(np.isfinite(float(depth_stats.get(key, 0.0))) for key in ("min", "max", "mean"))
     )
-    traversal_accepted = distance >= args.walk_distance
+    traversal_accepted = distance >= walk_distance
     accepted = traversal_accepted or (args.depth_contract_only and depth_contract_met)
     summary.update(
       {
@@ -1097,7 +1140,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "depth": depth_diag,
         "acceptance": {
           "distance_target_met": traversal_accepted,
-          "duration_target_met": elapsed >= args.max_seconds,
+          "duration_target_met": elapsed >= max_seconds,
           "depth_contract_met": depth_contract_met,
           "depth_contract_only": args.depth_contract_only,
           "no_uncontrolled_fall": True,

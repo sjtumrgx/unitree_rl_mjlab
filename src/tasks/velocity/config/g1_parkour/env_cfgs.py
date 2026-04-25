@@ -12,7 +12,6 @@ from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.assets.robots import (
   PARKOUR_COMPLEX_TERRAIN_GEOM_NAMES,
   get_g1_parkour_complex_terrain_robot_cfg,
-  get_g1_parkour_obstacle_robot_cfg,
   get_g1_parkour_robot_cfg,
 )
 from src.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
@@ -25,28 +24,20 @@ from src.parkour.contract import (
 )
 
 PARKOUR_TASK_ID = "Unitree-G1-Parkour"
-PARKOUR_FLAT_DEBUG_TASK_ID = "Unitree-G1-Parkour-FlatDebug"
-PARKOUR_OBSTACLE_DEBUG_TASK_ID = "Unitree-G1-Parkour-ObstacleDebug"
-PARKOUR_COMPLEX_TERRAIN_DEBUG_TASK_ID = "Unitree-G1-Parkour-ComplexTerrainDebug"
 DEFAULT_COMMAND_X = 0.25
-PARKOUR_OBSTACLE_DEBUG_GEOMS = (
-  "robot/parkour_debug_low_block",
-  "robot/parkour_debug_gap_near_lip",
-  "robot/parkour_debug_gap_far_lip",
-)
-PARKOUR_COMPLEX_TERRAIN_DEBUG_GEOMS = tuple(
+PARKOUR_COMPLEX_TERRAIN_GEOMS = tuple(
   f"robot/{name}" for name in PARKOUR_COMPLEX_TERRAIN_GEOM_NAMES
 )
 PARKOUR_COMPLEX_TERRAIN_ROUTE_WAYPOINTS = (
   (0.0, 0.0),
   (2.0, 0.0),
   (4.8, 0.0),
-  (7.45, 0.0),
+  (7.345, 0.0),
   (10.8, 0.0),
   (13.2, 0.0),
   (15.5, 0.0),
   (17.8, 0.0),
-  (19.75, 0.0),
+  (19.645, 0.0),
   (22.0, 0.0),
   (25.2, 0.0),
 )
@@ -190,8 +181,8 @@ def _remove_training_only_managers(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.curriculum = {}
 
 
-def unitree_g1_parkour_flat_debug_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create a deterministic flat-debug env for the torso-root parkour G1."""
+def _unitree_g1_parkour_base_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create the shared torso-root parkour G1 env before terrain selection."""
   cfg = unitree_g1_flat_env_cfg(play=play)
   cfg.scene.entities = {"robot": get_g1_parkour_robot_cfg()}
   cfg.scene.num_envs = 1
@@ -211,32 +202,17 @@ def unitree_g1_parkour_flat_debug_env_cfg(play: bool = False) -> ManagerBasedRlE
   return cfg
 
 
-def unitree_g1_parkour_obstacle_debug_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create a deterministic low-block + shallow-gap parkour debug env."""
-  cfg = unitree_g1_parkour_flat_debug_env_cfg(play=play)
-  cfg.scene.entities = {"robot": get_g1_parkour_obstacle_robot_cfg()}
-  cfg.g1_parkour_flat_debug = False  # type: ignore[attr-defined]
-  cfg.g1_parkour_obstacle_debug = True  # type: ignore[attr-defined]
-  cfg.g1_parkour_obstacle_geoms = PARKOUR_OBSTACLE_DEBUG_GEOMS  # type: ignore[attr-defined]
-  cfg.g1_parkour_obstacle_contract = {  # type: ignore[attr-defined]
-    "low_block_height_m": 0.05,
-    "gap_width_m": 0.10,
-    "target_distance_m": 3.0,
-  }
-  return cfg
-
-
-def unitree_g1_parkour_complex_terrain_debug_env_cfg(
+def _unitree_g1_parkour_complex_terrain_env_cfg(
   play: bool = False,
 ) -> ManagerBasedRlEnvCfg:
-  """Create an InstinctLab-inspired complex terrain debug env.
+  """Create an InstinctLab-inspired complex terrain env.
 
   This task intentionally uses deterministic MJCF boxes instead of the
   procedural IsaacLab height-field generator.  It gives the depth renderer and
   policy loop a repeatable course with up/down stairs, a square-gap surrogate,
   discrete boxes, and mesh-box stepping stones.
   """
-  cfg = unitree_g1_parkour_flat_debug_env_cfg(play=play)
+  cfg = _unitree_g1_parkour_base_env_cfg(play=play)
   cfg.scene.entities = {"robot": get_g1_parkour_complex_terrain_robot_cfg()}
   cfg.sim.nconmax = max(cfg.sim.nconmax, 512)
   cfg.sim.contact_sensor_maxmatch = max(cfg.sim.contact_sensor_maxmatch, 512)
@@ -245,7 +221,7 @@ def unitree_g1_parkour_complex_terrain_debug_env_cfg(
   cfg.g1_parkour_complex_terrain = True  # type: ignore[attr-defined]
   cfg.g1_parkour_complex_terrain_debug = True  # type: ignore[attr-defined]
   cfg.g1_parkour_complex_terrain_geoms = (  # type: ignore[attr-defined]
-    PARKOUR_COMPLEX_TERRAIN_DEBUG_GEOMS
+    PARKOUR_COMPLEX_TERRAIN_GEOMS
   )
   cfg.g1_parkour_route_waypoints = (  # type: ignore[attr-defined]
     PARKOUR_COMPLEX_TERRAIN_ROUTE_WAYPOINTS
@@ -257,8 +233,8 @@ def unitree_g1_parkour_complex_terrain_debug_env_cfg(
     "second_stairs": {"steps": 4, "step_run_m": 0.42, "max_height_m": 0.28},
     "gap": {
       "platform_height_m": 0.11,
-      "lower_strip_width_m": 0.36,
-      "second_lower_strip_width_m": 0.44,
+      "lower_strip_width_m": 0.39,
+      "second_lower_strip_width_m": 0.39,
       "keeps_global_floor": True,
     },
     "box_field": {
@@ -273,8 +249,8 @@ def unitree_g1_parkour_complex_terrain_debug_env_cfg(
 
 
 def unitree_g1_parkour_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create the default non-debug G1 parkour play env on complex terrain."""
-  cfg = unitree_g1_parkour_complex_terrain_debug_env_cfg(play=play)
+  """Create the default G1 parkour play env on complex terrain."""
+  cfg = _unitree_g1_parkour_complex_terrain_env_cfg(play=play)
   cfg.g1_parkour_official = True  # type: ignore[attr-defined]
   cfg.g1_parkour_complex_terrain_debug = False  # type: ignore[attr-defined]
   return cfg

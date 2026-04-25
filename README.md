@@ -209,12 +209,14 @@ depth-conditioned G1 parkour model:
 - default task: `Unitree-G1-Parkour`
 - default terrain: the longer InstinctLab-inspired MuJoCo terrain sequence
   (up stairs, down stairs, square-gap surrogates, box fields, and mesh-box
-  stepping stones)
+  stepping stones; gap spans are capped at 0.40 m)
 - default visualization: native MuJoCo viewer plus the live **policy depth**
   camera window
 - default command source: `terrain-route`, which steers the velocity command
   along the task's terrain waypoints instead of blindly walking in a fixed
   world direction.
+- default stopping behavior: runs long enough to reach the route endpoint
+  instead of stopping after the old short debug duration.
 
 Run the default visual play mode:
 
@@ -230,10 +232,6 @@ python scripts/play_parkour.py --validate-walk \
   --viewer none \
   --no-depth-viewer \
   --max-steps 20
-
-# Inspect a smaller debug terrain.
-python scripts/play_parkour.py \
-  --task Unitree-G1-Parkour-ComplexTerrainDebug
 
 # Disable route following and use fixed velocity commands.
 python scripts/play_parkour.py \
