@@ -214,9 +214,12 @@ depth-conditioned G1 parkour model:
   camera window
 - default command source: `terrain-route`, which steers the velocity command
   along the task's terrain waypoints instead of blindly walking in a fixed
-  world direction.
+  world direction.  Use `--terrain-route-speed` to explicitly set the route
+  walking speed.
 - default stopping behavior: runs long enough to reach the route endpoint
   instead of stopping after the old short debug duration.
+- optional video: `--video` records 1080p MP4 by default next to the exported
+  model files; use `--video-dir` to choose another output directory.
 
 Run the default visual play mode:
 
@@ -239,6 +242,12 @@ python scripts/play_parkour.py \
   --command-x 0.25 \
   --command-y 0.0 \
   --command-yaw 0.0
+
+# Route following with an explicit walking speed and video output directory.
+python scripts/play_parkour.py \
+  --terrain-route-speed 0.35 \
+  --video \
+  --video-dir /tmp/parkour-videos
 ```
 
 The native viewer and depth window require a graphical display

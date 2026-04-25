@@ -60,7 +60,10 @@ def test_help_documents_parkour_contract_and_diagnostic_flags() -> None:
     "--startup-blend-seconds",
     "--no-depth-viewer",
     "--command-mode",
+    "--terrain-route-speed",
     "--terrain-route-lookahead",
+    "--video",
+    "--video-dir",
   ):
     assert flag in help_text
   assert "Unitree-G1-Parkour" in help_text
@@ -79,8 +82,12 @@ def test_parser_defaults_use_mujoco_viewer_policy_depth_and_route_command() -> N
   assert args.depth_viewer is True
   assert args.depth_viewer_frame == "policy"
   assert args.command_mode == "terrain-route"
+  assert args.terrain_route_speed == 0.25
   assert args.walk_distance is None
   assert args.max_seconds is None
+  assert args.video is False
+  assert args.video_width == 1920
+  assert args.video_height == 1080
 
 
 def test_parser_keeps_headless_debug_overrides_available() -> None:
@@ -142,6 +149,26 @@ def test_terrain_route_command_steers_back_to_centerline() -> None:
   assert diagnostics["target_waypoint"] == [2.0, 0.0]
 
 
+def test_terrain_route_command_stops_after_final_waypoint() -> None:
+  module = _load_module()
+  follower = module.ParkourTerrainRouteFollower(
+    waypoints=((0.0, 0.0), (2.0, 0.0), (4.0, 0.0)),
+    speed=0.3,
+    lookahead=1.0,
+    max_lateral_speed=0.35,
+    max_yaw_rate=0.8,
+    yaw_gain=1.5,
+  )
+
+  command, diagnostics = follower.command(
+    base_pos=(4.01, 0.05, 0.8),
+    root_quat=(1.0, 0.0, 0.0, 0.0),
+  )
+
+  assert command == (0.0, 0.0, 0.0)
+  assert diagnostics["route_completed"] is True
+
+
 def test_default_play_targets_use_route_endpoint_and_enough_time() -> None:
   module = _load_module()
   env = SimpleNamespace(
@@ -151,6 +178,42 @@ def test_default_play_targets_use_route_endpoint_and_enough_time() -> None:
 
   assert module._resolve_walk_distance(args, env) == 25.2
   assert module._resolve_max_seconds(args, env) > 100.0
+
+
+def test_terrain_route_speed_controls_route_timing_without_changing_fixed_command() -> None:
+  module = _load_module()
+  env = SimpleNamespace(
+    cfg=SimpleNamespace(g1_parkour_route_waypoints=((0.0, 0.0), (25.2, 0.0))),
+  )
+  args = module.build_parser().parse_args(["--terrain-route-speed", "0.5"])
+
+  assert args.command_x == 0.25
+  assert args.terrain_route_speed == 0.5
+  assert module._resolve_max_seconds(args, env) == 25.2 / 0.5 + 10.0
+
+
+def test_video_defaults_to_exported_model_directory_and_1080p() -> None:
+  module = _load_module()
+  args = module.build_parser().parse_args(["--video"])
+  paths = SimpleNamespace(exported_dir=Path("/tmp/policy/exported"))
+
+  output = module._resolve_video_output_path(args, paths)
+
+  assert output.parent == Path("/tmp/policy/exported")
+  assert output.suffix == ".mp4"
+  assert args.video_width == 1920
+  assert args.video_height == 1080
+
+
+def test_video_dir_override_is_treated_as_output_directory() -> None:
+  module = _load_module()
+  args = module.build_parser().parse_args(["--video", "--video-dir", "/tmp/parkour-videos"])
+  paths = SimpleNamespace(exported_dir=Path("/tmp/policy/exported"))
+
+  output = module._resolve_video_output_path(args, paths)
+
+  assert output.parent == Path("/tmp/parkour-videos")
+  assert output.suffix == ".mp4"
 
 
 def test_native_viewer_requires_graphical_display(monkeypatch) -> None:

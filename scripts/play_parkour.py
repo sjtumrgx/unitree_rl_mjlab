@@ -18,6 +18,10 @@ DEFAULT_POLICY_DIR = Path("deploy/robots/g1_parkour/config/policy/parkour/v0")
 DEFAULT_DEPTH_MODE = "mujoco"
 DEFAULT_VIEWER = "native"
 DEFAULT_COMMAND_MODE = "terrain-route"
+DEFAULT_TERRAIN_ROUTE_SPEED = 0.25
+DEFAULT_VIDEO_WIDTH = 1920
+DEFAULT_VIDEO_HEIGHT = 1080
+DEFAULT_VIDEO_FRAME_RATE = 30.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -72,6 +76,15 @@ def build_parser() -> argparse.ArgumentParser:
       "Velocity-command source. 'fixed' uses --command-x/y/yaw. "
       "'terrain-route' steers the command along g1_parkour_route_waypoints "
       "from the loaded task so the robot follows the terrain asset sequence."
+    ),
+  )
+  parser.add_argument(
+    "--terrain-route-speed",
+    type=float,
+    default=DEFAULT_TERRAIN_ROUTE_SPEED,
+    help=(
+      "Walking speed in m/s for --command-mode terrain-route. "
+      "--command-x remains the fixed-mode forward command."
     ),
   )
   parser.add_argument(
@@ -214,6 +227,37 @@ def build_parser() -> argparse.ArgumentParser:
     help="Keep --viewer native running until the MuJoCo window is closed; otherwise --max-seconds/--max-steps bounds the run.",
   )
   parser.add_argument("--debug-parkour", action="store_true", help="Print detailed first-step and periodic diagnostics.")
+  parser.add_argument(
+    "--video",
+    action="store_true",
+    help="Record a 1080p MuJoCo video while playing.",
+  )
+  parser.add_argument(
+    "--video-dir",
+    type=Path,
+    help=(
+      "Directory for --video output. Defaults to the exported model directory "
+      "containing actor.onnx and 0-depth_encoder.onnx."
+    ),
+  )
+  parser.add_argument(
+    "--video-width",
+    type=int,
+    default=DEFAULT_VIDEO_WIDTH,
+    help="Video width in pixels. Default 1920 for 1080p output.",
+  )
+  parser.add_argument(
+    "--video-height",
+    type=int,
+    default=DEFAULT_VIDEO_HEIGHT,
+    help="Video height in pixels. Default 1080.",
+  )
+  parser.add_argument(
+    "--video-frame-rate",
+    type=float,
+    default=DEFAULT_VIDEO_FRAME_RATE,
+    help="Video frame rate in frames per second.",
+  )
   parser.add_argument("--diagnostic-json", type=Path, help="Write diagnostics summary JSON to this path.")
   parser.add_argument(
     "--depth-debug-dir",
@@ -290,7 +334,8 @@ def _print_json(payload: dict[str, Any]) -> None:
 
 
 def _prepare_mujoco_renderer_env(args: argparse.Namespace) -> None:
-  if args.depth_mode == "mujoco" and not os.environ.get("MUJOCO_GL") and not (
+  needs_offscreen = args.depth_mode == "mujoco" or bool(getattr(args, "video", False))
+  if needs_offscreen and not os.environ.get("MUJOCO_GL") and not (
     os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
   ):
     # Must be set before imports that transitively load ``mujoco``.  MJLab task
@@ -431,6 +476,20 @@ class ParkourTerrainRouteFollower:
     pos_y = float(base_pos[1])
     yaw = _yaw_from_wxyz(root_quat)
     target_index, target = self._target_waypoint(pos_x)
+    route_completed = target_index == len(self.waypoints) - 1 and pos_x >= target[0]
+    if route_completed:
+      diagnostics = {
+        "target_index": target_index,
+        "target_waypoint": [target[0], target[1]],
+        "base_xy": [pos_x, pos_y],
+        "distance_to_target": 0.0,
+        "yaw": yaw,
+        "desired_heading": yaw,
+        "yaw_error": 0.0,
+        "command": [0.0, 0.0, 0.0],
+        "route_completed": True,
+      }
+      return (0.0, 0.0, 0.0), diagnostics
     delta_x = target[0] - pos_x
     delta_y = target[1] - pos_y
     distance = max(1.0e-6, math.hypot(delta_x, delta_y))
@@ -456,6 +515,7 @@ class ParkourTerrainRouteFollower:
       "desired_heading": desired_heading,
       "yaw_error": yaw_error,
       "command": [command_x, command_y, command_yaw],
+      "route_completed": False,
     }
     return (command_x, command_y, command_yaw), diagnostics
 
@@ -486,7 +546,8 @@ def _resolve_max_seconds(args: argparse.Namespace, env: Any) -> float:
   route_distance = _route_endpoint_distance(env)
   if route_distance is None:
     return 20.0
-  speed = max(abs(float(args.command_x)), 0.05)
+  speed_value = args.terrain_route_speed if args.command_mode == "terrain-route" else args.command_x
+  speed = max(abs(float(speed_value)), 0.05)
   return max(20.0, route_distance / speed + 10.0)
 
 
@@ -502,7 +563,7 @@ def _make_route_follower(
     return None
   return ParkourTerrainRouteFollower(
     waypoints=waypoints,
-    speed=args.command_x,
+    speed=args.terrain_route_speed,
     lookahead=args.terrain_route_lookahead,
     max_lateral_speed=args.terrain_route_max_lateral_speed,
     max_yaw_rate=args.terrain_route_max_yaw_rate,
@@ -528,6 +589,173 @@ def _apply_play_command(
   adapter.set_command(command)
   adapter.set_fixed_command()
   return diagnostics
+
+
+def _resolve_video_output_path(args: argparse.Namespace, paths: Any) -> Path:
+  output_dir = args.video_dir if args.video_dir is not None else Path(paths.exported_dir)
+  timestamp = time.strftime("%Y%m%d_%H%M%S")
+  return output_dir.expanduser() / f"play_parkour_{timestamp}.mp4"
+
+
+class ParkourVideoRecorder:
+  """Streaming MuJoCo video recorder for play_parkour."""
+
+  def __init__(
+    self,
+    *,
+    enabled: bool,
+    env: Any,
+    output_path: Path | None,
+    width: int,
+    height: int,
+    frame_rate: float,
+  ) -> None:
+    self.enabled = enabled
+    self.env = env
+    self.output_path = output_path
+    self.width = int(width)
+    self.height = int(height)
+    self.frame_rate = float(frame_rate)
+    self.frame_interval = 1.0 / max(self.frame_rate, 1.0)
+    self._last_capture_time = -1.0e9
+    self._mujoco: Any | None = None
+    self._renderer: Any | None = None
+    self._render_data: Any | None = None
+    self._camera: Any | None = None
+    self._writer: Any | None = None
+    self.frame_count = 0
+
+  def _ensure_open(self) -> None:
+    if not self.enabled or self._writer is not None:
+      return
+    if self.output_path is None:
+      raise RuntimeError("video output path is required when --video is enabled")
+    if self.width <= 0 or self.height <= 0:
+      raise ValueError("--video-width and --video-height must be positive")
+    if self.frame_rate <= 0.0:
+      raise ValueError("--video-frame-rate must be positive")
+    if not os.environ.get("MUJOCO_GL") and not (
+      os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+      os.environ["MUJOCO_GL"] = "egl"
+    import imageio.v2 as imageio
+    import mujoco
+
+    sim = self.env.unwrapped.sim
+    self._mujoco = mujoco
+    self._render_data = mujoco.MjData(sim.mj_model)
+    self._renderer = mujoco.Renderer(
+      sim.mj_model,
+      height=self.height,
+      width=self.width,
+    )
+    self._camera = self._make_tracking_camera(sim.mj_model)
+    self.output_path.parent.mkdir(parents=True, exist_ok=True)
+    self._writer = imageio.get_writer(
+      str(self.output_path),
+      fps=self.frame_rate,
+      codec="libx264",
+      quality=8,
+      macro_block_size=1,
+    )
+
+  def _make_tracking_camera(self, model: Any) -> Any:
+    assert self._mujoco is not None
+    camera = self._mujoco.MjvCamera()
+    body_id = -1
+    for candidate in ("torso_link", "robot/torso_link"):
+      body_id = self._mujoco.mj_name2id(
+        model,
+        self._mujoco.mjtObj.mjOBJ_BODY,
+        candidate,
+      )
+      if body_id >= 0:
+        break
+    if body_id >= 0:
+      camera.type = self._mujoco.mjtCamera.mjCAMERA_TRACKING
+      camera.trackbodyid = body_id
+    else:
+      camera.type = self._mujoco.mjtCamera.mjCAMERA_FREE
+    camera.distance = 4.0
+    camera.azimuth = 135.0
+    camera.elevation = -18.0
+    camera.lookat[:] = (0.0, 0.0, 0.8)
+    return camera
+
+  def _sync_env_state_to_render_data(self) -> None:
+    assert self._mujoco is not None
+    assert self._render_data is not None
+    sim = self.env.unwrapped.sim
+    data = self._render_data
+    data.qpos[:] = sim.data.qpos[0].cpu().numpy()
+    data.qvel[:] = sim.data.qvel[0].cpu().numpy()
+    if sim.mj_model.nmocap > 0:
+      data.mocap_pos[:] = sim.data.mocap_pos[0].cpu().numpy()
+      data.mocap_quat[:] = sim.data.mocap_quat[0].cpu().numpy()
+    data.xfrc_applied[:] = sim.data.xfrc_applied[0].cpu().numpy()
+    self._mujoco.mj_forward(sim.mj_model, data)
+
+  def capture(self, sim_time: float) -> None:
+    if not self.enabled:
+      return
+    if sim_time - self._last_capture_time < self.frame_interval:
+      return
+    self._ensure_open()
+    assert self._renderer is not None
+    assert self._writer is not None
+    self._sync_env_state_to_render_data()
+    self._renderer.update_scene(self._render_data, camera=self._camera)
+    self._writer.append_data(self._renderer.render())
+    self._last_capture_time = sim_time
+    self.frame_count += 1
+
+  def close(self) -> None:
+    if self._writer is not None:
+      self._writer.close()
+      self._writer = None
+    if self._renderer is not None:
+      self._renderer.close()
+      self._renderer = None
+    self._render_data = None
+    self._camera = None
+
+  def diagnostics(self) -> dict[str, Any] | None:
+    if not self.enabled:
+      return None
+    return {
+      "path": str(self.output_path) if self.output_path is not None else None,
+      "width": self.width,
+      "height": self.height,
+      "frame_rate": self.frame_rate,
+      "frames": self.frame_count,
+    }
+
+
+def _run_native_viewer_loop(
+  viewer: Any,
+  *,
+  num_steps: int | None,
+  stop_condition: Any,
+  video_recorder: ParkourVideoRecorder,
+  sim_time_fn: Any,
+) -> None:
+  viewer.setup()
+  now = time.perf_counter()
+  viewer._stats_last_time = now
+  viewer._last_tick_time = now
+  try:
+    while viewer.is_running() and (num_steps is None or viewer._step_count < num_steps):
+      if stop_condition():
+        break
+      if viewer.tick():
+        video_recorder.capture(sim_time_fn())
+      else:
+        time.sleep(0.001)
+      viewer._update_stats()
+      if stop_condition():
+        break
+  finally:
+    viewer.close()
 
 
 def _load_contract_and_policy(args: argparse.Namespace):
@@ -646,6 +874,7 @@ class ParkourNativeViewerPolicy:
     self.fixed_command = (args.command_x, args.command_y, args.command_yaw)
     self.route_follower = _make_route_follower(env, args)
     self.latest_route_diag: dict[str, Any] | None = None
+    self.route_completed = False
     self._has_stepped = False
     self.reset()
 
@@ -667,6 +896,9 @@ class ParkourNativeViewerPolicy:
       self.adapter,
       route_follower=self.route_follower,
       fixed_command=self.fixed_command,
+    )
+    self.route_completed = bool(
+      self.latest_route_diag and self.latest_route_diag.get("route_completed")
     )
     self.latest_frame_diag = self.adapter.warm_start(last_policy_action=self.last_action)
     self.latest_fall_signals = self.adapter.fall_signals()
@@ -698,6 +930,9 @@ class ParkourNativeViewerPolicy:
         route_follower=self.route_follower,
         fixed_command=self.fixed_command,
       )
+      self.route_completed = bool(
+        self.latest_route_diag and self.latest_route_diag.get("route_completed")
+      )
       self.latest_frame_diag = self.adapter.append_current(last_policy_action=self.last_action)
       self.latest_fall_signals = self.adapter.fall_signals()
       self.distance_x = float(self.latest_fall_signals["base_pos"][0]) - self.start_x
@@ -706,6 +941,9 @@ class ParkourNativeViewerPolicy:
       self.adapter,
       route_follower=self.route_follower,
       fixed_command=self.fixed_command,
+    )
+    self.route_completed = bool(
+      self.latest_route_diag and self.latest_route_diag.get("route_completed")
     )
     proprio = self.adapter.proprio()
     depth = self.depth_provider.stack(self.adapter)
@@ -716,7 +954,16 @@ class ParkourNativeViewerPolicy:
         self.depth_provider.diagnostics(),
       )
 
-    if self.policy is None:
+    if self.route_completed:
+      raw_policy_action = np.zeros(self.contract.action_size, dtype=np.float32)
+      self.latest_policy_diag = {
+        "action_stats": vector_stats(raw_policy_action),
+        "actor_input_stats": None,
+        "depth_stats": vector_stats(depth),
+        "proprio_stats": vector_stats(proprio),
+        "route_completed": True,
+      }
+    elif self.policy is None:
       raw_policy_action = np.zeros(self.contract.action_size, dtype=np.float32)
       self.latest_policy_diag = {
         "action_stats": vector_stats(raw_policy_action),
@@ -769,6 +1016,7 @@ class ParkourNativeViewerPolicy:
       "depth": self.depth_provider.diagnostics(),
       "command": [self.args.command_x, self.args.command_y, self.args.command_yaw],
       "command_mode": self.args.command_mode,
+      "terrain_route_speed": self.args.terrain_route_speed,
       "route_waypoints": (
         [list(point) for point in self.route_follower.waypoints]
         if self.route_follower is not None
@@ -818,6 +1066,15 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     frame_kind=args.depth_viewer_frame,
     frame_rate=args.depth_viewer_frame_rate,
   )
+  video_output_path = _resolve_video_output_path(args, paths) if args.video else None
+  video_recorder = ParkourVideoRecorder(
+    enabled=args.video,
+    env=raw_env,
+    output_path=video_output_path,
+    width=args.video_width,
+    height=args.video_height,
+    frame_rate=args.video_frame_rate,
+  )
   viewer_env = RslRlVecEnvWrapper(raw_env, clip_actions=None)
   viewer_policy = ParkourNativeViewerPolicy(
     env=raw_env,
@@ -838,12 +1095,19 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     "Close the window to stop; default duration follows the terrain route endpoint."
   )
   try:
-    NativeMujocoViewer(
+    viewer = NativeMujocoViewer(
       viewer_env,
       viewer_policy,
       frame_rate=args.viewer_frame_rate,
       enable_perturbations=True,
-    ).run(num_steps=num_steps)
+    )
+    _run_native_viewer_loop(
+      viewer,
+      num_steps=num_steps,
+      stop_condition=lambda: viewer_policy.route_completed and not args.viewer_run_until_closed,
+      video_recorder=video_recorder,
+      sim_time_fn=lambda: viewer_policy.step_count * raw_env.step_dt,
+    )
     payload = viewer_policy.diagnostics()
     payload.update(
       {
@@ -855,10 +1119,12 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "viewer_run_until_closed": args.viewer_run_until_closed,
         "max_seconds": resolved_max_seconds,
         "max_steps": num_steps,
+        "video": video_recorder.diagnostics(),
       }
     )
     return True, payload
   finally:
+    video_recorder.close()
     depth_viewer.close()
     if hasattr(depth_provider, "close"):
       depth_provider.close()
@@ -898,6 +1164,15 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     frame_kind=args.depth_viewer_frame,
     frame_rate=args.depth_viewer_frame_rate,
   )
+  video_output_path = _resolve_video_output_path(args, paths) if args.video else None
+  video_recorder = ParkourVideoRecorder(
+    enabled=args.video,
+    env=env,
+    output_path=video_output_path,
+    width=args.video_width,
+    height=args.video_height,
+    frame_rate=args.video_frame_rate,
+  )
   walk_distance = _resolve_walk_distance(args, env)
   max_seconds = _resolve_max_seconds(args, env)
 
@@ -911,6 +1186,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     "onnx": policy.metadata.as_dict() if policy is not None else None,
     "command": [args.command_x, args.command_y, args.command_yaw],
     "command_mode": args.command_mode,
+    "terrain_route_speed": args.terrain_route_speed,
     "policy_frame": args.policy_frame,
     "joint_order": args.joint_order,
     "action_order": args.action_order,
@@ -921,6 +1197,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     "action_clip": args.action_clip,
     "action_gain": args.action_gain,
     "action_delay_steps": args.action_delay_steps,
+    "video": video_recorder.diagnostics(),
   }
   reset_count = 0
   latest_frame_diag: Any = None
@@ -995,6 +1272,8 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         route_follower=route_follower,
         fixed_command=fixed_command,
       )
+      if latest_route_diag and latest_route_diag.get("route_completed"):
+        break
       proprio = adapter.proprio()
       depth = depth_provider.stack(adapter)
       assert_depth_contract(depth)
@@ -1075,6 +1354,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       final_fall = adapter.fall_signals()
       distance = float(final_fall["base_pos"][0]) - start_x
       elapsed = (step + 1) * env.step_dt
+      video_recorder.capture(elapsed)
 
       if args.debug_parkour and (step == 0 or (step + 1) % 50 == 0):
         print(
@@ -1110,6 +1390,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             "latest_policy": latest_policy_diag,
             "latest_route": latest_route_diag,
             "depth": depth_provider.diagnostics(),
+            "video": video_recorder.diagnostics(),
           }
         )
         return False, summary
@@ -1138,6 +1419,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "latest_policy": latest_policy_diag,
         "latest_route": latest_route_diag,
         "depth": depth_diag,
+        "video": video_recorder.diagnostics(),
         "acceptance": {
           "distance_target_met": traversal_accepted,
           "duration_target_met": elapsed >= max_seconds,
@@ -1160,6 +1442,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       )
     return accepted, summary
   finally:
+    video_recorder.close()
     depth_viewer.close()
     if hasattr(depth_provider, "close"):
       depth_provider.close()

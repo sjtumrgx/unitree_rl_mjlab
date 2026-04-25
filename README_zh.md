@@ -206,8 +206,11 @@ python scripts/play.py Unitree-G1-AntiFall-Stage4b \
 - 默认显示：MuJoCo native viewer + 实时 **policy 输入深度图**窗口
 - 默认速度指令：`terrain-route`，会沿着任务里的
   `g1_parkour_route_waypoints` 生成速度指令，尽量让机器人按地形资产顺序走过去，
-  而不是只给固定 x 方向速度导致越走越偏。
+  而不是只给固定 x 方向速度导致越走越偏。可用 `--terrain-route-speed`
+  显式指定路线跟随模式下的行走速度。
 - 默认停止方式：按路线终点自动计算足够的运行时间，避免旧的短 debug 时长还没走完就停止。
+- 可选视频录制：`--video` 默认录制 1080p MP4，并保存到导出模型文件同目录；
+  可用 `--video-dir` 指定其他保存目录。
 
 直接运行默认可视化：
 
@@ -230,6 +233,12 @@ python scripts/play_parkour.py \
   --command-x 0.25 \
   --command-y 0.0 \
   --command-yaw 0.0
+
+# 路线跟随时显式指定行走速度，并保存视频到指定目录。
+python scripts/play_parkour.py \
+  --terrain-route-speed 0.35 \
+  --video \
+  --video-dir /tmp/parkour-videos
 ```
 
 MuJoCo native viewer 和深度图窗口需要图形显示环境（`DISPLAY` 或
