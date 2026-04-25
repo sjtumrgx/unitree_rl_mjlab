@@ -9,7 +9,7 @@ from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 
-from src.assets.robots import get_g1_parkour_robot_cfg
+from src.assets.robots import get_g1_parkour_obstacle_robot_cfg, get_g1_parkour_robot_cfg
 from src.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 
 from src.parkour.contract import (
@@ -20,7 +20,13 @@ from src.parkour.contract import (
 )
 
 PARKOUR_FLAT_DEBUG_TASK_ID = "Unitree-G1-Parkour-FlatDebug"
+PARKOUR_OBSTACLE_DEBUG_TASK_ID = "Unitree-G1-Parkour-ObstacleDebug"
 DEFAULT_COMMAND_X = 0.25
+PARKOUR_OBSTACLE_DEBUG_GEOMS = (
+  "robot/parkour_debug_low_block",
+  "robot/parkour_debug_gap_near_lip",
+  "robot/parkour_debug_gap_far_lip",
+)
 
 
 def _apply_parkour_observation_contract(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -138,4 +144,19 @@ def unitree_g1_parkour_flat_debug_env_cfg(play: bool = False) -> ManagerBasedRlE
   assert_no_stale_sensor_references(cfg)
   cfg.g1_parkour_flat_debug = True  # type: ignore[attr-defined]
   cfg.g1_parkour_policy_joint_names = TRAINING_JOINT_NAMES  # type: ignore[attr-defined]
+  return cfg
+
+
+def unitree_g1_parkour_obstacle_debug_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create a deterministic low-block + shallow-gap parkour debug env."""
+  cfg = unitree_g1_parkour_flat_debug_env_cfg(play=play)
+  cfg.scene.entities = {"robot": get_g1_parkour_obstacle_robot_cfg()}
+  cfg.g1_parkour_flat_debug = False  # type: ignore[attr-defined]
+  cfg.g1_parkour_obstacle_debug = True  # type: ignore[attr-defined]
+  cfg.g1_parkour_obstacle_geoms = PARKOUR_OBSTACLE_DEBUG_GEOMS  # type: ignore[attr-defined]
+  cfg.g1_parkour_obstacle_contract = {  # type: ignore[attr-defined]
+    "low_block_height_m": 0.05,
+    "gap_width_m": 0.10,
+    "target_distance_m": 3.0,
+  }
   return cfg

@@ -49,7 +49,9 @@ def test_help_documents_parkour_contract_and_diagnostic_flags() -> None:
     "--check-contract",
     "--smoke-step",
     "--validate-walk",
+    "--depth-contract-only",
     "--diagnostic-json",
+    "--depth-debug-dir",
     "--policy-frame",
     "--startup-blend-seconds",
   ):
@@ -99,15 +101,18 @@ def test_constant_depth_contract_shape_and_clipping() -> None:
   assert float(depth.max()) == 1.0
 
 
-def test_mujoco_depth_mode_fails_as_stage2_gate(capsys) -> None:
+def test_mujoco_depth_mode_is_documented_as_renderer_depth() -> None:
   module = _load_module()
-  exc: BaseException | None = None
-  try:
-    _invoke_main(module, ["--validate-walk", "--depth-mode", "mujoco"])
-  except BaseException as caught:  # noqa: BLE001 - CLI exits with SystemExit
-    exc = caught
-  assert exc is not None
-  captured = capsys.readouterr()
-  message = "\n".join([str(exc), captured.out, captured.err])
-  assert "stage 2" in message
-  assert "--depth-mode constant" in message
+  help_text = module.build_parser().format_help()
+
+  assert "parkour_depth_camera" in help_text
+  assert "stage 2" not in help_text.lower()
+
+
+def test_native_viewer_resets_depth_provider_after_env_reset() -> None:
+  module = _load_module()
+  source = inspect.getsource(module.run_native_viewer)
+
+  assert "raw_env.reset()" in source
+  assert "viewer_policy.reset()" in source
+  assert "debug_dir=args.depth_debug_dir" in source

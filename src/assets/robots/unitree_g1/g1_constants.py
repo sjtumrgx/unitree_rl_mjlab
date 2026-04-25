@@ -77,6 +77,44 @@ def get_g1_parkour_flat_debug_spec() -> mujoco.MjSpec:
   return spec
 
 
+def _add_parkour_obstacle_debug_geoms(spec: mujoco.MjSpec) -> None:
+  """Add a conservative low block + shallow gap visual/contact course.
+
+  The first renderer-depth gate intentionally uses tiny deterministic features:
+  a 5 cm block and a 10 cm lower strip between two 5 cm platforms.  The flat
+  terrain plane remains below the gap so the scene is easy to traverse while the
+  head camera still sees an objective depth discontinuity.
+  """
+  spec.worldbody.add_geom(
+    name="parkour_debug_low_block",
+    type=mujoco.mjtGeom.mjGEOM_BOX,
+    pos=[1.05, 0.0, 0.025],
+    size=[0.10, 0.45, 0.025],
+    rgba=[0.70, 0.55, 0.35, 1.0],
+  )
+  spec.worldbody.add_geom(
+    name="parkour_debug_gap_near_lip",
+    type=mujoco.mjtGeom.mjGEOM_BOX,
+    pos=[1.55, 0.0, 0.025],
+    size=[0.10, 0.45, 0.025],
+    rgba=[0.45, 0.45, 0.50, 1.0],
+  )
+  spec.worldbody.add_geom(
+    name="parkour_debug_gap_far_lip",
+    type=mujoco.mjtGeom.mjGEOM_BOX,
+    pos=[1.85, 0.0, 0.025],
+    size=[0.10, 0.45, 0.025],
+    rgba=[0.45, 0.45, 0.50, 1.0],
+  )
+
+
+def get_g1_parkour_obstacle_debug_spec() -> mujoco.MjSpec:
+  """Load the torso-root parkour G1 plus a conservative obstacle course."""
+  spec = get_g1_parkour_flat_debug_spec()
+  _add_parkour_obstacle_debug_geoms(spec)
+  return spec
+
+
 ##
 # Actuator config.
 ##
@@ -354,6 +392,16 @@ def get_g1_parkour_robot_cfg() -> EntityCfg:
     init_state=PARKOUR_DEBUG_KEYFRAME,
     collisions=(PARKOUR_COLLISION,),
     spec_fn=get_g1_parkour_flat_debug_spec,
+    articulation=G1_ARTICULATION,
+  )
+
+
+def get_g1_parkour_obstacle_robot_cfg() -> EntityCfg:
+  """Get the parkour robot with deterministic low-block/gap debug geoms."""
+  return EntityCfg(
+    init_state=PARKOUR_DEBUG_KEYFRAME,
+    collisions=(PARKOUR_COLLISION,),
+    spec_fn=get_g1_parkour_obstacle_debug_spec,
     articulation=G1_ARTICULATION,
   )
 

@@ -41,7 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     help=(
       "Depth source. 'constant' isolates walking, 'flat-ground' analytically "
       "renders the flat floor through the training camera contract, and "
-      "'mujoco' is gated for full renderer parity."
+      "'mujoco' renders the real MuJoCo parkour_depth_camera with the deploy "
+      "crop/range/history contract."
     ),
   )
   parser.add_argument(
@@ -133,6 +134,14 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--smoke-step", action="store_true", help="Run one synthetic ONNX step with zero proprio and constant depth.")
   parser.add_argument("--validate-walk", action="store_true", help="Run the MuJoCo fixed-command walking validation loop.")
   parser.add_argument(
+    "--depth-contract-only",
+    action="store_true",
+    help=(
+      "For short renderer-depth checks, accept finite depth/camera contract "
+      "diagnostics without treating the run as traversal success."
+    ),
+  )
+  parser.add_argument(
     "--viewer",
     choices=("none", "native"),
     default="none",
@@ -151,6 +160,14 @@ def build_parser() -> argparse.ArgumentParser:
   )
   parser.add_argument("--debug-parkour", action="store_true", help="Print detailed first-step and periodic diagnostics.")
   parser.add_argument("--diagnostic-json", type=Path, help="Write diagnostics summary JSON to this path.")
+  parser.add_argument(
+    "--depth-debug-dir",
+    type=Path,
+    help=(
+      "Optional directory for renderer-depth previews/stat artifacts. "
+      "Currently used by --depth-mode mujoco."
+    ),
+  )
   parser.add_argument(
     "--no-terminations",
     action="store_true",
@@ -184,6 +201,15 @@ def _write_diagnostics(path: Path | None, payload: dict[str, Any]) -> None:
 
 def _print_json(payload: dict[str, Any]) -> None:
   print(json.dumps(payload, indent=2, sort_keys=True, default=_json_default))
+
+
+def _prepare_mujoco_renderer_env(args: argparse.Namespace) -> None:
+  if args.depth_mode == "mujoco" and not os.environ.get("MUJOCO_GL") and not (
+    os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+  ):
+    # Must be set before imports that transitively load ``mujoco``.  MJLab task
+    # and runner packages can import MuJoCo before the renderer provider exists.
+    os.environ["MUJOCO_GL"] = "egl"
 
 
 def _load_contract_and_policy(args: argparse.Namespace):
@@ -246,6 +272,8 @@ def run_smoke_step(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _load_env(args: argparse.Namespace):
+  _prepare_mujoco_renderer_env(args)
+
   from mjlab.envs import ManagerBasedRlEnv
   from mjlab.tasks.registry import load_env_cfg
   from src.parkour.contract import assert_no_stale_sensor_references
@@ -321,6 +349,8 @@ class ParkourNativeViewerPolicy:
     self.mapping_proof = self.adapter.mapping_proof().as_dict()
     self.latest_policy_diag = {}
     self.action_delay_buffer.clear()
+    if hasattr(self.depth_provider, "reset"):
+      self.depth_provider.reset()
     for _ in range(self.args.action_delay_steps):
       self.action_delay_buffer.append(np.zeros(self.contract.action_size, dtype=np.float32))
     self._has_stepped = False
@@ -415,6 +445,7 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
   if args.num_envs != 1:
     raise ValueError("--viewer native currently supports --num-envs 1")
   _require_graphical_display()
+  _prepare_mujoco_renderer_env(args)
 
   from mjlab.rl import RslRlVecEnvWrapper
   from mjlab.viewer import NativeMujocoViewer
@@ -428,7 +459,12 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
   if args.agent == "policy":
     policy = ParkourOnnxPolicy(policy_dir=paths.policy_dir, exported_dir=paths.exported_dir)
   raw_env = _load_env(args)
-  depth_provider = make_depth_provider(args.depth_mode, args.constant_depth, env=raw_env)
+  depth_provider = make_depth_provider(
+    args.depth_mode,
+    args.constant_depth,
+    env=raw_env,
+    debug_dir=args.depth_debug_dir,
+  )
   viewer_env = RslRlVecEnvWrapper(raw_env, clip_actions=None)
   viewer_policy = ParkourNativeViewerPolicy(
     env=raw_env,
@@ -466,10 +502,14 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     )
     return True, payload
   finally:
+    if hasattr(depth_provider, "close"):
+      depth_provider.close()
     raw_env.close()
 
 
 def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
+  _prepare_mujoco_renderer_env(args)
+
   from src.parkour.contract import load_deploy_contract, resolve_model_paths
   from src.parkour.onnx_policy import ParkourOnnxPolicy
   from src.tasks.velocity.rl.parkour_play import (
@@ -486,7 +526,12 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
   if args.agent == "policy":
     policy = ParkourOnnxPolicy(policy_dir=paths.policy_dir, exported_dir=paths.exported_dir)
   env = _load_env(args)
-  depth_provider = make_depth_provider(args.depth_mode, args.constant_depth, env=env)
+  depth_provider = make_depth_provider(
+    args.depth_mode,
+    args.constant_depth,
+    env=env,
+    debug_dir=args.depth_debug_dir,
+  )
 
   summary: dict[str, Any] = {
     "mode": "validate-walk",
@@ -502,6 +547,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     "action_order": args.action_order,
     "max_seconds": args.max_seconds,
     "walk_distance": args.walk_distance,
+    "depth_contract_only": args.depth_contract_only,
     "startup_blend_seconds": args.startup_blend_seconds,
     "action_clip": args.action_clip,
     "action_gain": args.action_gain,
@@ -514,6 +560,8 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
 
   try:
     env.reset()
+    if hasattr(depth_provider, "reset"):
+      depth_provider.reset()
     adapter = ParkourObservationAdapter(
       env,
       contract,
@@ -667,6 +715,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             "fall_signals": final_fall,
             "latest_frame": latest_frame_diag.__dict__,
             "latest_policy": latest_policy_diag,
+            "depth": depth_provider.diagnostics(),
           }
         )
         return False, summary
@@ -674,7 +723,15 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       if distance >= args.walk_distance:
         break
 
-    accepted = distance >= args.walk_distance or elapsed >= args.max_seconds
+    depth_diag = depth_provider.diagnostics()
+    depth_stats = depth_diag.get("stats", {})
+    depth_contract_met = (
+      depth_diag.get("shape") == list(contract.depth_shape)
+      and depth_diag.get("size") == contract.depth_size
+      and all(np.isfinite(float(depth_stats.get(key, 0.0))) for key in ("min", "max", "mean"))
+    )
+    traversal_accepted = distance >= args.walk_distance
+    accepted = traversal_accepted or (args.depth_contract_only and depth_contract_met)
     summary.update(
       {
         "status": "ok" if accepted else "failed",
@@ -685,24 +742,31 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "fall_signals": final_fall,
         "latest_frame": latest_frame_diag.__dict__ if latest_frame_diag is not None else None,
         "latest_policy": latest_policy_diag,
+        "depth": depth_diag,
         "acceptance": {
-          "distance_target_met": distance >= args.walk_distance,
+          "distance_target_met": traversal_accepted,
           "duration_target_met": elapsed >= args.max_seconds,
+          "depth_contract_met": depth_contract_met,
+          "depth_contract_only": args.depth_contract_only,
           "no_uncontrolled_fall": True,
           "no_invalid_reset": reset_count == 0,
         },
       }
     )
     if not accepted:
-      summary["failure_reason"] = "distance_or_duration_not_met"
+      summary["failure_reason"] = (
+        "depth_contract_not_met" if args.depth_contract_only else "distance_target_not_met"
+      )
       summary["root_cause"] = classify_failure(
-        reason="distance_or_duration_not_met",
+        reason=summary["failure_reason"],
         fall_signals=final_fall,
         reset_count=reset_count,
         depth_mode=args.depth_mode,
       )
     return accepted, summary
   finally:
+    if hasattr(depth_provider, "close"):
+      depth_provider.close()
     env.close()
 
 

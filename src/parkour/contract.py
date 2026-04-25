@@ -155,6 +155,45 @@ class ParkourDeployContract:
     return values.astype(np.float32, copy=False) * scales
 
 
+@dataclass(frozen=True)
+class ParkourDepthInterfaceContract:
+  """Depth camera interface promoted with the exported parkour policy."""
+
+  sensor_name: str
+  camera_name: str
+  raw_resolution: tuple[int, int]
+  crop_region: tuple[int, int, int, int]
+  output_resolution: tuple[int, int]
+  depth_range: tuple[float, float]
+  output_range: tuple[float, float]
+  history_source_length: int
+  history_skip_frames: int
+  num_output_frames: int
+  expected_size: int
+  latent_size: int
+  camera_pose: Mapping[str, Any]
+
+  @property
+  def raw_width(self) -> int:
+    return self.raw_resolution[0]
+
+  @property
+  def raw_height(self) -> int:
+    return self.raw_resolution[1]
+
+  @property
+  def output_width(self) -> int:
+    return self.output_resolution[0]
+
+  @property
+  def output_height(self) -> int:
+    return self.output_resolution[1]
+
+  @property
+  def depth_shape(self) -> tuple[int, int, int]:
+    return (self.num_output_frames, self.output_height, self.output_width)
+
+
 def _as_float_tuple(value: Any, *, expected_len: int, name: str) -> tuple[float, ...]:
   if isinstance(value, (int, float)):
     values = (float(value),) * expected_len
@@ -217,6 +256,79 @@ def load_deploy_contract(deploy_yaml: Path | str = DEFAULT_DEPLOY_YAML) -> Parko
   )
   validate_deploy_contract(contract)
   return contract
+
+
+def _as_int_tuple(value: Any, *, expected_len: int, name: str) -> tuple[int, ...]:
+  values = tuple(int(item) for item in value)
+  if len(values) != expected_len:
+    raise ValueError(f"{name} expected {expected_len} values, got {len(values)}")
+  return values
+
+
+def load_depth_interface_contract(
+  deploy_yaml: Path | str = DEFAULT_DEPLOY_YAML,
+) -> ParkourDepthInterfaceContract:
+  """Load the canonical parkour depth interface from deploy.yaml."""
+  path = Path(deploy_yaml).expanduser().resolve()
+  payload = _load_yaml(path)
+  cfg = payload.get("parkour_depth_interface")
+  if not isinstance(cfg, Mapping):
+    raise ValueError(f"Deploy YAML is missing parkour_depth_interface: {path}")
+
+  raw_resolution = _as_int_tuple(cfg["raw_resolution"], expected_len=2, name="raw_resolution")
+  crop_region = _as_int_tuple(cfg["crop_region"], expected_len=4, name="crop_region")
+  output_resolution = _as_int_tuple(cfg["output_resolution"], expected_len=2, name="output_resolution")
+  depth_range = _as_float_tuple(cfg["depth_range"], expected_len=2, name="depth_range")
+  output_range = _as_float_tuple(cfg["output_range"], expected_len=2, name="output_range")
+  contract = ParkourDepthInterfaceContract(
+    sensor_name=str(cfg["sensor_name"]),
+    camera_name=str(cfg["camera_name"]),
+    raw_resolution=raw_resolution,
+    crop_region=crop_region,
+    output_resolution=output_resolution,
+    depth_range=depth_range,
+    output_range=output_range,
+    history_source_length=int(cfg["history_source_length"]),
+    history_skip_frames=int(cfg["history_skip_frames"]),
+    num_output_frames=int(cfg["num_output_frames"]),
+    expected_size=int(cfg["expected_size"]),
+    latent_size=int(cfg["latent_size"]),
+    camera_pose=dict(cfg.get("camera_pose") or {}),
+  )
+  validate_depth_interface_contract(contract)
+  return contract
+
+
+def validate_depth_interface_contract(contract: ParkourDepthInterfaceContract) -> None:
+  if contract.camera_name != "parkour_depth_camera":
+    raise ValueError(f"Unexpected parkour depth camera: {contract.camera_name!r}")
+  if contract.depth_shape != DEPTH_SHAPE:
+    raise ValueError(f"Depth shape {contract.depth_shape}; expected {DEPTH_SHAPE}")
+  if contract.expected_size != DEPTH_SIZE:
+    raise ValueError(f"Depth expected_size={contract.expected_size}; expected {DEPTH_SIZE}")
+  if contract.latent_size != DEPTH_LATENT_SIZE:
+    raise ValueError(f"Depth latent_size={contract.latent_size}; expected {DEPTH_LATENT_SIZE}")
+  crop_top, crop_bottom, crop_left, crop_right = contract.crop_region
+  cropped_width = contract.raw_width - crop_left - crop_right
+  cropped_height = contract.raw_height - crop_top - crop_bottom
+  if (cropped_width, cropped_height) != contract.output_resolution:
+    raise ValueError(
+      "Depth crop/output mismatch: "
+      f"raw={contract.raw_resolution} crop={contract.crop_region} "
+      f"output={contract.output_resolution}"
+    )
+  depth_min, depth_max = contract.depth_range
+  out_min, out_max = contract.output_range
+  if not depth_min < depth_max:
+    raise ValueError(f"Invalid depth_range: {contract.depth_range}")
+  if not out_min < out_max:
+    raise ValueError(f"Invalid output_range: {contract.output_range}")
+  if contract.history_source_length < 1:
+    raise ValueError("history_source_length must be positive")
+  if contract.history_skip_frames < 1:
+    raise ValueError("history_skip_frames must be positive")
+  if contract.num_output_frames != DEPTH_HISTORY:
+    raise ValueError(f"num_output_frames={contract.num_output_frames}; expected {DEPTH_HISTORY}")
 
 
 def validate_deploy_contract(contract: ParkourDeployContract) -> None:
