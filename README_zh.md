@@ -196,6 +196,49 @@ python scripts/play.py Unitree-G1-AntiFall-Stage4b \
 任务分阶段语义、benchmark 说明和已知限制，请参阅
 [`doc/g1_antifall.md`](doc/g1_antifall.md)。
 
+### 1.3 G1 Parkour 回放（Play）
+
+仓库现在提供独立的深度相机版 G1 Parkour 回放入口：
+
+- 默认任务：`Unitree-G1-Parkour`
+- 默认地形：更长的、参考 InstinctLab 的 MuJoCo 复杂地形序列
+  （上楼梯、下楼梯、gap 近似、方块障碍、mesh-box stepping stones）
+- 默认显示：MuJoCo native viewer + 实时 **policy 输入深度图**窗口
+- 默认速度指令：`terrain-route`，会沿着任务里的
+  `g1_parkour_route_waypoints` 生成速度指令，尽量让机器人按地形资产顺序走过去，
+  而不是只给固定 x 方向速度导致越走越偏。
+
+直接运行默认可视化：
+
+```bash
+python scripts/play_parkour.py
+```
+
+常用调试命令：
+
+```bash
+# 无窗口 / CI smoke 验证。
+python scripts/play_parkour.py --validate-walk \
+  --viewer none \
+  --no-depth-viewer \
+  --max-steps 20
+
+# 查看较小的复杂地形 debug 任务。
+python scripts/play_parkour.py \
+  --task Unitree-G1-Parkour-ComplexTerrainDebug
+
+# 关闭路线跟随，改用固定速度指令。
+python scripts/play_parkour.py \
+  --command-mode fixed \
+  --command-x 0.25 \
+  --command-y 0.0 \
+  --command-yaw 0.0
+```
+
+MuJoCo native viewer 和深度图窗口需要图形显示环境（`DISPLAY` 或
+`WAYLAND_DISPLAY`）。如果只想做无头验证，请显式加
+`--viewer none --no-depth-viewer`。
+
 ### 2. 动作模仿训练
 
 训练 Unitree G1 模仿参考动作序列。

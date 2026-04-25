@@ -562,6 +562,10 @@ class ParkourObservationAdapter:
       name: deque(maxlen=POLICY_HISTORY) for name in PROPRIO_GROUP_DIMS
     }
 
+  def set_command(self, command: tuple[float, float, float] | np.ndarray) -> None:
+    """Update the velocity command used by proprio history and env command term."""
+    self.command = np.asarray(command, dtype=np.float32)
+
   def _collect_env_action_target_names(self) -> list[str]:
     names: list[str] = []
     for term_name in self.env.action_manager.active_terms:

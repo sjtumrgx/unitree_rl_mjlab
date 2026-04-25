@@ -113,20 +113,40 @@ PARKOUR_COMPLEX_TERRAIN_GEOM_NAMES = (
   "parkour_complex_up_stair_02",
   "parkour_complex_up_stair_03",
   "parkour_complex_up_stair_04",
+  "parkour_complex_up_stair_05",
   "parkour_complex_top_platform",
   "parkour_complex_down_stair_01",
   "parkour_complex_down_stair_02",
   "parkour_complex_down_stair_03",
   "parkour_complex_down_stair_04",
+  "parkour_complex_down_stair_05",
   "parkour_complex_gap_near_platform",
   "parkour_complex_gap_floor_marker",
   "parkour_complex_gap_far_platform",
   "parkour_complex_discrete_box_01",
   "parkour_complex_discrete_box_02",
   "parkour_complex_discrete_box_03",
+  "parkour_complex_discrete_box_04",
+  "parkour_complex_discrete_box_05",
+  "parkour_complex_discrete_box_06",
+  "parkour_complex_up_stair_b_01",
+  "parkour_complex_up_stair_b_02",
+  "parkour_complex_up_stair_b_03",
+  "parkour_complex_up_stair_b_04",
+  "parkour_complex_mid_platform_b",
+  "parkour_complex_down_stair_b_01",
+  "parkour_complex_down_stair_b_02",
+  "parkour_complex_down_stair_b_03",
+  "parkour_complex_down_stair_b_04",
+  "parkour_complex_second_gap_near_platform",
+  "parkour_complex_second_gap_floor_marker",
+  "parkour_complex_second_gap_far_platform",
   "parkour_complex_mesh_box_01",
   "parkour_complex_mesh_box_02",
   "parkour_complex_mesh_box_03",
+  "parkour_complex_mesh_box_04",
+  "parkour_complex_mesh_box_05",
+  "parkour_complex_mesh_box_06",
 )
 
 
@@ -155,12 +175,12 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
       rgba=list(rgba),
     )
 
-  stair_length = 0.30
-  stair_half_width = 0.60
-  up_start_x = 1.00
-  # Conservative 5 cm increments: within InstinctLab's low stair range
-  # (0.05, 0.23) while keeping the current flat-walk baseline recoverable.
-  for index, height in enumerate((0.05, 0.10, 0.15, 0.20), start=1):
+  stair_length = 0.36
+  stair_half_width = 0.72
+  up_start_x = 1.20
+  # Five 6 cm increments intentionally exceed the old debug course while
+  # remaining below the high-stair InstinctLab range (up to 0.45 m).
+  for index, height in enumerate((0.06, 0.12, 0.18, 0.24, 0.30), start=1):
     add_box(
       f"parkour_complex_up_stair_{index:02d}",
       pos=(up_start_x + (index - 1) * stair_length, 0.0, height / 2.0),
@@ -170,13 +190,13 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
 
   add_box(
     "parkour_complex_top_platform",
-    pos=(2.05, 0.0, 0.10),
-    size=(0.35, stair_half_width, 0.10),
+    pos=(3.25, 0.0, 0.15),
+    size=(0.42, stair_half_width, 0.15),
     rgba=(0.50, 0.52, 0.55, 1.0),
   )
 
-  down_start_x = 2.55
-  for index, height in enumerate((0.20, 0.15, 0.10, 0.05), start=1):
+  down_start_x = 4.20
+  for index, height in enumerate((0.30, 0.24, 0.18, 0.12, 0.06), start=1):
     add_box(
       f"parkour_complex_down_stair_{index:02d}",
       pos=(down_start_x + (index - 1) * stair_length, 0.0, height / 2.0),
@@ -189,20 +209,20 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
   # still creating a depth discontinuity relative to the raised lips.
   add_box(
     "parkour_complex_gap_near_platform",
-    pos=(4.00, 0.0, 0.04),
-    size=(0.25, stair_half_width, 0.04),
+    pos=(6.80, 0.0, 0.055),
+    size=(0.35, stair_half_width, 0.055),
     rgba=(0.42, 0.43, 0.48, 1.0),
   )
   add_box(
     "parkour_complex_gap_floor_marker",
-    pos=(4.32, 0.0, 0.004),
-    size=(0.12, 0.56, 0.004),
+    pos=(7.45, 0.0, 0.004),
+    size=(0.18, 0.66, 0.004),
     rgba=(0.05, 0.05, 0.06, 1.0),
   )
   add_box(
     "parkour_complex_gap_far_platform",
-    pos=(4.64, 0.0, 0.04),
-    size=(0.25, stair_half_width, 0.04),
+    pos=(8.10, 0.0, 0.055),
+    size=(0.35, stair_half_width, 0.055),
     rgba=(0.42, 0.43, 0.48, 1.0),
   )
 
@@ -210,9 +230,12 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
   # for a first MuJoCo parity/debug asset rather than a full training course.
   for index, (x, y, sx, sy, height) in enumerate(
     (
-      (5.20, -0.30, 0.16, 0.18, 0.06),
-      (5.58, 0.28, 0.18, 0.16, 0.08),
-      (5.98, 0.00, 0.20, 0.18, 0.10),
+      (9.30, -0.40, 0.22, 0.20, 0.10),
+      (10.00, 0.35, 0.24, 0.18, 0.14),
+      (10.80, 0.00, 0.26, 0.22, 0.18),
+      (11.60, -0.25, 0.24, 0.20, 0.12),
+      (12.35, 0.25, 0.24, 0.18, 0.16),
+      (13.15, 0.00, 0.28, 0.20, 0.10),
     ),
     start=1,
   ):
@@ -223,13 +246,61 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
       rgba=(0.62, 0.42, 0.28, 1.0),
     )
 
+  second_stair_length = 0.42
+  second_up_start_x = 14.40
+  for index, height in enumerate((0.07, 0.14, 0.21, 0.28), start=1):
+    add_box(
+      f"parkour_complex_up_stair_b_{index:02d}",
+      pos=(second_up_start_x + (index - 1) * second_stair_length, 0.0, height / 2.0),
+      size=(second_stair_length / 2.0, stair_half_width, height / 2.0),
+      rgba=(0.56, 0.48, 0.40, 1.0),
+    )
+
+  add_box(
+    "parkour_complex_mid_platform_b",
+    pos=(16.00, 0.0, 0.14),
+    size=(0.42, stair_half_width, 0.14),
+    rgba=(0.48, 0.50, 0.54, 1.0),
+  )
+
+  second_down_start_x = 16.70
+  for index, height in enumerate((0.28, 0.21, 0.14, 0.07), start=1):
+    add_box(
+      f"parkour_complex_down_stair_b_{index:02d}",
+      pos=(second_down_start_x + (index - 1) * second_stair_length, 0.0, height / 2.0),
+      size=(second_stair_length / 2.0, stair_half_width, height / 2.0),
+      rgba=(0.50, 0.44, 0.38, 1.0),
+    )
+
+  add_box(
+    "parkour_complex_second_gap_near_platform",
+    pos=(19.10, 0.0, 0.055),
+    size=(0.35, stair_half_width, 0.055),
+    rgba=(0.38, 0.40, 0.46, 1.0),
+  )
+  add_box(
+    "parkour_complex_second_gap_floor_marker",
+    pos=(19.75, 0.0, 0.004),
+    size=(0.22, 0.66, 0.004),
+    rgba=(0.04, 0.04, 0.05, 1.0),
+  )
+  add_box(
+    "parkour_complex_second_gap_far_platform",
+    pos=(20.40, 0.0, 0.055),
+    size=(0.35, stair_half_width, 0.055),
+    rgba=(0.38, 0.40, 0.46, 1.0),
+  )
+
   # Mesh-box style stepping stones: smaller blocks close to the center line,
   # inspired by InstinctLab's random multi-box terrain.
   for index, (x, y, sx, sy, height) in enumerate(
     (
-      (6.40, -0.16, 0.18, 0.14, 0.06),
-      (6.75, 0.16, 0.16, 0.14, 0.09),
-      (7.08, 0.00, 0.17, 0.16, 0.07),
+      (21.30, -0.22, 0.20, 0.16, 0.08),
+      (22.00, 0.22, 0.18, 0.16, 0.12),
+      (22.70, 0.00, 0.20, 0.18, 0.16),
+      (23.40, -0.18, 0.18, 0.16, 0.10),
+      (24.10, 0.18, 0.20, 0.16, 0.14),
+      (24.80, 0.00, 0.20, 0.18, 0.08),
     ),
     start=1,
   ):

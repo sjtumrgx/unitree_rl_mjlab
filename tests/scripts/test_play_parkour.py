@@ -57,21 +57,86 @@ def test_help_documents_parkour_contract_and_diagnostic_flags() -> None:
     "--depth-viewer-frame-rate",
     "--policy-frame",
     "--startup-blend-seconds",
+    "--no-depth-viewer",
+    "--command-mode",
+    "--terrain-route-lookahead",
   ):
     assert flag in help_text
-  assert "Unitree-G1-Parkour-FlatDebug" in help_text or module.DEFAULT_TASK == "Unitree-G1-Parkour-FlatDebug"
+  assert "Unitree-G1-Parkour" in help_text
+  assert module.DEFAULT_TASK == "Unitree-G1-Parkour"
 
 
-def test_parser_defaults_use_gray_depth_and_onnx_training_order() -> None:
+def test_parser_defaults_use_mujoco_viewer_policy_depth_and_route_command() -> None:
   module = _load_module()
   args = module.build_parser().parse_args([])
 
-  assert args.constant_depth == 0.5
+  assert args.task == "Unitree-G1-Parkour"
+  assert args.depth_mode == "mujoco"
   assert args.joint_order == "isaac"
   assert args.action_order == "isaac"
+  assert args.viewer == "native"
+  assert args.depth_viewer is True
+  assert args.depth_viewer_frame == "policy"
+  assert args.command_mode == "terrain-route"
+
+
+def test_parser_keeps_headless_debug_overrides_available() -> None:
+  module = _load_module()
+  args = module.build_parser().parse_args(
+    [
+      "--viewer",
+      "none",
+      "--no-depth-viewer",
+      "--depth-mode",
+      "constant",
+      "--command-mode",
+      "fixed",
+    ]
+  )
+
   assert args.viewer == "none"
   assert args.depth_viewer is False
-  assert args.depth_viewer_frame == "policy"
+  assert args.depth_mode == "constant"
+  assert args.command_mode == "fixed"
+
+
+def test_explicit_validate_walk_runs_headless_unless_viewer_requested(monkeypatch) -> None:
+  module = _load_module()
+  captured = {}
+
+  def fake_run(args):
+    captured["args"] = args
+    return 0
+
+  monkeypatch.setattr(module, "run_parkour_play", fake_run)
+
+  assert _invoke_main(module, ["--validate-walk"]) == 0
+
+  args = captured["args"]
+  assert args.viewer == "none"
+  assert args.depth_viewer is False
+
+
+def test_terrain_route_command_steers_back_to_centerline() -> None:
+  module = _load_module()
+  follower = module.ParkourTerrainRouteFollower(
+    waypoints=((0.0, 0.0), (2.0, 0.0), (4.0, 0.0)),
+    speed=0.3,
+    lookahead=1.0,
+    max_lateral_speed=0.35,
+    max_yaw_rate=0.8,
+    yaw_gain=1.5,
+  )
+
+  command, diagnostics = follower.command(
+    base_pos=(1.0, 0.45, 0.8),
+    root_quat=(1.0, 0.0, 0.0, 0.0),
+  )
+
+  assert command[0] > 0.0
+  assert command[1] < 0.0
+  assert command[2] < 0.0
+  assert diagnostics["target_waypoint"] == [2.0, 0.0]
 
 
 def test_native_viewer_requires_graphical_display(monkeypatch) -> None:

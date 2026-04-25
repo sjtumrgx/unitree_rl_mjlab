@@ -201,7 +201,53 @@ a graphical display is available and falls back to the viser viewer otherwise.
 For implementation details, stage semantics, and current caveats, see
 [`doc/g1_antifall.md`](doc/g1_antifall.md).
 
-### 1.3 G1 Get-Up Training
+### 1.3 G1 Parkour Play
+
+The repo includes a dedicated exported-policy play entrypoint for the
+depth-conditioned G1 parkour model:
+
+- default task: `Unitree-G1-Parkour`
+- default terrain: the longer InstinctLab-inspired MuJoCo terrain sequence
+  (up stairs, down stairs, square-gap surrogates, box fields, and mesh-box
+  stepping stones)
+- default visualization: native MuJoCo viewer plus the live **policy depth**
+  camera window
+- default command source: `terrain-route`, which steers the velocity command
+  along the task's terrain waypoints instead of blindly walking in a fixed
+  world direction.
+
+Run the default visual play mode:
+
+```bash
+python scripts/play_parkour.py
+```
+
+Useful overrides:
+
+```bash
+# Headless / CI smoke validation.
+python scripts/play_parkour.py --validate-walk \
+  --viewer none \
+  --no-depth-viewer \
+  --max-steps 20
+
+# Inspect a smaller debug terrain.
+python scripts/play_parkour.py \
+  --task Unitree-G1-Parkour-ComplexTerrainDebug
+
+# Disable route following and use fixed velocity commands.
+python scripts/play_parkour.py \
+  --command-mode fixed \
+  --command-x 0.25 \
+  --command-y 0.0 \
+  --command-yaw 0.0
+```
+
+The native viewer and depth window require a graphical display
+(`DISPLAY` or `WAYLAND_DISPLAY`).  Use `--viewer none --no-depth-viewer` for
+headless validation.
+
+### 1.4 G1 Get-Up Training
 
 The repo includes a single get-up task for Unitree G1:
 

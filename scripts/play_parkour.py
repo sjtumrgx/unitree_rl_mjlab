@@ -2,25 +2,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import sys
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import torch
 
-DEFAULT_TASK = "Unitree-G1-Parkour-FlatDebug"
+DEFAULT_TASK = "Unitree-G1-Parkour"
 DEFAULT_POLICY_DIR = Path("deploy/robots/g1_parkour/config/policy/parkour/v0")
+DEFAULT_DEPTH_MODE = "mujoco"
+DEFAULT_VIEWER = "native"
+DEFAULT_COMMAND_MODE = "terrain-route"
 
 
 def build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(
     description=(
       "Run the exported depth-conditioned Unitree G1 parkour ONNX policy in a "
-      "MuJoCo flat-debug harness. Constant depth is the default first-stage "
-      "ablation so proprio/action/asset alignment can be debugged separately."
+      "MuJoCo parkour harness. By default this opens the native MuJoCo viewer, "
+      "renders the policy depth camera, loads Unitree-G1-Parkour, and follows "
+      "the terrain route waypoints."
     )
   )
   parser.add_argument("--task", default=DEFAULT_TASK, help="MJLab task id to load.")
@@ -38,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument(
     "--depth-mode",
     choices=("constant", "flat-ground", "mujoco"),
-    default="constant",
+    default=DEFAULT_DEPTH_MODE,
     help=(
       "Depth source. 'constant' isolates walking, 'flat-ground' analytically "
       "renders the flat floor through the training camera contract, and "
@@ -58,6 +64,40 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--command-x", type=float, default=0.25, help="Fixed forward command in m/s.")
   parser.add_argument("--command-y", type=float, default=0.0, help="Fixed lateral command in m/s.")
   parser.add_argument("--command-yaw", type=float, default=0.0, help="Fixed yaw command in rad/s.")
+  parser.add_argument(
+    "--command-mode",
+    choices=("fixed", "terrain-route"),
+    default=DEFAULT_COMMAND_MODE,
+    help=(
+      "Velocity-command source. 'fixed' uses --command-x/y/yaw. "
+      "'terrain-route' steers the command along g1_parkour_route_waypoints "
+      "from the loaded task so the robot follows the terrain asset sequence."
+    ),
+  )
+  parser.add_argument(
+    "--terrain-route-lookahead",
+    type=float,
+    default=1.0,
+    help="Lookahead distance in meters for --command-mode terrain-route.",
+  )
+  parser.add_argument(
+    "--terrain-route-max-lateral-speed",
+    type=float,
+    default=0.35,
+    help="Body-frame lateral velocity clamp for terrain-route commands.",
+  )
+  parser.add_argument(
+    "--terrain-route-max-yaw-rate",
+    type=float,
+    default=0.8,
+    help="Yaw-rate clamp for terrain-route commands.",
+  )
+  parser.add_argument(
+    "--terrain-route-yaw-gain",
+    type=float,
+    default=1.5,
+    help="Heading-error gain for terrain-route yaw commands.",
+  )
   parser.add_argument(
     "--policy-frame",
     choices=("mjlab", "deploy-align"),
@@ -145,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument(
     "--viewer",
     choices=("none", "native"),
-    default="none",
+    default=DEFAULT_VIEWER,
     help="Open a realtime viewer instead of the headless validation loop. 'native' requires DISPLAY or WAYLAND_DISPLAY.",
   )
   parser.add_argument(
@@ -169,13 +209,21 @@ def build_parser() -> argparse.ArgumentParser:
       "Currently used by --depth-mode mujoco."
     ),
   )
+  parser.set_defaults(depth_viewer=True)
   parser.add_argument(
     "--depth-viewer",
+    dest="depth_viewer",
     action="store_true",
     help=(
       "Open a live grayscale window for the current normalized depth image. "
       "Use with --depth-mode mujoco to inspect the real parkour_depth_camera stream."
     ),
+  )
+  parser.add_argument(
+    "--no-depth-viewer",
+    dest="depth_viewer",
+    action="store_false",
+    help="Disable the live policy-depth camera window.",
   )
   parser.add_argument(
     "--depth-viewer-frame",
@@ -321,6 +369,129 @@ def _depth_display_frame(depth_provider: Any, fallback_stack: np.ndarray, frame_
   return np.asarray(fallback_stack[-1], dtype=np.float32)
 
 
+def _wrap_pi(angle: float) -> float:
+  return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _yaw_from_wxyz(root_quat: Sequence[float]) -> float:
+  w, x, y, z = [float(value) for value in root_quat[:4]]
+  return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+class ParkourTerrainRouteFollower:
+  """Convert terrain route waypoints into policy velocity commands."""
+
+  def __init__(
+    self,
+    *,
+    waypoints: Sequence[Sequence[float]],
+    speed: float,
+    lookahead: float,
+    max_lateral_speed: float,
+    max_yaw_rate: float,
+    yaw_gain: float,
+  ) -> None:
+    if len(waypoints) < 2:
+      raise ValueError("terrain route requires at least two waypoints")
+    self.waypoints = tuple((float(point[0]), float(point[1])) for point in waypoints)
+    self.speed = float(speed)
+    self.lookahead = max(0.05, float(lookahead))
+    self.max_lateral_speed = abs(float(max_lateral_speed))
+    self.max_yaw_rate = abs(float(max_yaw_rate))
+    self.yaw_gain = float(yaw_gain)
+
+  def _target_waypoint(self, x: float) -> tuple[int, tuple[float, float]]:
+    target_x = x + self.lookahead
+    for index, waypoint in enumerate(self.waypoints[1:], start=1):
+      if waypoint[0] >= target_x:
+        return index, waypoint
+    return len(self.waypoints) - 1, self.waypoints[-1]
+
+  def command(
+    self,
+    *,
+    base_pos: Sequence[float],
+    root_quat: Sequence[float],
+  ) -> tuple[tuple[float, float, float], dict[str, Any]]:
+    pos_x = float(base_pos[0])
+    pos_y = float(base_pos[1])
+    yaw = _yaw_from_wxyz(root_quat)
+    target_index, target = self._target_waypoint(pos_x)
+    delta_x = target[0] - pos_x
+    delta_y = target[1] - pos_y
+    distance = max(1.0e-6, math.hypot(delta_x, delta_y))
+    desired_heading = math.atan2(delta_y, delta_x)
+    yaw_error = _wrap_pi(desired_heading - yaw)
+
+    desired_world_x = self.speed * delta_x / distance
+    desired_world_y = self.speed * delta_y / distance
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+    body_x = cos_yaw * desired_world_x + sin_yaw * desired_world_y
+    body_y = -sin_yaw * desired_world_x + cos_yaw * desired_world_y
+
+    command_x = float(np.clip(body_x, 0.05, max(0.05, self.speed)))
+    command_y = float(np.clip(body_y, -self.max_lateral_speed, self.max_lateral_speed))
+    command_yaw = float(np.clip(self.yaw_gain * yaw_error, -self.max_yaw_rate, self.max_yaw_rate))
+    diagnostics = {
+      "target_index": target_index,
+      "target_waypoint": [target[0], target[1]],
+      "base_xy": [pos_x, pos_y],
+      "distance_to_target": distance,
+      "yaw": yaw,
+      "desired_heading": desired_heading,
+      "yaw_error": yaw_error,
+      "command": [command_x, command_y, command_yaw],
+    }
+    return (command_x, command_y, command_yaw), diagnostics
+
+
+def _route_waypoints_from_env(env: Any) -> tuple[tuple[float, float], ...]:
+  cfg = getattr(env, "cfg", None)
+  waypoints = getattr(cfg, "g1_parkour_route_waypoints", ()) if cfg is not None else ()
+  return tuple((float(point[0]), float(point[1])) for point in waypoints)
+
+
+def _make_route_follower(
+  env: Any,
+  args: argparse.Namespace,
+) -> ParkourTerrainRouteFollower | None:
+  if args.command_mode != "terrain-route":
+    return None
+  waypoints = _route_waypoints_from_env(env)
+  if not waypoints:
+    print("[parkour] No g1_parkour_route_waypoints on task; falling back to fixed command.")
+    return None
+  return ParkourTerrainRouteFollower(
+    waypoints=waypoints,
+    speed=args.command_x,
+    lookahead=args.terrain_route_lookahead,
+    max_lateral_speed=args.terrain_route_max_lateral_speed,
+    max_yaw_rate=args.terrain_route_max_yaw_rate,
+    yaw_gain=args.terrain_route_yaw_gain,
+  )
+
+
+def _apply_play_command(
+  adapter: Any,
+  *,
+  route_follower: ParkourTerrainRouteFollower | None,
+  fixed_command: tuple[float, float, float],
+) -> dict[str, Any] | None:
+  if route_follower is None:
+    adapter.set_command(fixed_command)
+    adapter.set_fixed_command()
+    return None
+  fall_signals = adapter.fall_signals()
+  command, diagnostics = route_follower.command(
+    base_pos=fall_signals["base_pos"],
+    root_quat=fall_signals["root_quat"],
+  )
+  adapter.set_command(command)
+  adapter.set_fixed_command()
+  return diagnostics
+
+
 def _load_contract_and_policy(args: argparse.Namespace):
   from src.parkour.contract import (
     load_deploy_contract,
@@ -434,6 +605,9 @@ class ParkourNativeViewerPolicy:
     self.latest_fall_signals: dict[str, Any] = {}
     self.mapping_proof: dict[str, Any] | None = None
     self.action_delay_buffer: deque[np.ndarray] = deque(maxlen=max(1, args.action_delay_steps + 1))
+    self.fixed_command = (args.command_x, args.command_y, args.command_yaw)
+    self.route_follower = _make_route_follower(env, args)
+    self.latest_route_diag: dict[str, Any] | None = None
     self._has_stepped = False
     self.reset()
 
@@ -451,7 +625,11 @@ class ParkourNativeViewerPolicy:
       action_order=self.args.action_order,
     )
     self.last_action = np.zeros(self.contract.action_size, dtype=np.float32)
-    self.adapter.set_fixed_command()
+    self.latest_route_diag = _apply_play_command(
+      self.adapter,
+      route_follower=self.route_follower,
+      fixed_command=self.fixed_command,
+    )
     self.latest_frame_diag = self.adapter.warm_start(last_policy_action=self.last_action)
     self.latest_fall_signals = self.adapter.fall_signals()
     self.start_x = float(self.latest_fall_signals["base_pos"][0])
@@ -477,12 +655,20 @@ class ParkourNativeViewerPolicy:
     # After the previous env.step(), append the current MuJoCo state with the
     # action that was just applied, matching the headless validation history.
     if self._has_stepped:
-      self.adapter.set_fixed_command()
+      self.latest_route_diag = _apply_play_command(
+        self.adapter,
+        route_follower=self.route_follower,
+        fixed_command=self.fixed_command,
+      )
       self.latest_frame_diag = self.adapter.append_current(last_policy_action=self.last_action)
       self.latest_fall_signals = self.adapter.fall_signals()
       self.distance_x = float(self.latest_fall_signals["base_pos"][0]) - self.start_x
 
-    self.adapter.set_fixed_command()
+    self.latest_route_diag = _apply_play_command(
+      self.adapter,
+      route_follower=self.route_follower,
+      fixed_command=self.fixed_command,
+    )
     proprio = self.adapter.proprio()
     depth = self.depth_provider.stack(self.adapter)
     assert_depth_contract(depth)
@@ -544,6 +730,13 @@ class ParkourNativeViewerPolicy:
       "agent": self.args.agent,
       "depth": self.depth_provider.diagnostics(),
       "command": [self.args.command_x, self.args.command_y, self.args.command_yaw],
+      "command_mode": self.args.command_mode,
+      "route_waypoints": (
+        [list(point) for point in self.route_follower.waypoints]
+        if self.route_follower is not None
+        else None
+      ),
+      "latest_route": self.latest_route_diag,
       "policy_frame": self.args.policy_frame,
       "joint_order": self.args.joint_order,
       "action_order": self.args.action_order,
@@ -674,6 +867,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     "depth": depth_provider.diagnostics(),
     "onnx": policy.metadata.as_dict() if policy is not None else None,
     "command": [args.command_x, args.command_y, args.command_yaw],
+    "command_mode": args.command_mode,
     "policy_frame": args.policy_frame,
     "joint_order": args.joint_order,
     "action_order": args.action_order,
@@ -688,6 +882,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
   reset_count = 0
   latest_frame_diag: Any = None
   latest_policy_diag: Mapping[str, Any] = {}
+  latest_route_diag: dict[str, Any] | None = None
   last_action = np.zeros(contract.action_size, dtype=np.float32)
 
   try:
@@ -702,7 +897,18 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       joint_order=args.joint_order,
       action_order=args.action_order,
     )
-    adapter.set_fixed_command()
+    fixed_command = (args.command_x, args.command_y, args.command_yaw)
+    route_follower = _make_route_follower(env, args)
+    summary["route_waypoints"] = (
+      [list(point) for point in route_follower.waypoints]
+      if route_follower is not None
+      else None
+    )
+    latest_route_diag = _apply_play_command(
+      adapter,
+      route_follower=route_follower,
+      fixed_command=fixed_command,
+    )
     latest_frame_diag = adapter.warm_start(last_policy_action=last_action)
     mapping_proof = adapter.mapping_proof().as_dict()
     summary["mapping_proof"] = mapping_proof
@@ -741,7 +947,11 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     distance = 0.0
     elapsed = 0.0
     for step in range(max_steps):
-      adapter.set_fixed_command()
+      latest_route_diag = _apply_play_command(
+        adapter,
+        route_follower=route_follower,
+        fixed_command=fixed_command,
+      )
       proprio = adapter.proprio()
       depth = depth_provider.stack(adapter)
       assert_depth_contract(depth)
@@ -813,7 +1023,11 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       if reset_now:
         reset_count += 1
       last_action = applied_policy_action.copy()
-      adapter.set_fixed_command()
+      latest_route_diag = _apply_play_command(
+        adapter,
+        route_follower=route_follower,
+        fixed_command=fixed_command,
+      )
       latest_frame_diag = adapter.append_current(last_policy_action=last_action)
       final_fall = adapter.fall_signals()
       distance = float(final_fall["base_pos"][0]) - start_x
@@ -851,6 +1065,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             "fall_signals": final_fall,
             "latest_frame": latest_frame_diag.__dict__,
             "latest_policy": latest_policy_diag,
+            "latest_route": latest_route_diag,
             "depth": depth_provider.diagnostics(),
           }
         )
@@ -878,6 +1093,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "fall_signals": final_fall,
         "latest_frame": latest_frame_diag.__dict__ if latest_frame_diag is not None else None,
         "latest_policy": latest_policy_diag,
+        "latest_route": latest_route_diag,
         "depth": depth_diag,
         "acceptance": {
           "distance_target_met": traversal_accepted,
@@ -930,7 +1146,15 @@ def run_parkour_play(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
   parser = build_parser()
+  raw_args = list(sys.argv[1:] if argv is None else argv)
   args = parser.parse_args(argv)
+  validate_explicit = "--validate-walk" in raw_args
+  viewer_explicit = "--viewer" in raw_args
+  depth_viewer_explicit = "--depth-viewer" in raw_args or "--no-depth-viewer" in raw_args
+  if validate_explicit and not viewer_explicit:
+    args.viewer = "none"
+  if validate_explicit and not depth_viewer_explicit:
+    args.depth_viewer = False
   if not (args.check_contract or args.smoke_step or args.validate_walk):
     args.validate_walk = True
   try:

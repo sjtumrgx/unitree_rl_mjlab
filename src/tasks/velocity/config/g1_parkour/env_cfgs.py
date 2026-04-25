@@ -24,6 +24,7 @@ from src.parkour.contract import (
   load_deploy_contract,
 )
 
+PARKOUR_TASK_ID = "Unitree-G1-Parkour"
 PARKOUR_FLAT_DEBUG_TASK_ID = "Unitree-G1-Parkour-FlatDebug"
 PARKOUR_OBSTACLE_DEBUG_TASK_ID = "Unitree-G1-Parkour-ObstacleDebug"
 PARKOUR_COMPLEX_TERRAIN_DEBUG_TASK_ID = "Unitree-G1-Parkour-ComplexTerrainDebug"
@@ -35,6 +36,19 @@ PARKOUR_OBSTACLE_DEBUG_GEOMS = (
 )
 PARKOUR_COMPLEX_TERRAIN_DEBUG_GEOMS = tuple(
   f"robot/{name}" for name in PARKOUR_COMPLEX_TERRAIN_GEOM_NAMES
+)
+PARKOUR_COMPLEX_TERRAIN_ROUTE_WAYPOINTS = (
+  (0.0, 0.0),
+  (2.0, 0.0),
+  (4.8, 0.0),
+  (7.45, 0.0),
+  (10.8, 0.0),
+  (13.2, 0.0),
+  (15.5, 0.0),
+  (17.8, 0.0),
+  (19.75, 0.0),
+  (22.0, 0.0),
+  (25.2, 0.0),
 )
 PARKOUR_COMPLEX_TERRAIN_INSTINCTLAB_REFERENCE = {
   "source": (
@@ -228,24 +242,39 @@ def unitree_g1_parkour_complex_terrain_debug_env_cfg(
   cfg.sim.contact_sensor_maxmatch = max(cfg.sim.contact_sensor_maxmatch, 512)
   cfg.g1_parkour_flat_debug = False  # type: ignore[attr-defined]
   cfg.g1_parkour_obstacle_debug = False  # type: ignore[attr-defined]
+  cfg.g1_parkour_complex_terrain = True  # type: ignore[attr-defined]
   cfg.g1_parkour_complex_terrain_debug = True  # type: ignore[attr-defined]
   cfg.g1_parkour_complex_terrain_geoms = (  # type: ignore[attr-defined]
     PARKOUR_COMPLEX_TERRAIN_DEBUG_GEOMS
   )
+  cfg.g1_parkour_route_waypoints = (  # type: ignore[attr-defined]
+    PARKOUR_COMPLEX_TERRAIN_ROUTE_WAYPOINTS
+  )
   cfg.g1_parkour_complex_terrain_contract = {  # type: ignore[attr-defined]
-    "target_distance_m": 7.0,
-    "up_stairs": {"steps": 4, "step_run_m": 0.30, "max_height_m": 0.20},
-    "down_stairs": {"steps": 4, "step_run_m": 0.30, "max_height_m": 0.20},
+    "target_distance_m": 25.2,
+    "up_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.30},
+    "down_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.30},
+    "second_stairs": {"steps": 4, "step_run_m": 0.42, "max_height_m": 0.28},
     "gap": {
-      "platform_height_m": 0.08,
-      "lower_strip_width_m": 0.24,
+      "platform_height_m": 0.11,
+      "lower_strip_width_m": 0.36,
+      "second_lower_strip_width_m": 0.44,
       "keeps_global_floor": True,
     },
     "box_field": {
-      "discrete_boxes": 3,
-      "mesh_style_boxes": 3,
-      "height_range_m": (0.06, 0.10),
+      "discrete_boxes": 6,
+      "mesh_style_boxes": 6,
+      "height_range_m": (0.08, 0.18),
     },
+    "route_waypoints": PARKOUR_COMPLEX_TERRAIN_ROUTE_WAYPOINTS,
     "instinctlab_reference": PARKOUR_COMPLEX_TERRAIN_INSTINCTLAB_REFERENCE,
   }
+  return cfg
+
+
+def unitree_g1_parkour_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create the default non-debug G1 parkour play env on complex terrain."""
+  cfg = unitree_g1_parkour_complex_terrain_debug_env_cfg(play=play)
+  cfg.g1_parkour_official = True  # type: ignore[attr-defined]
+  cfg.g1_parkour_complex_terrain_debug = False  # type: ignore[attr-defined]
   return cfg
