@@ -21,6 +21,10 @@ CXX_COMPLEX_SCENE = (
   ROOT / "src" / "assets" / "robots" / "unitree_g1" / "xmls" / "scene_g1_parkour.xml"
 )
 CXX_SMOKE_HARNESS = ROOT / "scripts" / "run_g1_parkour_cpp_dds_smoke.py"
+CPP_DEPLOY_PARAM = ROOT / "deploy" / "include" / "param.h"
+CPP_DEPTH_PROVIDER = (
+  ROOT / "deploy" / "robots" / "g1_parkour" / "src" / "ParkourDepthProvider.cpp"
+)
 
 
 def test_only_formal_g1_parkour_task_is_publicly_registered() -> None:
@@ -65,12 +69,12 @@ def test_g1_parkour_complex_terrain_cfg_marks_instinctlab_reference() -> None:
   assert contract["up_stairs"] == {
     "steps": 5,
     "step_run_m": 0.36,
-    "max_height_m": 0.30,
+    "max_height_m": 0.15,
   }
   assert contract["down_stairs"] == {
     "steps": 5,
     "step_run_m": 0.36,
-    "max_height_m": 0.30,
+    "max_height_m": 0.15,
   }
   assert contract["gap"]["keeps_global_floor"] is True
   assert contract["gap"]["lower_strip_width_m"] <= 0.40
@@ -175,11 +179,11 @@ def test_cxx_parkour_complex_scene_mirrors_python_play_terrain_assets() -> None:
   }.issubset(geoms)
   assert (
     float(geoms["parkour_complex_up_stair_05"].attrib["size"].split()[2])
-    == 0.15
+    == 0.075
   )
   assert (
     float(geoms["parkour_complex_up_stair_b_04"].attrib["size"].split()[2])
-    == 0.14
+    == 0.07
   )
 
 
@@ -208,3 +212,17 @@ def test_cpp_dds_smoke_harness_exposes_complex_terrain_scene_flag() -> None:
     "--low-obstacle-course and --complex-terrain-course are mutually exclusive"
     in text
   )
+
+
+def test_cpp_dds_sim_autostart_defaults_to_live_depth_for_terrain() -> None:
+  harness = CXX_SMOKE_HARNESS.read_text()
+  param = CPP_DEPLOY_PARAM.read_text()
+  provider = CPP_DEPTH_PROVIDER.read_text()
+
+  assert "effective_live_depth_blend = 1.0" in harness
+  assert '"--live-depth-blend", str(max(0.0, min(1.0, effective_live_depth_blend)))' in harness
+  assert "--depth-artifact-floor" in harness
+  assert "--sim-autostart-parkour defaulting to --live-depth-blend=1.0" in param
+  assert "param::parkour_live_depth_blend_override" in provider
+  assert "param::parkour_constant_depth_override" in provider
+  assert "artifact_floor_" in provider

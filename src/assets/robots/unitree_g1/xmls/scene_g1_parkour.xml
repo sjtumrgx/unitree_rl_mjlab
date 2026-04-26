@@ -389,47 +389,47 @@
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" />
     <!-- InstinctLab-inspired deterministic parkour course for C++/DDS MuJoCo.
          Mirrors scripts/play_parkour.py route terrain: up/down stairs, two safe
-         square-gap surrogates, discrete boxes, and mesh-box stepping stones.
+         square-gap surrogates, centered boxes, and mesh-box stepping stones.
          Gap lower strips are <= 0.40 m and keep the global floor underneath. -->
     <body name="parkour_complex_terrain_course" pos="0 0 0">
-      <geom name="parkour_complex_up_stair_01" type="box" pos="1.2 0 0.03" size="0.18 0.72 0.03" rgba="0.58 0.5 0.42 1" />
-      <geom name="parkour_complex_up_stair_02" type="box" pos="1.56 0 0.06" size="0.18 0.72 0.06" rgba="0.58 0.5 0.42 1" />
-      <geom name="parkour_complex_up_stair_03" type="box" pos="1.92 0 0.09" size="0.18 0.72 0.09" rgba="0.58 0.5 0.42 1" />
-      <geom name="parkour_complex_up_stair_04" type="box" pos="2.28 0 0.12" size="0.18 0.72 0.12" rgba="0.58 0.5 0.42 1" />
-      <geom name="parkour_complex_up_stair_05" type="box" pos="2.64 0 0.15" size="0.18 0.72 0.15" rgba="0.58 0.5 0.42 1" />
-      <geom name="parkour_complex_top_platform" type="box" pos="3.25 0 0.15" size="0.42 0.72 0.15" rgba="0.5 0.52 0.55 1" />
-      <geom name="parkour_complex_down_stair_01" type="box" pos="4.2 0 0.15" size="0.18 0.72 0.15" rgba="0.52 0.47 0.4 1" />
-      <geom name="parkour_complex_down_stair_02" type="box" pos="4.56 0 0.12" size="0.18 0.72 0.12" rgba="0.52 0.47 0.4 1" />
-      <geom name="parkour_complex_down_stair_03" type="box" pos="4.92 0 0.09" size="0.18 0.72 0.09" rgba="0.52 0.47 0.4 1" />
-      <geom name="parkour_complex_down_stair_04" type="box" pos="5.28 0 0.06" size="0.18 0.72 0.06" rgba="0.52 0.47 0.4 1" />
-      <geom name="parkour_complex_down_stair_05" type="box" pos="5.64 0 0.03" size="0.18 0.72 0.03" rgba="0.52 0.47 0.4 1" />
-      <geom name="parkour_complex_gap_near_platform" type="box" pos="6.8 0 0.055" size="0.35 0.72 0.055" rgba="0.42 0.43 0.48 1" />
+      <geom name="parkour_complex_up_stair_01" type="box" pos="1.2 0 0.015" size="0.18 0.72 0.015" rgba="0.58 0.5 0.42 1" />
+      <geom name="parkour_complex_up_stair_02" type="box" pos="1.56 0 0.03" size="0.18 0.72 0.03" rgba="0.58 0.5 0.42 1" />
+      <geom name="parkour_complex_up_stair_03" type="box" pos="1.92 0 0.045" size="0.18 0.72 0.045" rgba="0.58 0.5 0.42 1" />
+      <geom name="parkour_complex_up_stair_04" type="box" pos="2.28 0 0.06" size="0.18 0.72 0.06" rgba="0.58 0.5 0.42 1" />
+      <geom name="parkour_complex_up_stair_05" type="box" pos="2.64 0 0.075" size="0.18 0.72 0.075" rgba="0.58 0.5 0.42 1" />
+      <geom name="parkour_complex_top_platform" type="box" pos="3.25 0 0.075" size="0.42 0.72 0.075" rgba="0.5 0.52 0.55 1" />
+      <geom name="parkour_complex_down_stair_01" type="box" pos="4.2 0 0.075" size="0.18 0.72 0.075" rgba="0.52 0.47 0.4 1" />
+      <geom name="parkour_complex_down_stair_02" type="box" pos="4.56 0 0.06" size="0.18 0.72 0.06" rgba="0.52 0.47 0.4 1" />
+      <geom name="parkour_complex_down_stair_03" type="box" pos="4.92 0 0.045" size="0.18 0.72 0.045" rgba="0.52 0.47 0.4 1" />
+      <geom name="parkour_complex_down_stair_04" type="box" pos="5.28 0 0.03" size="0.18 0.72 0.03" rgba="0.52 0.47 0.4 1" />
+      <geom name="parkour_complex_down_stair_05" type="box" pos="5.64 0 0.015" size="0.18 0.72 0.015" rgba="0.52 0.47 0.4 1" />
+      <geom name="parkour_complex_gap_near_platform" type="box" pos="6.8 0 0.03" size="0.35 0.72 0.03" rgba="0.42 0.43 0.48 1" />
       <geom name="parkour_complex_gap_floor_marker" type="box" pos="7.345 0 0.004" size="0.195 0.66 0.004" rgba="0.05 0.05 0.06 1" />
-      <geom name="parkour_complex_gap_far_platform" type="box" pos="7.89 0 0.055" size="0.35 0.72 0.055" rgba="0.42 0.43 0.48 1" />
-      <geom name="parkour_complex_discrete_box_01" type="box" pos="9.3 -0.4 0.05" size="0.22 0.2 0.05" rgba="0.62 0.42 0.28 1" />
-      <geom name="parkour_complex_discrete_box_02" type="box" pos="10 0.35 0.07" size="0.24 0.18 0.07" rgba="0.62 0.42 0.28 1" />
-      <geom name="parkour_complex_discrete_box_03" type="box" pos="10.8 0 0.09" size="0.26 0.22 0.09" rgba="0.62 0.42 0.28 1" />
-      <geom name="parkour_complex_discrete_box_04" type="box" pos="11.6 -0.25 0.06" size="0.24 0.2 0.06" rgba="0.62 0.42 0.28 1" />
-      <geom name="parkour_complex_discrete_box_05" type="box" pos="12.35 0.25 0.08" size="0.24 0.18 0.08" rgba="0.62 0.42 0.28 1" />
-      <geom name="parkour_complex_discrete_box_06" type="box" pos="13.15 0 0.05" size="0.28 0.2 0.05" rgba="0.62 0.42 0.28 1" />
-      <geom name="parkour_complex_up_stair_b_01" type="box" pos="14.4 0 0.035" size="0.21 0.72 0.035" rgba="0.56 0.48 0.4 1" />
-      <geom name="parkour_complex_up_stair_b_02" type="box" pos="14.82 0 0.07" size="0.21 0.72 0.07" rgba="0.56 0.48 0.4 1" />
-      <geom name="parkour_complex_up_stair_b_03" type="box" pos="15.24 0 0.105" size="0.21 0.72 0.105" rgba="0.56 0.48 0.4 1" />
-      <geom name="parkour_complex_up_stair_b_04" type="box" pos="15.66 0 0.14" size="0.21 0.72 0.14" rgba="0.56 0.48 0.4 1" />
-      <geom name="parkour_complex_mid_platform_b" type="box" pos="16 0 0.14" size="0.42 0.72 0.14" rgba="0.48 0.5 0.54 1" />
-      <geom name="parkour_complex_down_stair_b_01" type="box" pos="16.7 0 0.14" size="0.21 0.72 0.14" rgba="0.5 0.44 0.38 1" />
-      <geom name="parkour_complex_down_stair_b_02" type="box" pos="17.12 0 0.105" size="0.21 0.72 0.105" rgba="0.5 0.44 0.38 1" />
-      <geom name="parkour_complex_down_stair_b_03" type="box" pos="17.54 0 0.07" size="0.21 0.72 0.07" rgba="0.5 0.44 0.38 1" />
-      <geom name="parkour_complex_down_stair_b_04" type="box" pos="17.96 0 0.035" size="0.21 0.72 0.035" rgba="0.5 0.44 0.38 1" />
-      <geom name="parkour_complex_second_gap_near_platform" type="box" pos="19.1 0 0.055" size="0.35 0.72 0.055" rgba="0.38 0.4 0.46 1" />
+      <geom name="parkour_complex_gap_far_platform" type="box" pos="7.89 0 0.03" size="0.35 0.72 0.03" rgba="0.42 0.43 0.48 1" />
+      <geom name="parkour_complex_discrete_box_01" type="box" pos="9.3 0 0.02" size="0.3 0.72 0.02" rgba="0.62 0.42 0.28 1" />
+      <geom name="parkour_complex_discrete_box_02" type="box" pos="10 0 0.03" size="0.3 0.72 0.03" rgba="0.62 0.42 0.28 1" />
+      <geom name="parkour_complex_discrete_box_03" type="box" pos="10.8 0 0.04" size="0.3 0.72 0.04" rgba="0.62 0.42 0.28 1" />
+      <geom name="parkour_complex_discrete_box_04" type="box" pos="11.6 0 0.03" size="0.3 0.72 0.03" rgba="0.62 0.42 0.28 1" />
+      <geom name="parkour_complex_discrete_box_05" type="box" pos="12.35 0 0.035" size="0.3 0.72 0.035" rgba="0.62 0.42 0.28 1" />
+      <geom name="parkour_complex_discrete_box_06" type="box" pos="13.15 0 0.02" size="0.3 0.72 0.02" rgba="0.62 0.42 0.28 1" />
+      <geom name="parkour_complex_up_stair_b_01" type="box" pos="14.4 0 0.0175" size="0.21 0.72 0.0175" rgba="0.56 0.48 0.4 1" />
+      <geom name="parkour_complex_up_stair_b_02" type="box" pos="14.82 0 0.035" size="0.21 0.72 0.035" rgba="0.56 0.48 0.4 1" />
+      <geom name="parkour_complex_up_stair_b_03" type="box" pos="15.24 0 0.0525" size="0.21 0.72 0.0525" rgba="0.56 0.48 0.4 1" />
+      <geom name="parkour_complex_up_stair_b_04" type="box" pos="15.66 0 0.07" size="0.21 0.72 0.07" rgba="0.56 0.48 0.4 1" />
+      <geom name="parkour_complex_mid_platform_b" type="box" pos="16 0 0.07" size="0.42 0.72 0.07" rgba="0.48 0.5 0.54 1" />
+      <geom name="parkour_complex_down_stair_b_01" type="box" pos="16.7 0 0.07" size="0.21 0.72 0.07" rgba="0.5 0.44 0.38 1" />
+      <geom name="parkour_complex_down_stair_b_02" type="box" pos="17.12 0 0.0525" size="0.21 0.72 0.0525" rgba="0.5 0.44 0.38 1" />
+      <geom name="parkour_complex_down_stair_b_03" type="box" pos="17.54 0 0.035" size="0.21 0.72 0.035" rgba="0.5 0.44 0.38 1" />
+      <geom name="parkour_complex_down_stair_b_04" type="box" pos="17.96 0 0.0175" size="0.21 0.72 0.0175" rgba="0.5 0.44 0.38 1" />
+      <geom name="parkour_complex_second_gap_near_platform" type="box" pos="19.1 0 0.03" size="0.35 0.72 0.03" rgba="0.38 0.4 0.46 1" />
       <geom name="parkour_complex_second_gap_floor_marker" type="box" pos="19.645 0 0.004" size="0.195 0.66 0.004" rgba="0.04 0.04 0.05 1" />
-      <geom name="parkour_complex_second_gap_far_platform" type="box" pos="20.19 0 0.055" size="0.35 0.72 0.055" rgba="0.38 0.4 0.46 1" />
-      <geom name="parkour_complex_mesh_box_01" type="box" pos="21.3 -0.22 0.04" size="0.2 0.16 0.04" rgba="0.34 0.46 0.32 1" />
-      <geom name="parkour_complex_mesh_box_02" type="box" pos="22 0.22 0.06" size="0.18 0.16 0.06" rgba="0.34 0.46 0.32 1" />
-      <geom name="parkour_complex_mesh_box_03" type="box" pos="22.7 0 0.08" size="0.2 0.18 0.08" rgba="0.34 0.46 0.32 1" />
-      <geom name="parkour_complex_mesh_box_04" type="box" pos="23.4 -0.18 0.05" size="0.18 0.16 0.05" rgba="0.34 0.46 0.32 1" />
-      <geom name="parkour_complex_mesh_box_05" type="box" pos="24.1 0.18 0.07" size="0.2 0.16 0.07" rgba="0.34 0.46 0.32 1" />
-      <geom name="parkour_complex_mesh_box_06" type="box" pos="24.8 0 0.04" size="0.2 0.18 0.04" rgba="0.34 0.46 0.32 1" />
+      <geom name="parkour_complex_second_gap_far_platform" type="box" pos="20.19 0 0.03" size="0.35 0.72 0.03" rgba="0.38 0.4 0.46 1" />
+      <geom name="parkour_complex_mesh_box_01" type="box" pos="21.3 0 0.02" size="0.26 0.62 0.02" rgba="0.34 0.46 0.32 1" />
+      <geom name="parkour_complex_mesh_box_02" type="box" pos="22 0 0.025" size="0.26 0.62 0.025" rgba="0.34 0.46 0.32 1" />
+      <geom name="parkour_complex_mesh_box_03" type="box" pos="22.7 0 0.03" size="0.26 0.62 0.03" rgba="0.34 0.46 0.32 1" />
+      <geom name="parkour_complex_mesh_box_04" type="box" pos="23.4 0 0.025" size="0.26 0.62 0.025" rgba="0.34 0.46 0.32 1" />
+      <geom name="parkour_complex_mesh_box_05" type="box" pos="24.1 0 0.03" size="0.26 0.62 0.03" rgba="0.34 0.46 0.32 1" />
+      <geom name="parkour_complex_mesh_box_06" type="box" pos="24.8 0 0.02" size="0.26 0.62 0.02" rgba="0.34 0.46 0.32 1" />
     </body>
   </worldbody>
 </mujoco>

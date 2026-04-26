@@ -4,8 +4,10 @@
 #pragma once
 
 #include <stdint.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <boost/program_options.hpp>
 #include <yaml-cpp/yaml.h>
@@ -51,6 +53,11 @@ inline bool sim_autostart_parkour = false;
 inline float sim_command_x = 0.25f;
 inline float sim_command_y = 0.0f;
 inline float sim_command_yaw = 0.0f;
+inline bool sim_route_follow = true;
+inline float sim_route_lookahead = 1.0f;
+inline float sim_route_max_lateral_speed = 0.25f;
+inline float sim_route_max_yaw_rate = 0.8f;
+inline float sim_route_yaw_gain = 1.0f;
 inline bool sim_heading_lock = true;
 inline float sim_heading_target_yaw = 0.0f;
 inline float sim_heading_kp = 1.0f;
@@ -67,6 +74,14 @@ inline int gait_replay_max_steps = 0;
 inline std::string joint_vel_source = "sensor";
 inline bool policy_tick_sync = false;
 inline bool no_policy_tick_sync = false;
+inline bool parkour_live_depth_blend_override = false;
+inline float parkour_live_depth_blend = 0.0f;
+inline bool parkour_live_depth_baseline_override = false;
+inline float parkour_live_depth_baseline = 0.5f;
+inline bool parkour_constant_depth_override = false;
+inline float parkour_constant_depth = 0.5f;
+inline bool parkour_depth_artifact_floor_override = false;
+inline float parkour_depth_artifact_floor = 0.0f;
 
 inline std::filesystem::path get_bin_path() {
     std::vector<char> path(1024);
@@ -163,6 +178,16 @@ inline po::variables_map helper(int argc, char** argv)
             "simulation-only lateral velocity command used with --sim-autostart-parkour")
         ("sim-command-yaw", po::value<float>(&sim_command_yaw)->default_value(0.0f),
             "simulation-only yaw velocity command used with --sim-autostart-parkour")
+        ("no-sim-route-follow", po::bool_switch()->default_value(false),
+            "simulation-only: disable terrain-route following and use fixed sim command")
+        ("sim-route-lookahead", po::value<float>(&sim_route_lookahead)->default_value(1.0f),
+            "simulation-only route follower lookahead distance in meters")
+        ("sim-route-max-lateral-speed", po::value<float>(&sim_route_max_lateral_speed)->default_value(0.25f),
+            "simulation-only route follower body-frame lateral velocity clamp")
+        ("sim-route-max-yaw-rate", po::value<float>(&sim_route_max_yaw_rate)->default_value(0.8f),
+            "simulation-only route follower yaw-rate clamp")
+        ("sim-route-yaw-gain", po::value<float>(&sim_route_yaw_gain)->default_value(1.0f),
+            "simulation-only route follower heading proportional gain")
         ("sim-heading-lock", po::bool_switch(&sim_heading_lock)->default_value(true),
             "simulation-only: stabilize heading to --sim-heading-target-yaw while walking")
         ("no-sim-heading-lock", po::bool_switch()->default_value(false),
@@ -191,6 +216,14 @@ inline po::variables_map helper(int argc, char** argv)
             "simulation-only diagnostic: gate the 50 Hz policy loop on simulator lowstate tick instead of wall-clock only")
         ("no-policy-tick-sync", po::bool_switch(&no_policy_tick_sync)->default_value(false),
             "simulation-only diagnostic: disable the default lowstate-tick-synced policy loop used by --sim-autostart-parkour")
+        ("live-depth-blend", po::value<float>(&parkour_live_depth_blend),
+            "parkour simulation-only: blend live depth into policy input, 0=constant baseline, 1=full live depth")
+        ("live-depth-baseline", po::value<float>(&parkour_live_depth_baseline),
+            "parkour simulation-only: normalized baseline depth used when --live-depth-blend is below 1")
+        ("constant-depth", po::value<float>(&parkour_constant_depth),
+            "parkour diagnostic: ignore live depth and feed a constant normalized policy-depth value")
+        ("depth-artifact-floor", po::value<float>(&parkour_depth_artifact_floor),
+            "parkour live-depth diagnostic: clamp normalized depth pixels below this floor")
         ;
 
     po::variables_map vm;
@@ -201,6 +234,13 @@ inline po::variables_map helper(int argc, char** argv)
     {
         sim_heading_lock = false;
     }
+    if (vm["no-sim-route-follow"].as<bool>())
+    {
+        sim_route_follow = false;
+    }
+    sim_route_lookahead = std::max(0.05f, sim_route_lookahead);
+    sim_route_max_lateral_speed = std::abs(sim_route_max_lateral_speed);
+    sim_route_max_yaw_rate = std::abs(sim_route_max_yaw_rate);
     if (gait_record_every < 1)
     {
         gait_record_every = 1;
@@ -228,6 +268,35 @@ inline po::variables_map helper(int argc, char** argv)
         && joint_vel_source != "finite-diff-lowstate")
     {
         throw std::runtime_error("--joint-vel-source must be sensor, finite-diff-policy, or finite-diff-lowstate");
+    }
+    parkour_live_depth_blend_override = vm.count("live-depth-blend") > 0;
+    parkour_live_depth_baseline_override = vm.count("live-depth-baseline") > 0;
+    parkour_constant_depth_override = vm.count("constant-depth") > 0;
+    parkour_depth_artifact_floor_override = vm.count("depth-artifact-floor") > 0;
+    if (parkour_live_depth_blend_override)
+    {
+        parkour_live_depth_blend = std::clamp(parkour_live_depth_blend, 0.0f, 1.0f);
+    }
+    if (parkour_live_depth_baseline_override)
+    {
+        parkour_live_depth_baseline = std::clamp(parkour_live_depth_baseline, 0.0f, 1.0f);
+    }
+    if (parkour_constant_depth_override)
+    {
+        parkour_constant_depth = std::clamp(parkour_constant_depth, 0.0f, 1.0f);
+    }
+    if (parkour_depth_artifact_floor_override)
+    {
+        parkour_depth_artifact_floor = std::clamp(parkour_depth_artifact_floor, 0.0f, 1.0f);
+    }
+    if (sim_autostart_parkour && !parkour_live_depth_blend_override && !parkour_constant_depth_override)
+    {
+        parkour_live_depth_blend_override = true;
+        parkour_live_depth_blend = 1.0f;
+        spdlog::warn(
+            "--sim-autostart-parkour defaulting to --live-depth-blend=1.0; "
+            "pass --live-depth-blend=0.0 or --constant-depth=<value> for proprioception-only diagnostics."
+        );
     }
     if (sim_autostart_parkour && !no_policy_tick_sync)
     {

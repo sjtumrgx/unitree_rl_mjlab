@@ -228,11 +228,11 @@ def _unitree_g1_parkour_complex_terrain_env_cfg(
   )
   cfg.g1_parkour_complex_terrain_contract = {  # type: ignore[attr-defined]
     "target_distance_m": 25.2,
-    "up_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.30},
-    "down_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.30},
-    "second_stairs": {"steps": 4, "step_run_m": 0.42, "max_height_m": 0.28},
+    "up_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.15},
+    "down_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.15},
+    "second_stairs": {"steps": 4, "step_run_m": 0.42, "max_height_m": 0.14},
     "gap": {
-      "platform_height_m": 0.11,
+      "platform_height_m": 0.06,
       "lower_strip_width_m": 0.39,
       "second_lower_strip_width_m": 0.39,
       "keeps_global_floor": True,
@@ -240,7 +240,7 @@ def _unitree_g1_parkour_complex_terrain_env_cfg(
     "box_field": {
       "discrete_boxes": 6,
       "mesh_style_boxes": 6,
-      "height_range_m": (0.08, 0.18),
+      "height_range_m": (0.04, 0.08),
     },
     "route_waypoints": PARKOUR_COMPLEX_TERRAIN_ROUTE_WAYPOINTS,
     "instinctlab_reference": PARKOUR_COMPLEX_TERRAIN_INSTINCTLAB_REFERENCE,

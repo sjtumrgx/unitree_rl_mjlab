@@ -16,6 +16,8 @@ joystick_bits: 16
 print_scene_information: 1
 wait_for_lowcmd_before_physics: 1
 realtime_lockstep: 1
+lowcmd_kp_scale: 0.9
+lowcmd_kd_scale: 1.1
 enable_elastic_band: 0
 initial_base_pos: [0.0, 0.0, 0.9]
 initial_base_quat: [1.0, 0.0, 0.0, 0.0]

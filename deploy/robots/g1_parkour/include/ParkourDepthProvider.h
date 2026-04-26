@@ -73,6 +73,7 @@ private:
     float depth_max_ = 2.5f;
     float output_min_ = 0.0f;
     float output_max_ = 1.0f;
+    float artifact_floor_ = 0.0f;
     float artifact_ceiling_ = 1.0f;
     float live_depth_blend_ = 1.0f;
     float live_depth_baseline_ = 0.5f;

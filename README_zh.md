@@ -269,11 +269,12 @@ python scripts/run_g1_parkour_cpp_dds_smoke.py \
   --log-dir /tmp/g1_parkour_cpp_dds_200m
 ```
 
-当前默认部署配置仍会启用 simulator 深度相机 / pointcloud bridge，但 policy
-输入采用保守深度基线（`live_depth_blend: 0.0`,
-`live_depth_baseline: 0.5`）作为平地 200 m 稳定验收路径。完整实时深度输入
-（`live_depth_blend: 1.0`）保留为调试/继续对齐模式，不作为默认 200 m 稳定
-设置。
+导出的 deploy 配置在非 autostart 诊断路径里仍保留保守深度基线
+（`live_depth_blend: 0.0`, `live_depth_baseline: 0.5`）。但 loopback 仿真下
+`--sim-autostart-parkour` 现在会默认把 controller 切到完整实时深度
+（等价于 `--live-depth-blend 1.0`），避免障碍/地形运行时 policy 实际吃到常量
+深度。只有做 ablation 时才显式传 `--live-depth-blend 0.0` 或
+`--constant-depth 0.5`。
 
 下一步低障碍 / 实时深度闭环 bring-up 建议使用保守低障碍场景，并先用部分
 实时深度混合，再逐步加到完整实时深度。这个路径需要图形显示，因为 simulator
@@ -303,8 +304,11 @@ python scripts/run_g1_parkour_cpp_dds_smoke.py \
 
 当低障碍闭环稳定后，可以切到和 `python scripts/play_parkour.py` 对齐的
 C++/DDS 复杂地形 XML。该场景包含上/下楼梯、两个最大 0.40 m 的安全 gap
-近似、方块障碍和 mesh-box stepping stones；当前 C++ controller 仍使用沿
-x 轴中心线的固定速度指令，因此建议先短距离验证，再逐步拉长：
+近似、方块障碍和 mesh-box stepping stones；仿真 autostart 模式下 controller
+现在默认追踪固定地形 waypoint 路线（需要 ablation 时可用
+`--no-sim-route-follow` 关闭），所以 `--sim-command-x` 表示路线行走速度。
+当前复杂地形验收目标是完整实时深度闭环 0.30 m/s 跑完整 25.2 m；0.40 m/s
+也可作为当前 MuJoCo PD 调参后的压力测试：
 
 ```bash
 DISPLAY=:1 \
@@ -313,14 +317,14 @@ python scripts/run_g1_parkour_cpp_dds_smoke.py \
   --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
   --network lo \
   --sim-autostart-parkour \
-  --sim-command-x 0.20 \
+  --sim-command-x 0.30 \
   --sim-command-y 0.0 \
   --sim-command-yaw 0.0 \
   --complex-terrain-course \
-  --walk-distance 8.0 \
-  --timeout-seconds 160 \
+  --walk-distance 25.2 \
+  --timeout-seconds 170 \
+  --progress-log-interval 10.0 \
   --hide-depth-debug-window \
-  --live-depth-blend 1.0 \
   --log-dir /tmp/g1_parkour_complex_live_depth
 ```
 
@@ -328,6 +332,13 @@ loopback 仿真（`--sim-autostart-parkour`）下，controller 会默认把 50 H
 policy step 同步到 simulator lowstate tick，而不是只按本机 wall-clock
 定时。这样 C++/DDS 的步态相位更接近 `scripts/play_parkour.py`；只有需要复现
 旧的 wall-clock-only 诊断行为时才加 `--no-policy-tick-sync`。
+
+当前 parkour simulator 侧 PD bridge 没有简单“提高 Kp”处理卡顿，而是采用稍低
+刚度、更高阻尼的 MuJoCo 仿真默认值（`simulate/config_parkour.yaml` 中
+`lowcmd_kp_scale: 0.9`, `lowcmd_kd_scale: 1.1`）。不要盲目提高 Kp：已验证
+`1.2/1.1` 会降低复杂地形稳定性。需要做 ablation 时用 smoke harness 的
+`--sim-pd-kp-scale` / `--sim-pd-kd-scale`。深度发布周期默认保持 100 ms；20 ms
+实时深度发布会明显增加渲染/策略扰动，复杂地形测试中会更容易摔倒。
 
 如果要手动分两个终端运行，不能只执行裸命令；controller 需要显式进入
 Parkour 仿真自启动模式，并且必须使用 loopback 网络：
@@ -346,7 +357,8 @@ pkill -f g1_parkour_ctrl || true
   --sim-autostart-parkour \
   --sim-command-x 0.25 \
   --sim-command-y 0.0 \
-  --sim-command-yaw 0.0
+  --sim-command-yaw 0.0 \
+  --live-depth-blend 1.0
 ```
 
 无头诊断时 simulator 还要加 `--headless --headless-seconds <N>`；如果只想隔离

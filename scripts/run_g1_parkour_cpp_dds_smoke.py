@@ -170,6 +170,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
   parser.add_argument("--sim-command-x", type=float, default=0.25)
   parser.add_argument("--sim-command-y", type=float, default=0.0)
   parser.add_argument("--sim-command-yaw", type=float, default=0.0)
+  parser.add_argument("--no-sim-route-follow", action="store_true", help="Pass --no-sim-route-follow to the controller.")
+  parser.add_argument("--sim-route-lookahead", type=float, default=None, help="Pass --sim-route-lookahead to the controller.")
+  parser.add_argument("--sim-route-max-lateral-speed", type=float, default=None, help="Pass --sim-route-max-lateral-speed to the controller.")
+  parser.add_argument("--sim-route-max-yaw-rate", type=float, default=None, help="Pass --sim-route-max-yaw-rate to the controller.")
+  parser.add_argument("--sim-route-yaw-gain", type=float, default=None, help="Pass --sim-route-yaw-gain to the controller.")
   parser.add_argument("--no-sim-heading-lock", action="store_true", help="Pass --no-sim-heading-lock to the controller.")
   parser.add_argument("--walk-distance", type=float, default=5.0)
   parser.add_argument("--timeout-seconds", type=float, default=90.0)
@@ -200,11 +205,18 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
   parser.add_argument("--sim-pd-kp-scale", type=float, default=None, help="Pass --lowcmd-kp-scale to the simulator bridge for PD ablation diagnostics.")
   parser.add_argument("--sim-pd-kd-scale", type=float, default=None, help="Pass --lowcmd-kd-scale to the simulator bridge for PD ablation diagnostics.")
   parser.add_argument(
+    "--depth-publish-period-ms",
+    type=int,
+    default=None,
+    help="Pass --depth-publish-period-ms to the simulator depth bridge.",
+  )
+  parser.add_argument(
     "--sim-lowcmd-control-mode",
     choices=("torque-pd", "position-target"),
     help="Pass --lowcmd-control-mode to the simulator bridge for actuator semantic A/B diagnostics.",
   )
   parser.add_argument("--constant-depth", type=float, default=None, help="Set G1_PARKOUR_DEBUG_CONSTANT_DEPTH for controller diagnostics.")
+  parser.add_argument("--depth-artifact-floor", type=float, default=None, help="Clamp normalized live-depth pixels below this floor in the controller.")
   parser.add_argument(
     "--live-depth-blend",
     type=float,
@@ -294,10 +306,18 @@ def main(argv: Iterable[str] | None = None) -> int:
     env["G1_PARKOUR_DEPTH_DEBUG_WINDOW"] = "0"
   if args.disable_depth_bridge:
     env["G1_PARKOUR_DEPTH_BRIDGE"] = "0"
+  effective_live_depth_blend = args.live_depth_blend
+  if (
+    effective_live_depth_blend is None
+    and args.sim_autostart_parkour
+    and args.constant_depth is None
+  ):
+    effective_live_depth_blend = 1.0
+
   if args.constant_depth is not None:
     env["G1_PARKOUR_DEBUG_CONSTANT_DEPTH"] = str(args.constant_depth)
-  if args.live_depth_blend is not None:
-    env["G1_PARKOUR_LIVE_DEPTH_BLEND"] = str(max(0.0, min(1.0, args.live_depth_blend)))
+  if effective_live_depth_blend is not None:
+    env["G1_PARKOUR_LIVE_DEPTH_BLEND"] = str(max(0.0, min(1.0, effective_live_depth_blend)))
   if args.live_depth_baseline is not None:
     env["G1_PARKOUR_LIVE_DEPTH_BASELINE"] = str(max(0.0, min(1.0, args.live_depth_baseline)))
 
@@ -335,6 +355,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     sim_cmd += ["--lowcmd-kd-scale", str(args.sim_pd_kd_scale)]
   if args.sim_lowcmd_control_mode is not None:
     sim_cmd += ["--lowcmd-control-mode", args.sim_lowcmd_control_mode]
+  if args.depth_publish_period_ms is not None:
+    sim_cmd += ["--depth-publish-period-ms", str(max(1, args.depth_publish_period_ms))]
   sim_cmd += [
     "--walk-distance-marker", str(args.walk_distance),
     "--progress-log-interval", str(args.progress_log_interval),
@@ -355,6 +377,24 @@ def main(argv: Iterable[str] | None = None) -> int:
     ]
     if args.no_sim_heading_lock:
       ctrl_cmd += ["--no-sim-heading-lock"]
+    if args.no_sim_route_follow:
+      ctrl_cmd += ["--no-sim-route-follow"]
+    if args.sim_route_lookahead is not None:
+      ctrl_cmd += ["--sim-route-lookahead", str(args.sim_route_lookahead)]
+    if args.sim_route_max_lateral_speed is not None:
+      ctrl_cmd += ["--sim-route-max-lateral-speed", str(args.sim_route_max_lateral_speed)]
+    if args.sim_route_max_yaw_rate is not None:
+      ctrl_cmd += ["--sim-route-max-yaw-rate", str(args.sim_route_max_yaw_rate)]
+    if args.sim_route_yaw_gain is not None:
+      ctrl_cmd += ["--sim-route-yaw-gain", str(args.sim_route_yaw_gain)]
+  if args.constant_depth is not None:
+    ctrl_cmd += ["--constant-depth", str(max(0.0, min(1.0, args.constant_depth)))]
+  if args.depth_artifact_floor is not None:
+    ctrl_cmd += ["--depth-artifact-floor", str(max(0.0, min(1.0, args.depth_artifact_floor)))]
+  if effective_live_depth_blend is not None:
+    ctrl_cmd += ["--live-depth-blend", str(max(0.0, min(1.0, effective_live_depth_blend)))]
+  if args.live_depth_baseline is not None:
+    ctrl_cmd += ["--live-depth-baseline", str(max(0.0, min(1.0, args.live_depth_baseline)))]
   ctrl_gait_record_path: Path | None = None
   if args.ctrl_gait_record_jsonl is not None:
     ctrl_gait_record_path = args.ctrl_gait_record_jsonl

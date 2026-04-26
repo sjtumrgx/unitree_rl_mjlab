@@ -278,11 +278,12 @@ python scripts/run_g1_parkour_cpp_dds_smoke.py \
   --log-dir /tmp/g1_parkour_cpp_dds_200m
 ```
 
-The default deploy config keeps the simulator depth camera/pointcloud bridge
-alive, but uses a conservative policy-depth baseline
-(`live_depth_blend: 0.0`, `live_depth_baseline: 0.5`) for the flat walking
-acceptance path.  Full live-depth policy input (`live_depth_blend: 1.0`) is a
-debug/tuning mode and is not the default 200 m stability setting.
+The exported deploy config keeps a conservative policy-depth baseline
+(`live_depth_blend: 0.0`, `live_depth_baseline: 0.5`) for non-autostart
+diagnostics.  In loopback simulation, `--sim-autostart-parkour` now defaults the
+controller to full live depth (`--live-depth-blend 1.0`) so obstacle/terrain
+runs cannot silently feed constant depth to the policy.  Pass
+`--live-depth-blend 0.0` or `--constant-depth 0.5` only for explicit ablations.
 
 For the next low-obstacle / live-depth closed-loop bring-up, use the conservative
 low-obstacle scene and start with a partial live-depth blend before trying full
@@ -314,8 +315,11 @@ closed-loop run is stable, raise `--live-depth-blend` gradually toward `1.0`.
 After the low-obstacle loop is stable, switch to the C++/DDS complex-terrain XML
 that mirrors `python scripts/play_parkour.py`: up/down stairs, two safe
 gap-surrogate strips capped at 0.40 m, discrete boxes, and mesh-box stepping
-stones.  The current C++ controller still uses a fixed centerline velocity
-command, so start with a short acceptance distance before extending the run:
+stones.  In simulation autostart mode the controller now follows the fixed
+terrain waypoint route by default (`--no-sim-route-follow` disables this for
+ablations), so `--sim-command-x` is the route speed.  The checked complex-course
+acceptance target is full-course live-depth traversal at 0.30 m/s; 0.40 m/s is
+also a useful stress run on the current tuned MuJoCo PD bridge:
 
 ```bash
 DISPLAY=:1 \
@@ -324,14 +328,14 @@ python scripts/run_g1_parkour_cpp_dds_smoke.py \
   --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
   --network lo \
   --sim-autostart-parkour \
-  --sim-command-x 0.20 \
+  --sim-command-x 0.30 \
   --sim-command-y 0.0 \
   --sim-command-yaw 0.0 \
   --complex-terrain-course \
-  --walk-distance 8.0 \
-  --timeout-seconds 160 \
+  --walk-distance 25.2 \
+  --timeout-seconds 170 \
+  --progress-log-interval 10.0 \
   --hide-depth-debug-window \
-  --live-depth-blend 1.0 \
   --log-dir /tmp/g1_parkour_complex_live_depth
 ```
 
@@ -340,6 +344,15 @@ automatically synchronizes the 50 Hz policy step to the simulator lowstate tick.
 This keeps the C++/DDS gait timing aligned with `scripts/play_parkour.py`.
 Use `--no-policy-tick-sync` only to reproduce the older wall-clock-only
 diagnostic behavior.
+
+The current simulator-side parkour PD bridge is intentionally slightly more
+damped than the raw Unitree gains (`lowcmd_kp_scale: 0.9`,
+`lowcmd_kd_scale: 1.1` in `simulate/config_parkour.yaml`).  Do not blindly raise
+Kp to "fix" choppy motion: the tested 1.2/1.1 ablation was less stable.  If you
+need to experiment, use the smoke harness `--sim-pd-kp-scale` /
+`--sim-pd-kd-scale` flags and keep `depth_publish_period_ms` at the default
+100 ms unless you are specifically testing depth-render load; 20 ms live-depth
+publishing was observed to destabilize the complex course.
 
 For manual two-terminal runs, do not use the bare commands alone; the controller
 must explicitly enter simulation Parkour autostart mode on loopback:
@@ -360,7 +373,8 @@ pkill -f g1_parkour_ctrl || true
   --sim-autostart-parkour \
   --sim-command-x 0.25 \
   --sim-command-y 0.0 \
-  --sim-command-yaw 0.0
+  --sim-command-yaw 0.0 \
+  --live-depth-blend 1.0
 ```
 
 For headless diagnostics, also pass `--headless --headless-seconds <N>` to the

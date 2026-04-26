@@ -12,6 +12,7 @@
 #include <unitree/idl/ros2/PointField_.hpp>
 
 #include "isaaclab/assets/articulation/articulation.h"
+#include "param.h"
 
 namespace
 {
@@ -63,8 +64,13 @@ ParkourDepthProvider::ParkourDepthProvider(const YAML::Node& cfg)
     depth_max_ = depth_cfg["depth_range"][1].as<float>(depth_max_);
     output_min_ = depth_cfg["output_range"][0].as<float>(output_min_);
     output_max_ = depth_cfg["output_range"][1].as<float>(output_max_);
+    artifact_floor_ = depth_cfg["artifact_floor"].as<float>(output_min_);
+    artifact_floor_ = std::clamp(artifact_floor_, output_min_, output_max_);
     artifact_ceiling_ = depth_cfg["artifact_ceiling"].as<float>(output_max_);
     artifact_ceiling_ = std::clamp(artifact_ceiling_, output_min_, output_max_);
+    if (artifact_ceiling_ < artifact_floor_) {
+        artifact_ceiling_ = artifact_floor_;
+    }
     live_depth_blend_ = std::clamp(depth_cfg["live_depth_blend"].as<float>(live_depth_blend_), 0.0f, 1.0f);
     live_depth_baseline_ = std::clamp(
         depth_cfg["live_depth_baseline"].as<float>(live_depth_baseline_),
@@ -87,6 +93,44 @@ ParkourDepthProvider::ParkourDepthProvider(const YAML::Node& cfg)
             live_depth_baseline_
         );
     }
+    if (param::parkour_live_depth_blend_override) {
+        live_depth_blend_ = std::clamp(param::parkour_live_depth_blend, 0.0f, 1.0f);
+        spdlog::warn(
+            "ParkourDepthProvider '{}' overriding live_depth_blend from --live-depth-blend={}.",
+            sensor_name_,
+            live_depth_blend_
+        );
+    }
+    if (param::parkour_live_depth_baseline_override) {
+        live_depth_baseline_ = std::clamp(param::parkour_live_depth_baseline, output_min_, output_max_);
+        spdlog::warn(
+            "ParkourDepthProvider '{}' overriding live_depth_baseline from --live-depth-baseline={}.",
+            sensor_name_,
+            live_depth_baseline_
+        );
+    }
+    if (const auto env_floor = parse_env_float("G1_PARKOUR_DEPTH_ARTIFACT_FLOOR")) {
+        artifact_floor_ = std::clamp(*env_floor, output_min_, output_max_);
+        if (artifact_ceiling_ < artifact_floor_) {
+            artifact_ceiling_ = artifact_floor_;
+        }
+        spdlog::warn(
+            "ParkourDepthProvider '{}' overriding artifact_floor from G1_PARKOUR_DEPTH_ARTIFACT_FLOOR={}.",
+            sensor_name_,
+            artifact_floor_
+        );
+    }
+    if (param::parkour_depth_artifact_floor_override) {
+        artifact_floor_ = std::clamp(param::parkour_depth_artifact_floor, output_min_, output_max_);
+        if (artifact_ceiling_ < artifact_floor_) {
+            artifact_ceiling_ = artifact_floor_;
+        }
+        spdlog::warn(
+            "ParkourDepthProvider '{}' overriding artifact_floor from --depth-artifact-floor={}.",
+            sensor_name_,
+            artifact_floor_
+        );
+    }
     gaussian_kernel_size_ = depth_cfg["gaussian_kernel_size"].as<int>(gaussian_kernel_size_);
     gaussian_sigma_ = depth_cfg["gaussian_sigma"].as<float>(gaussian_sigma_);
     if (const auto field_names = depth_cfg["pointcloud_field_names"]) {
@@ -100,10 +144,11 @@ ParkourDepthProvider::ParkourDepthProvider(const YAML::Node& cfg)
         return;
     }
     spdlog::info(
-        "DEPTH_BLEND_CONFIG sensor={} live_depth_blend={} live_depth_baseline={} artifact_ceiling={}",
+        "DEPTH_BLEND_CONFIG sensor={} live_depth_blend={} live_depth_baseline={} artifact_floor={} artifact_ceiling={}",
         sensor_name_,
         live_depth_blend_,
         live_depth_baseline_,
+        artifact_floor_,
         artifact_ceiling_
     );
 
@@ -112,6 +157,15 @@ ParkourDepthProvider::ParkourDepthProvider(const YAML::Node& cfg)
         constant_depth_value_ = std::clamp(*constant_depth, output_min_, output_max_);
         spdlog::warn(
             "ParkourDepthProvider '{}' enabling constant-depth debug mode from G1_PARKOUR_DEBUG_CONSTANT_DEPTH={}.",
+            sensor_name_,
+            constant_depth_value_
+        );
+    }
+    if (param::parkour_constant_depth_override) {
+        constant_depth_enabled_ = true;
+        constant_depth_value_ = std::clamp(param::parkour_constant_depth, output_min_, output_max_);
+        spdlog::warn(
+            "ParkourDepthProvider '{}' enabling constant-depth debug mode from --constant-depth={}.",
             sensor_name_,
             constant_depth_value_
         );
@@ -231,14 +285,13 @@ bool ParkourDepthProvider::fill_frame_from_pointcloud(std::vector<float>& frame)
                 ? (value - depth_min_) / (depth_max_ - depth_min_)
                 : value;
             float output_value = normalized * (output_max_ - output_min_) + output_min_;
-            // The C++ OpenGL/DDS route can produce isolated z-far pixels at
-            // the top edge of the policy crop on flat ground, while the Python
-            // MuJoCo renderer parity path stays below ~0.71 for the same
-            // camera/crop.  Those artifact-white pixels strongly perturb the
-            // depth encoder and were the remaining cause of live-depth falls.
-            // Clamp only the configured normalized ceiling; constant-depth
-            // diagnostics and true range normalization remain unchanged.
-            output_value = std::min(output_value, artifact_ceiling_);
+            // The C++ OpenGL/DDS route can produce persistent near-black or
+            // far-white renderer artifacts at the policy crop edges while the
+            // Python MuJoCo parity path keeps normal self/terrain pixels in a
+            // narrower gray band.  Clamp only the configured live-frame band;
+            // constant-depth diagnostics and true range normalization remain
+            // unchanged.
+            output_value = std::clamp(output_value, artifact_floor_, artifact_ceiling_);
             output_value = live_depth_baseline_ * (1.0f - live_depth_blend_) + output_value * live_depth_blend_;
             frame[static_cast<size_t>(row * output_width_ + col)] = output_value;
         }

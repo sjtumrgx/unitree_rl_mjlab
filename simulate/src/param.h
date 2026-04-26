@@ -74,6 +74,15 @@ inline struct SimulationConfig
             if (cfg["realtime_lockstep"]) {
                 realtime_lockstep = cfg["realtime_lockstep"].as<int>();
             }
+            if (cfg["lowcmd_kp_scale"]) {
+                lowcmd_kp_scale = cfg["lowcmd_kp_scale"].as<float>();
+            }
+            if (cfg["lowcmd_kd_scale"]) {
+                lowcmd_kd_scale = cfg["lowcmd_kd_scale"].as<float>();
+            }
+            if (cfg["lowcmd_control_mode"]) {
+                lowcmd_control_mode = cfg["lowcmd_control_mode"].as<std::string>();
+            }
             enable_elastic_band = cfg["enable_elastic_band"].as<int>();
             if (cfg["initial_base_pos"]) {
                 initial_base_pos = cfg["initial_base_pos"].as<std::vector<float>>();
@@ -162,6 +171,7 @@ inline po::variables_map helper(int argc, char** argv)
         ("lowcmd-kp-scale", po::value<float>(&config.lowcmd_kp_scale)->default_value(config.lowcmd_kp_scale), "Diagnostic scale for Unitree LowCmd position gain in the MuJoCo bridge")
         ("lowcmd-kd-scale", po::value<float>(&config.lowcmd_kd_scale)->default_value(config.lowcmd_kd_scale), "Diagnostic scale for Unitree LowCmd velocity gain in the MuJoCo bridge")
         ("lowcmd-control-mode", po::value<std::string>(&config.lowcmd_control_mode)->default_value(config.lowcmd_control_mode), "Diagnostic LowCmd bridge mode: torque-pd or position-target")
+        ("depth-publish-period-ms", po::value<int>(&config.depth_publish_period_ms)->default_value(config.depth_publish_period_ms), "Parkour depth point cloud publish period in milliseconds")
     ;
 
     po::variables_map vm;
@@ -179,6 +189,9 @@ inline po::variables_map helper(int argc, char** argv)
     if (config.lowcmd_control_mode != "torque-pd" && config.lowcmd_control_mode != "position-target") {
         std::cerr << "--lowcmd-control-mode must be torque-pd or position-target" << std::endl;
         exit(EXIT_FAILURE);
+    }
+    if (config.depth_publish_period_ms < 1) {
+        config.depth_publish_period_ms = 1;
     }
 
     return vm;
