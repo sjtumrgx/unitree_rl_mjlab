@@ -267,6 +267,9 @@ REGISTER_OBSERVATION(velocity_commands)
             param::sim_command_y,
             yaw_command,
         };
+        param::sim_observed_command_x.store(obs[0]);
+        param::sim_observed_command_y.store(obs[1]);
+        param::sim_observed_command_yaw.store(obs[2]);
         static bool logged_sim_command = false;
         if (!logged_sim_command)
         {
@@ -284,7 +287,11 @@ REGISTER_OBSERVATION(velocity_commands)
 
     if (param::keyboard_control)
     {
-        return keyboard_velocity_command(env);
+        auto obs = keyboard_velocity_command(env);
+        param::sim_observed_command_x.store(obs[0]);
+        param::sim_observed_command_y.store(obs[1]);
+        param::sim_observed_command_yaw.store(obs[2]);
+        return obs;
     }
 
     std::vector<float> obs(3);
@@ -295,6 +302,9 @@ REGISTER_OBSERVATION(velocity_commands)
     obs[0] = std::clamp(joystick->ly(), cfg["lin_vel_x"][0].as<float>(), cfg["lin_vel_x"][1].as<float>());
     obs[1] = std::clamp(-joystick->lx(), cfg["lin_vel_y"][0].as<float>(), cfg["lin_vel_y"][1].as<float>());
     obs[2] = std::clamp(-joystick->rx(), cfg["ang_vel_z"][0].as<float>(), cfg["ang_vel_z"][1].as<float>());
+    param::sim_observed_command_x.store(obs[0]);
+    param::sim_observed_command_y.store(obs[1]);
+    param::sim_observed_command_yaw.store(obs[2]);
 
     return obs;
 }

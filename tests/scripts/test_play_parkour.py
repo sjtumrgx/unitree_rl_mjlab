@@ -64,6 +64,8 @@ def test_help_documents_parkour_contract_and_diagnostic_flags() -> None:
     "--terrain-route-lookahead",
     "--video",
     "--video-dir",
+    "--gait-record-jsonl",
+    "--gait-record-every",
   ):
     assert flag in help_text
   assert "Unitree-G1-Parkour" in help_text
@@ -88,6 +90,8 @@ def test_parser_defaults_use_mujoco_viewer_policy_depth_and_route_command() -> N
   assert args.video is False
   assert args.video_width == 1920
   assert args.video_height == 1080
+  assert args.gait_record_jsonl is None
+  assert args.gait_record_every == 1
 
 
 def test_parser_keeps_headless_debug_overrides_available() -> None:
@@ -214,6 +218,20 @@ def test_video_dir_override_is_treated_as_output_directory() -> None:
 
   assert output.parent == Path("/tmp/parkour-videos")
   assert output.suffix == ".mp4"
+
+
+def test_gait_recorder_diagnostics_and_decimation(tmp_path) -> None:
+  module = _load_module()
+  path = tmp_path / "gait.jsonl"
+  recorder = module.GaitJsonlRecorder(path=path, every=3, source="python_play")
+
+  assert recorder.enabled is True
+  assert recorder.diagnostics() == {
+    "path": str(path),
+    "every": 3,
+    "source": "python_play",
+    "samples": 0,
+  }
 
 
 def test_native_viewer_requires_graphical_display(monkeypatch) -> None:

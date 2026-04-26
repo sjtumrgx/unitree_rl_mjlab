@@ -258,6 +258,20 @@ def build_parser() -> argparse.ArgumentParser:
     default=DEFAULT_VIDEO_FRAME_RATE,
     help="Video frame rate in frames per second.",
   )
+  parser.add_argument(
+    "--gait-record-jsonl",
+    type=Path,
+    help=(
+      "Write per-policy-step gait/action/joint samples as JSONL for Python vs "
+      "C++/DDS parity analysis."
+    ),
+  )
+  parser.add_argument(
+    "--gait-record-every",
+    type=int,
+    default=1,
+    help="Record one gait sample every N policy steps when --gait-record-jsonl is set.",
+  )
   parser.add_argument("--diagnostic-json", type=Path, help="Write diagnostics summary JSON to this path.")
   parser.add_argument(
     "--depth-debug-dir",
@@ -597,6 +611,188 @@ def _resolve_video_output_path(args: argparse.Namespace, paths: Any) -> Path:
   return output_dir.expanduser() / f"play_parkour_{timestamp}.mp4"
 
 
+class GaitJsonlRecorder:
+  """JSONL recorder for comparing Python play and C++/DDS gait pipelines."""
+
+  def __init__(
+    self,
+    *,
+    path: Path | None,
+    every: int,
+    source: str,
+  ) -> None:
+    self.path = path.expanduser() if path is not None else None
+    self.every = max(1, int(every))
+    self.source = source
+    self.samples = 0
+    self._file: Any | None = None
+
+  @property
+  def enabled(self) -> bool:
+    return self.path is not None
+
+  def _ensure_open(self) -> None:
+    if not self.enabled or self._file is not None:
+      return
+    assert self.path is not None
+    self.path.parent.mkdir(parents=True, exist_ok=True)
+    self._file = self.path.open("w", encoding="utf-8")
+
+  @staticmethod
+  def _array(value: Any) -> np.ndarray:
+    if isinstance(value, torch.Tensor):
+      value = value.detach().cpu().numpy()
+    arr = np.asarray(value, dtype=np.float32)
+    if arr.ndim > 1:
+      arr = arr.reshape(-1)
+    return arr.astype(np.float32, copy=False)
+
+  @staticmethod
+  def _tolist(value: Any) -> list[float]:
+    return [float(item) for item in GaitJsonlRecorder._array(value).tolist()]
+
+  @staticmethod
+  def _vector_by_joint_name(
+    *,
+    names: Sequence[str],
+    values: np.ndarray,
+    target_names: Sequence[str],
+  ) -> np.ndarray:
+    name_to_index = {name: index for index, name in enumerate(names)}
+    missing = [name for name in target_names if name not in name_to_index]
+    if missing:
+      raise RuntimeError(f"Cannot record gait vector; missing joints: {missing}")
+    arr = GaitJsonlRecorder._array(values)
+    return np.asarray([arr[name_to_index[name]] for name in target_names], dtype=np.float32)
+
+  def record_python_step(
+    self,
+    *,
+    step: int,
+    elapsed: float,
+    adapter: Any,
+    contract: Any,
+    depth: np.ndarray,
+    raw_policy_action: np.ndarray,
+    applied_policy_action: np.ndarray,
+    env_action: np.ndarray,
+    latest_policy_diag: Mapping[str, Any],
+    latest_frame_diag: Any,
+    latest_route_diag: Mapping[str, Any] | None,
+    fall_signals: Mapping[str, Any],
+  ) -> None:
+    if not self.enabled or step % self.every != 0:
+      return
+    self._ensure_open()
+    assert self._file is not None
+
+    from src.parkour.contract import ONNX_POLICY_JOINT_NAMES, TRAINING_JOINT_NAMES, vector_stats
+
+    robot_joint_names = tuple(adapter.robot.joint_names)
+    training_joint_names = tuple(TRAINING_JOINT_NAMES)
+    policy_joint_names = tuple(ONNX_POLICY_JOINT_NAMES)
+    training_idx = [robot_joint_names.index(name) for name in training_joint_names]
+    policy_idx = [robot_joint_names.index(name) for name in policy_joint_names]
+    joint_pos = adapter.robot.data.joint_pos[:, torch.tensor(training_idx, device=adapter.env.device)]
+    joint_vel = adapter.robot.data.joint_vel[:, torch.tensor(training_idx, device=adapter.env.device)]
+    policy_joint_pos = adapter.robot.data.joint_pos[:, torch.tensor(policy_idx, device=adapter.env.device)]
+    policy_joint_vel = adapter.robot.data.joint_vel[:, torch.tensor(policy_idx, device=adapter.env.device)]
+
+    if adapter.action_order == "isaac":
+      action_joint_names = policy_joint_names
+    elif adapter.action_order == "policy":
+      action_joint_names = training_joint_names
+    else:
+      action_joint_names = tuple(adapter.env_action_target_names)
+    raw_action_deploy = self._vector_by_joint_name(
+      names=action_joint_names,
+      values=raw_policy_action,
+      target_names=training_joint_names,
+    )
+    applied_action_deploy = self._vector_by_joint_name(
+      names=action_joint_names,
+      values=applied_policy_action,
+      target_names=training_joint_names,
+    )
+
+    env_target_names = tuple(adapter.env_action_target_names)
+    env_action_flat = self._array(env_action)
+    env_action_deploy = self._vector_by_joint_name(
+      names=env_target_names,
+      values=env_action_flat,
+      target_names=training_joint_names,
+    )
+    scale_by_joint = contract.action_scale_by_joint
+    offset_by_joint = contract.action_offset_by_joint
+    target_q_deploy = np.asarray(
+      [
+        env_action_deploy[index] * scale_by_joint[name] + offset_by_joint[name]
+        for index, name in enumerate(training_joint_names)
+      ],
+      dtype=np.float32,
+    )
+
+    payload = {
+      "source": self.source,
+      "step": int(step),
+      "elapsed_seconds": float(elapsed),
+      "joint_order": {
+        "deploy": list(training_joint_names),
+        "policy": list(policy_joint_names),
+        "env_action": list(env_target_names),
+      },
+      "command": self._tolist(getattr(adapter, "command", np.zeros(3, dtype=np.float32))),
+      "base_ang_vel": (
+        list(latest_frame_diag.policy_base_ang_vel)
+        if latest_frame_diag is not None
+        else []
+      ),
+      "projected_gravity": (
+        list(latest_frame_diag.policy_projected_gravity)
+        if latest_frame_diag is not None
+        else []
+      ),
+      "base_pos": list(fall_signals.get("base_pos", [])),
+      "root_quat": list(fall_signals.get("root_quat", [])),
+      "joint_pos_deploy_order": self._tolist(joint_pos),
+      "joint_vel_deploy_order": self._tolist(joint_vel),
+      "joint_pos_policy_order": self._tolist(policy_joint_pos),
+      "joint_vel_policy_order": self._tolist(policy_joint_vel),
+      "raw_action_policy_order": self._tolist(raw_policy_action),
+      "applied_action_policy_order": self._tolist(applied_policy_action),
+      "raw_action_deploy_order": self._tolist(raw_action_deploy),
+      "applied_action_deploy_order": self._tolist(applied_action_deploy),
+      "env_action_deploy_order": self._tolist(env_action_deploy),
+      "target_q_deploy_order": self._tolist(target_q_deploy),
+      "depth_stats": vector_stats(depth),
+      "policy": {
+        "action_stats": latest_policy_diag.get("action_stats"),
+        "applied_action_stats": latest_policy_diag.get("applied_action_stats"),
+        "proprio_stats": latest_policy_diag.get("proprio_stats"),
+        "actor_input_stats": latest_policy_diag.get("actor_input_stats"),
+        "latent_stats": latest_policy_diag.get("latent_stats"),
+      },
+      "route": dict(latest_route_diag) if latest_route_diag is not None else None,
+    }
+    self._file.write(json.dumps(payload, sort_keys=True, default=_json_default) + "\n")
+    self.samples += 1
+
+  def diagnostics(self) -> dict[str, Any] | None:
+    if not self.enabled:
+      return None
+    return {
+      "path": str(self.path) if self.path is not None else None,
+      "every": self.every,
+      "source": self.source,
+      "samples": self.samples,
+    }
+
+  def close(self) -> None:
+    if self._file is not None:
+      self._file.close()
+      self._file = None
+
+
 class ParkourVideoRecorder:
   """Streaming MuJoCo video recorder for play_parkour."""
 
@@ -853,6 +1049,7 @@ class ParkourNativeViewerPolicy:
     policy: Any | None,
     depth_provider: Any,
     depth_viewer: LiveDepthViewer | None,
+    gait_recorder: GaitJsonlRecorder,
     args: argparse.Namespace,
   ) -> None:
     self.env = env
@@ -860,6 +1057,7 @@ class ParkourNativeViewerPolicy:
     self.policy = policy
     self.depth_provider = depth_provider
     self.depth_viewer = depth_viewer
+    self.gait_recorder = gait_recorder
     self.args = args
     self.adapter: Any | None = None
     self.step_count = 0
@@ -1002,6 +1200,20 @@ class ParkourNativeViewerPolicy:
       }
     )
     env_action = self.adapter.env_action_from_policy_action(env_policy_action)
+    self.gait_recorder.record_python_step(
+      step=self.step_count,
+      elapsed=self.step_count * self.env.step_dt,
+      adapter=self.adapter,
+      contract=self.contract,
+      depth=depth,
+      raw_policy_action=raw_policy_action,
+      applied_policy_action=applied_policy_action,
+      env_action=env_action,
+      latest_policy_diag=self.latest_policy_diag,
+      latest_frame_diag=self.latest_frame_diag,
+      latest_route_diag=self.latest_route_diag,
+      fall_signals=self.latest_fall_signals,
+    )
     self.last_action = applied_policy_action.copy()
     self.step_count += 1
     self._has_stepped = True
@@ -1033,6 +1245,7 @@ class ParkourNativeViewerPolicy:
       "latest_frame": self.latest_frame_diag.__dict__ if self.latest_frame_diag is not None else None,
       "latest_policy": self.latest_policy_diag,
       "mapping_proof": self.mapping_proof,
+      "gait_record": self.gait_recorder.diagnostics(),
     }
 
 
@@ -1075,6 +1288,11 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     height=args.video_height,
     frame_rate=args.video_frame_rate,
   )
+  gait_recorder = GaitJsonlRecorder(
+    path=args.gait_record_jsonl,
+    every=args.gait_record_every,
+    source="python_play",
+  )
   viewer_env = RslRlVecEnvWrapper(raw_env, clip_actions=None)
   viewer_policy = ParkourNativeViewerPolicy(
     env=raw_env,
@@ -1082,6 +1300,7 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     policy=policy,
     depth_provider=depth_provider,
     depth_viewer=depth_viewer,
+    gait_recorder=gait_recorder,
     args=args,
   )
   raw_env.reset()
@@ -1120,10 +1339,12 @@ def run_native_viewer(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "max_seconds": resolved_max_seconds,
         "max_steps": num_steps,
         "video": video_recorder.diagnostics(),
+        "gait_record": gait_recorder.diagnostics(),
       }
     )
     return True, payload
   finally:
+    gait_recorder.close()
     video_recorder.close()
     depth_viewer.close()
     if hasattr(depth_provider, "close"):
@@ -1173,6 +1394,11 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     height=args.video_height,
     frame_rate=args.video_frame_rate,
   )
+  gait_recorder = GaitJsonlRecorder(
+    path=args.gait_record_jsonl,
+    every=args.gait_record_every,
+    source="python_play",
+  )
   walk_distance = _resolve_walk_distance(args, env)
   max_seconds = _resolve_max_seconds(args, env)
   args.walk_distance = walk_distance
@@ -1200,6 +1426,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
     "action_gain": args.action_gain,
     "action_delay_steps": args.action_delay_steps,
     "video": video_recorder.diagnostics(),
+    "gait_record": gait_recorder.diagnostics(),
   }
   reset_count = 0
   latest_frame_diag: Any = None
@@ -1338,6 +1565,20 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         return False, summary
 
       env_action = adapter.env_action_from_policy_action(env_policy_action)
+      gait_recorder.record_python_step(
+        step=step,
+        elapsed=elapsed,
+        adapter=adapter,
+        contract=contract,
+        depth=depth,
+        raw_policy_action=raw_policy_action,
+        applied_policy_action=applied_policy_action,
+        env_action=env_action,
+        latest_policy_diag=latest_policy_diag,
+        latest_frame_diag=latest_frame_diag,
+        latest_route_diag=latest_route_diag,
+        fall_signals=adapter.fall_signals(),
+      )
       _, _, terminated, timed_out, _ = env.step(
         torch.tensor(env_action, dtype=torch.float32, device=env.device)
       )
@@ -1393,6 +1634,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
             "latest_route": latest_route_diag,
             "depth": depth_provider.diagnostics(),
             "video": video_recorder.diagnostics(),
+            "gait_record": gait_recorder.diagnostics(),
           }
         )
         return False, summary
@@ -1424,6 +1666,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "latest_route": latest_route_diag,
         "depth": depth_diag,
         "video": video_recorder.diagnostics(),
+        "gait_record": gait_recorder.diagnostics(),
         "acceptance": {
           "distance_target_met": traversal_accepted,
           "duration_target_met": elapsed >= args.max_seconds,
@@ -1446,6 +1689,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       )
     return accepted, summary
   finally:
+    gait_recorder.close()
     video_recorder.close()
     depth_viewer.close()
     if hasattr(depth_provider, "close"):

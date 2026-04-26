@@ -7,6 +7,7 @@
 #include "isaaclab/envs/mdp/terminations.h"
 #include "FSM/rl_reset_utils.h"
 #include <atomic>
+#include <fstream>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -67,6 +68,8 @@ public:
             env->reset();
             policy_blend_start_action_ = env->action_manager->processed_actions();
             policy_blend_elapsed_s_ = 0.0f;
+            gait_record_step_ = 0;
+            open_gait_record_if_requested();
             if (depth_provider_ && depth_provider_->enabled()) {
                 depth_provider_->reset(env->robot.get());
             }
@@ -110,6 +113,7 @@ public:
                         env->action_manager->process_action(blended_raw_action);
                     }
                     policy_blend_elapsed_s_.store(next_blend_elapsed);
+                    record_gait_sample(blend_alpha);
                 }
                 std::this_thread::sleep_until(sleepTill);
                 sleepTill += dt;
@@ -125,6 +129,7 @@ public:
         if (policy_thread.joinable()) {
             policy_thread.join();
         }
+        close_gait_record();
     }
 
 private:
@@ -141,6 +146,12 @@ private:
     std::vector<float> policy_blend_start_action_;
     float policy_blend_duration_s_ = 1.0f;
     std::atomic<float> policy_blend_elapsed_s_{0.0f};
+    std::ofstream gait_record_stream_;
+    size_t gait_record_step_ = 0;
+
+    void open_gait_record_if_requested();
+    void close_gait_record();
+    void record_gait_sample(float blend_alpha);
 };
 
 REGISTER_FSM(State_RLBase)

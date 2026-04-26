@@ -164,6 +164,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
   parser.add_argument("--sim-command-x", type=float, default=0.25)
   parser.add_argument("--sim-command-y", type=float, default=0.0)
   parser.add_argument("--sim-command-yaw", type=float, default=0.0)
+  parser.add_argument("--no-sim-heading-lock", action="store_true", help="Pass --no-sim-heading-lock to the controller.")
   parser.add_argument("--walk-distance", type=float, default=5.0)
   parser.add_argument("--timeout-seconds", type=float, default=90.0)
   parser.add_argument("--progress-log-interval", type=float, default=1.0)
@@ -178,6 +179,17 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
   parser.add_argument("--headless-sim", action="store_true", help="Run simulator with --headless for control-only diagnostics.")
   parser.add_argument("--sim-scene", type=Path, help="Optional MuJoCo scene XML/MJB to pass through to the simulator.")
   parser.add_argument("--constant-depth", type=float, default=None, help="Set G1_PARKOUR_DEBUG_CONSTANT_DEPTH for controller diagnostics.")
+  parser.add_argument(
+    "--ctrl-gait-record-jsonl",
+    type=Path,
+    help="Pass --gait-record-jsonl to the controller for C++/DDS gait parity capture.",
+  )
+  parser.add_argument(
+    "--ctrl-gait-record-every",
+    type=int,
+    default=1,
+    help="Pass --gait-record-every to the controller when gait recording is enabled.",
+  )
   return parser.parse_args(argv)
 
 
@@ -229,6 +241,17 @@ def main(argv: Iterable[str] | None = None) -> int:
       "--sim-command-x", str(args.sim_command_x),
       "--sim-command-y", str(args.sim_command_y),
       "--sim-command-yaw", str(args.sim_command_yaw),
+    ]
+    if args.no_sim_heading_lock:
+      ctrl_cmd += ["--no-sim-heading-lock"]
+  ctrl_gait_record_path: Path | None = None
+  if args.ctrl_gait_record_jsonl is not None:
+    ctrl_gait_record_path = args.ctrl_gait_record_jsonl
+    if not ctrl_gait_record_path.is_absolute():
+      ctrl_gait_record_path = root / ctrl_gait_record_path
+    ctrl_cmd += [
+      "--gait-record-jsonl", str(ctrl_gait_record_path),
+      "--gait-record-every", str(max(1, args.ctrl_gait_record_every)),
     ]
   ctrl_spec = ProcessSpec(
     name="ctrl",
@@ -312,6 +335,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     "processes_exited": state.processes_exited,
     "commands": {"sim": sim_spec.cmd, "ctrl": ctrl_spec.cmd},
     "logs": {"sim": str(sim_spec.log_path), "ctrl": str(ctrl_spec.log_path)},
+    "gait_record": str(ctrl_gait_record_path) if ctrl_gait_record_path is not None else None,
   }
   (log_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
   print(json.dumps(summary, indent=2, ensure_ascii=False))

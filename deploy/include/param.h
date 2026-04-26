@@ -4,6 +4,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <boost/program_options.hpp>
@@ -54,6 +55,11 @@ inline bool sim_heading_lock = true;
 inline float sim_heading_target_yaw = 0.0f;
 inline float sim_heading_kp = 1.0f;
 inline float sim_heading_max_yaw = 0.8f;
+inline std::atomic<float> sim_observed_command_x{0.0f};
+inline std::atomic<float> sim_observed_command_y{0.0f};
+inline std::atomic<float> sim_observed_command_yaw{0.0f};
+inline std::filesystem::path gait_record_jsonl;
+inline int gait_record_every = 1;
 
 inline std::filesystem::path get_bin_path() {
     std::vector<char> path(1024);
@@ -160,6 +166,10 @@ inline po::variables_map helper(int argc, char** argv)
             "simulation-only heading proportional gain")
         ("sim-heading-max-yaw", po::value<float>(&sim_heading_max_yaw)->default_value(0.8f),
             "simulation-only absolute heading correction clamp")
+        ("gait-record-jsonl", po::value<std::filesystem::path>(&gait_record_jsonl),
+            "record per-policy-step parkour gait/action/joint samples as JSONL")
+        ("gait-record-every", po::value<int>(&gait_record_every)->default_value(1),
+            "record one gait sample every N policy steps when --gait-record-jsonl is set")
         ;
 
     po::variables_map vm;
@@ -169,6 +179,10 @@ inline po::variables_map helper(int argc, char** argv)
     if (vm["no-sim-heading-lock"].as<bool>())
     {
         sim_heading_lock = false;
+    }
+    if (gait_record_every < 1)
+    {
+        gait_record_every = 1;
     }
 
     if (vm.count("help"))

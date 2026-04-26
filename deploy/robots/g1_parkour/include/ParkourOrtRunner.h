@@ -22,6 +22,13 @@ namespace isaaclab
 class ParkourOrtRunner : public Algorithms
 {
 public:
+    struct VectorStats
+    {
+        float min = 0.0f;
+        float max = 0.0f;
+        float mean = 0.0f;
+    };
+
     ParkourOrtRunner(const std::string& depth_encoder_path, const std::string& actor_path)
         : env_(ORT_LOGGING_LEVEL_WARNING, "parkour_onnx")
     {
@@ -41,6 +48,30 @@ public:
         actor_output_name_ = "output";
 
         action.resize(static_cast<size_t>(actor_output_shape_.at(1)));
+    }
+
+    std::vector<float> last_policy_order_action()
+    {
+        std::lock_guard<std::mutex> lock(act_mtx_);
+        return last_policy_order_action_;
+    }
+
+    std::vector<float> last_deploy_order_action()
+    {
+        std::lock_guard<std::mutex> lock(act_mtx_);
+        return last_deploy_order_action_;
+    }
+
+    VectorStats last_depth_stats()
+    {
+        std::lock_guard<std::mutex> lock(act_mtx_);
+        return last_depth_stats_;
+    }
+
+    VectorStats last_proprio_stats()
+    {
+        std::lock_guard<std::mutex> lock(act_mtx_);
+        return last_proprio_stats_;
     }
 
     std::vector<float> act(std::unordered_map<std::string, std::vector<float>> obs) override
@@ -115,6 +146,10 @@ public:
         std::vector<float> deploy_order_action = policy_action_to_deploy_action(policy_order_action);
         std::lock_guard<std::mutex> lock(act_mtx_);
         action = std::move(deploy_order_action);
+        last_policy_order_action_ = policy_order_action;
+        last_deploy_order_action_ = action;
+        last_depth_stats_ = compute_vector_stats(depth_image);
+        last_proprio_stats_ = compute_vector_stats(proprio);
         static std::atomic<int> debug_log_count{0};
         const int debug_index = debug_log_count.fetch_add(1);
         if (debug_index == 0 || (debug_index < 400 && debug_index % 50 == 0)) {
@@ -259,6 +294,17 @@ private:
         return text;
     }
 
+    static VectorStats compute_vector_stats(const std::vector<float>& values)
+    {
+        if (values.empty()) {
+            return {};
+        }
+        const auto minmax = std::minmax_element(values.begin(), values.end());
+        const float mean = std::accumulate(values.begin(), values.end(), 0.0f)
+            / static_cast<float>(values.size());
+        return {*minmax.first, *minmax.second, mean};
+    }
+
     static int64_t tensor_size(const std::vector<int64_t>& shape)
     {
         int64_t size = 1;
@@ -284,6 +330,10 @@ private:
     std::string depth_output_name_;
     std::string actor_input_name_;
     std::string actor_output_name_;
+    std::vector<float> last_policy_order_action_;
+    std::vector<float> last_deploy_order_action_;
+    VectorStats last_depth_stats_;
+    VectorStats last_proprio_stats_;
 };
 
 } // namespace isaaclab
