@@ -9,6 +9,10 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_YAML_PATH = ROOT / 'deploy' / 'robots' / 'g1_parkour' / 'config' / 'policy' / 'parkour' / 'v0' / 'params' / 'deploy.yaml'
 PROMOTE_SCRIPT_PATH = ROOT / 'scripts' / 'promote_g1_parkour_artifact.py'
 TRAINING_URDF_PATH = Path('/home/eilab/instinctlab/source/instinctlab/instinctlab/tasks/parkour/urdf/g1_29dof_torsoBase_popsicle_with_shoe.urdf')
+PARKOUR_SCENE_PATHS = (
+  ROOT / "src" / "assets" / "robots" / "unitree_g1" / "xmls" / "scene_g1_parkour.xml",
+  ROOT / "src" / "assets" / "robots" / "unitree_g1" / "xmls" / "scene_g1_parkour_flat.xml",
+)
 
 
 def _training_joint_order() -> list[str]:
@@ -43,3 +47,35 @@ def test_mujoco_play_uses_isaac_onnx_order_distinct_from_deploy_motor_order() ->
     "right_shoulder_pitch_joint",
     "waist_pitch_joint",
   )
+
+
+def test_parkour_mujoco_ankle_motor_limits_are_bilateral_and_match_training_effort() -> None:
+  """Prevent left/right ankle torque clipping asymmetry in native MuJoCo DDS runs."""
+  training = ET.parse(TRAINING_URDF_PATH).getroot()
+  expected_effort = {
+    joint.attrib["name"]: float(joint.find("limit").attrib["effort"])
+    for joint in training.findall("joint")
+    if joint.attrib.get("name") in {
+      "left_ankle_pitch_joint",
+      "left_ankle_roll_joint",
+      "right_ankle_pitch_joint",
+      "right_ankle_roll_joint",
+    }
+  }
+  assert expected_effort == {
+    "left_ankle_pitch_joint": 50.0,
+    "left_ankle_roll_joint": 50.0,
+    "right_ankle_pitch_joint": 50.0,
+    "right_ankle_roll_joint": 50.0,
+  }
+
+  for scene_path in PARKOUR_SCENE_PATHS:
+    scene = ET.parse(scene_path).getroot()
+    motors = {
+      motor.attrib["joint"]: tuple(float(part) for part in motor.attrib["ctrlrange"].split())
+      for motor in scene.findall("./actuator/motor")
+      if motor.attrib["joint"] in expected_effort
+    }
+    assert set(motors) == set(expected_effort)
+    for joint_name, effort in expected_effort.items():
+      assert motors[joint_name] == (-effort, effort)
