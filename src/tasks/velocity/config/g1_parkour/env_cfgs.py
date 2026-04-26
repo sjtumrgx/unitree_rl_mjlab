@@ -228,11 +228,12 @@ def _unitree_g1_parkour_complex_terrain_env_cfg(
   )
   cfg.g1_parkour_complex_terrain_contract = {  # type: ignore[attr-defined]
     "target_distance_m": 25.2,
-    "up_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.15},
-    "down_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.15},
-    "second_stairs": {"steps": 4, "step_run_m": 0.42, "max_height_m": 0.14},
+    "up_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.30},
+    "down_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.30},
+    "second_stairs": {"steps": 4, "step_run_m": 0.42, "max_height_m": 0.24},
     "gap": {
-      "platform_height_m": 0.06,
+      "platform_height_m": 0.12,
+      "floor_marker_top_m": 0.002,
       "lower_strip_width_m": 0.39,
       "second_lower_strip_width_m": 0.39,
       "keeps_global_floor": True,

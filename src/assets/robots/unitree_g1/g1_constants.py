@@ -178,12 +178,10 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
   stair_length = 0.36
   stair_half_width = 0.72
   up_start_x = 1.20
-  # C++/DDS uses the real-time Unitree bridge plus asynchronous depth frames, so
-  # the deterministic course must be traversable before we increase terrain
-  # difficulty again.  Keep the InstinctLab stair pattern but cap the first
-  # complete-course asset at 15 cm; this is still visibly non-flat while avoiding
-  # the 30 cm plateau that made the loopback controller stall before the gap.
-  for index, height in enumerate((0.03, 0.06, 0.09, 0.12, 0.15), start=1):
+  # Keep the InstinctLab stair pattern but increase the inter-step height to
+  # require more visible foot clearance.  This intentionally makes the
+  # complete-course asset harder than the earlier conservative 20 cm course.
+  for index, height in enumerate((0.06, 0.12, 0.18, 0.24, 0.30), start=1):
     add_box(
       f"parkour_complex_up_stair_{index:02d}",
       pos=(up_start_x + (index - 1) * stair_length, 0.0, height / 2.0),
@@ -193,13 +191,13 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
 
   add_box(
     "parkour_complex_top_platform",
-    pos=(3.25, 0.0, 0.075),
-    size=(0.42, stair_half_width, 0.075),
+    pos=(3.25, 0.0, 0.15),
+    size=(0.42, stair_half_width, 0.15),
     rgba=(0.50, 0.52, 0.55, 1.0),
   )
 
   down_start_x = 4.20
-  for index, height in enumerate((0.15, 0.12, 0.09, 0.06, 0.03), start=1):
+  for index, height in enumerate((0.30, 0.24, 0.18, 0.12, 0.06), start=1):
     add_box(
       f"parkour_complex_down_stair_{index:02d}",
       pos=(down_start_x + (index - 1) * stair_length, 0.0, height / 2.0),
@@ -207,25 +205,26 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
       rgba=(0.52, 0.47, 0.40, 1.0),
     )
 
-  # Square-gap approximation: two low platforms separated by a lower strip.
-  # The global floor remains intact, so this is safe for early debugging while
-  # still creating a depth discontinuity relative to the raised lips.
+  # Square-gap approximation: raised lips separated by a lower strip.  The
+  # global floor remains intact, so this is safe for early debugging while the
+  # 12 cm lip-to-floor drop creates a stronger depth discontinuity and should
+  # elicit more obvious leg lift before the far platform.
   add_box(
     "parkour_complex_gap_near_platform",
-    pos=(6.80, 0.0, 0.03),
-    size=(0.35, stair_half_width, 0.03),
+    pos=(6.80, 0.0, 0.06),
+    size=(0.35, stair_half_width, 0.06),
     rgba=(0.42, 0.43, 0.48, 1.0),
   )
   add_box(
     "parkour_complex_gap_floor_marker",
-    pos=(7.345, 0.0, 0.004),
-    size=(0.195, 0.66, 0.004),
+    pos=(7.345, 0.0, 0.001),
+    size=(0.195, 0.66, 0.001),
     rgba=(0.05, 0.05, 0.06, 1.0),
   )
   add_box(
     "parkour_complex_gap_far_platform",
-    pos=(7.89, 0.0, 0.03),
-    size=(0.35, stair_half_width, 0.03),
+    pos=(7.89, 0.0, 0.06),
+    size=(0.35, stair_half_width, 0.06),
     rgba=(0.42, 0.43, 0.48, 1.0),
   )
 
@@ -253,7 +252,7 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
 
   second_stair_length = 0.42
   second_up_start_x = 14.40
-  for index, height in enumerate((0.035, 0.07, 0.105, 0.14), start=1):
+  for index, height in enumerate((0.06, 0.12, 0.18, 0.24), start=1):
     add_box(
       f"parkour_complex_up_stair_b_{index:02d}",
       pos=(second_up_start_x + (index - 1) * second_stair_length, 0.0, height / 2.0),
@@ -263,13 +262,13 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
 
   add_box(
     "parkour_complex_mid_platform_b",
-    pos=(16.00, 0.0, 0.07),
-    size=(0.42, stair_half_width, 0.07),
+    pos=(16.00, 0.0, 0.12),
+    size=(0.42, stair_half_width, 0.12),
     rgba=(0.48, 0.50, 0.54, 1.0),
   )
 
   second_down_start_x = 16.70
-  for index, height in enumerate((0.14, 0.105, 0.07, 0.035), start=1):
+  for index, height in enumerate((0.24, 0.18, 0.12, 0.06), start=1):
     add_box(
       f"parkour_complex_down_stair_b_{index:02d}",
       pos=(second_down_start_x + (index - 1) * second_stair_length, 0.0, height / 2.0),
@@ -279,20 +278,20 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
 
   add_box(
     "parkour_complex_second_gap_near_platform",
-    pos=(19.10, 0.0, 0.03),
-    size=(0.35, stair_half_width, 0.03),
+    pos=(19.10, 0.0, 0.06),
+    size=(0.35, stair_half_width, 0.06),
     rgba=(0.38, 0.40, 0.46, 1.0),
   )
   add_box(
     "parkour_complex_second_gap_floor_marker",
-    pos=(19.645, 0.0, 0.004),
-    size=(0.195, 0.66, 0.004),
+    pos=(19.645, 0.0, 0.001),
+    size=(0.195, 0.66, 0.001),
     rgba=(0.04, 0.04, 0.05, 1.0),
   )
   add_box(
     "parkour_complex_second_gap_far_platform",
-    pos=(20.19, 0.0, 0.03),
-    size=(0.35, stair_half_width, 0.03),
+    pos=(20.19, 0.0, 0.06),
+    size=(0.35, stair_half_width, 0.06),
     rgba=(0.38, 0.40, 0.46, 1.0),
   )
 

@@ -79,13 +79,20 @@ def test_g1_parkour_complex_terrain_cfg_marks_instinctlab_reference() -> None:
   assert contract["up_stairs"] == {
     "steps": 5,
     "step_run_m": 0.36,
-    "max_height_m": 0.15,
+    "max_height_m": 0.30,
   }
   assert contract["down_stairs"] == {
     "steps": 5,
     "step_run_m": 0.36,
-    "max_height_m": 0.15,
+    "max_height_m": 0.30,
   }
+  assert contract["second_stairs"] == {
+    "steps": 4,
+    "step_run_m": 0.42,
+    "max_height_m": 0.24,
+  }
+  assert contract["gap"]["platform_height_m"] == 0.12
+  assert contract["gap"]["floor_marker_top_m"] == 0.002
   assert contract["gap"]["keeps_global_floor"] is True
   assert contract["gap"]["lower_strip_width_m"] <= 0.40
   assert contract["gap"]["second_lower_strip_width_m"] <= 0.40
@@ -189,11 +196,19 @@ def test_cxx_parkour_complex_scene_mirrors_python_play_terrain_assets() -> None:
   }.issubset(geoms)
   assert (
     float(geoms["parkour_complex_up_stair_05"].attrib["size"].split()[2])
-    == 0.075
+    == 0.15
   )
   assert (
     float(geoms["parkour_complex_up_stair_b_04"].attrib["size"].split()[2])
-    == 0.07
+    == 0.12
+  )
+  assert (
+    float(geoms["parkour_complex_gap_near_platform"].attrib["size"].split()[2])
+    == 0.06
+  )
+  assert (
+    float(geoms["parkour_complex_gap_floor_marker"].attrib["size"].split()[2])
+    == 0.001
   )
 
 
