@@ -60,6 +60,13 @@ inline std::atomic<float> sim_observed_command_y{0.0f};
 inline std::atomic<float> sim_observed_command_yaw{0.0f};
 inline std::filesystem::path gait_record_jsonl;
 inline int gait_record_every = 1;
+inline std::filesystem::path gait_replay_jsonl;
+inline std::string gait_replay_mode = "off";
+inline int gait_replay_start_step = 0;
+inline int gait_replay_max_steps = 0;
+inline std::string joint_vel_source = "sensor";
+inline bool policy_tick_sync = false;
+inline bool no_policy_tick_sync = false;
 
 inline std::filesystem::path get_bin_path() {
     std::vector<char> path(1024);
@@ -170,6 +177,20 @@ inline po::variables_map helper(int argc, char** argv)
             "record per-policy-step parkour gait/action/joint samples as JSONL")
         ("gait-record-every", po::value<int>(&gait_record_every)->default_value(1),
             "record one gait sample every N policy steps when --gait-record-jsonl is set")
+        ("gait-replay-jsonl", po::value<std::filesystem::path>(&gait_replay_jsonl),
+            "simulation-only diagnostic: replay Python gait JSONL action/target sequence instead of actor output")
+        ("gait-replay-mode", po::value<std::string>(&gait_replay_mode)->default_value("off"),
+            "simulation-only diagnostic replay mode: off, raw-action-policy, or target-q-deploy")
+        ("gait-replay-start-step", po::value<int>(&gait_replay_start_step)->default_value(0),
+            "simulation-only diagnostic: first source sample index to replay from --gait-replay-jsonl")
+        ("gait-replay-max-steps", po::value<int>(&gait_replay_max_steps)->default_value(0),
+            "simulation-only diagnostic: maximum replayed policy steps; 0 means all available samples")
+        ("joint-vel-source", po::value<std::string>(&joint_vel_source)->default_value("sensor"),
+            "simulation-only diagnostic joint velocity source: sensor, finite-diff-policy, or finite-diff-lowstate")
+        ("policy-tick-sync", po::bool_switch(&policy_tick_sync)->default_value(false),
+            "simulation-only diagnostic: gate the 50 Hz policy loop on simulator lowstate tick instead of wall-clock only")
+        ("no-policy-tick-sync", po::bool_switch(&no_policy_tick_sync)->default_value(false),
+            "simulation-only diagnostic: disable the default lowstate-tick-synced policy loop used by --sim-autostart-parkour")
         ;
 
     po::variables_map vm;
@@ -183,6 +204,38 @@ inline po::variables_map helper(int argc, char** argv)
     if (gait_record_every < 1)
     {
         gait_record_every = 1;
+    }
+    if (gait_replay_start_step < 0)
+    {
+        gait_replay_start_step = 0;
+    }
+    if (gait_replay_max_steps < 0)
+    {
+        gait_replay_max_steps = 0;
+    }
+    if (gait_replay_jsonl.empty())
+    {
+        gait_replay_mode = "off";
+    }
+    if (gait_replay_mode != "off"
+        && gait_replay_mode != "raw-action-policy"
+        && gait_replay_mode != "target-q-deploy")
+    {
+        throw std::runtime_error("--gait-replay-mode must be off, raw-action-policy, or target-q-deploy");
+    }
+    if (joint_vel_source != "sensor"
+        && joint_vel_source != "finite-diff-policy"
+        && joint_vel_source != "finite-diff-lowstate")
+    {
+        throw std::runtime_error("--joint-vel-source must be sensor, finite-diff-policy, or finite-diff-lowstate");
+    }
+    if (sim_autostart_parkour && !no_policy_tick_sync)
+    {
+        policy_tick_sync = true;
+    }
+    if (no_policy_tick_sync)
+    {
+        policy_tick_sync = false;
     }
 
     if (vm.count("help"))

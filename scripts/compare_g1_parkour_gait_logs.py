@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import statistics
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -27,6 +28,17 @@ DEFAULT_FIELDS = (
   "joint_pos_deploy_order",
   "joint_vel_deploy_order",
 )
+
+DEFAULT_FIELD_THRESHOLDS = {
+  "command": 1.0e-3,
+  "base_ang_vel": 0.05,
+  "projected_gravity": 0.05,
+  "raw_action_policy_order": 0.1,
+  "applied_action_deploy_order": 0.1,
+  "target_q_deploy_order": 0.01,
+  "joint_pos_deploy_order": 0.01,
+  "joint_vel_deploy_order": 0.1,
+}
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -48,7 +60,33 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     dest="fields",
     help="Field to compare; may be repeated. Defaults to the standard gait parity fields.",
   )
+  parser.add_argument(
+    "--field-threshold",
+    action="append",
+    default=[],
+    metavar="FIELD=VALUE",
+    help=(
+      "Override first-divergence threshold for a field. May be repeated; "
+      "defaults are tuned for G1 Parkour gait parity diagnostics."
+    ),
+  )
   return parser.parse_args(argv)
+
+
+def _parse_field_thresholds(overrides: Iterable[str]) -> dict[str, float]:
+  thresholds = dict(DEFAULT_FIELD_THRESHOLDS)
+  for override in overrides:
+    if "=" not in override:
+      raise ValueError(f"--field-threshold must be FIELD=VALUE, got: {override!r}")
+    field, value = override.split("=", 1)
+    field = field.strip()
+    if not field:
+      raise ValueError(f"--field-threshold has empty field name: {override!r}")
+    try:
+      thresholds[field] = float(value)
+    except ValueError as exc:
+      raise ValueError(f"--field-threshold value is not a float: {override!r}") from exc
+  return thresholds
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -104,13 +142,20 @@ def _compare_field(
   python_rows: list[dict[str, Any]],
   cpp_rows: list[dict[str, Any]],
   field: str,
+  *,
+  threshold: float,
 ) -> dict[str, Any]:
   diffs: list[float] = []
   sample_count = 0
   dim: int | None = None
   first_python: list[float] | None = None
   first_cpp: list[float] | None = None
-  for py_row, cpp_row in zip(python_rows, cpp_rows, strict=False):
+  first_divergence_index: int | None = None
+  first_divergence_step: int | None = None
+  first_divergence_abs: float | None = None
+  first_divergence_element_index: int | None = None
+
+  for row_index, (py_row, cpp_row) in enumerate(zip(python_rows, cpp_rows, strict=False)):
     py_values = _as_float_list(py_row.get(field))
     cpp_values = _as_float_list(cpp_row.get(field))
     if py_values is None or cpp_values is None or len(py_values) != len(cpp_values):
@@ -119,8 +164,21 @@ def _compare_field(
       first_python = py_values[:8]
       first_cpp = cpp_values[:8]
     dim = len(py_values)
-    diffs.extend(py - cpp for py, cpp in zip(py_values, cpp_values, strict=True))
+    row_diffs = [py - cpp for py, cpp in zip(py_values, cpp_values, strict=True)]
+    diffs.extend(row_diffs)
+    if first_divergence_index is None:
+      abs_diffs = [abs(value) for value in row_diffs]
+      row_max_abs = max(abs_diffs, default=0.0)
+      if row_max_abs > threshold:
+        first_divergence_index = row_index
+        try:
+          first_divergence_step = int(py_row.get("step"))
+        except (TypeError, ValueError):
+          first_divergence_step = None
+        first_divergence_abs = row_max_abs
+        first_divergence_element_index = abs_diffs.index(row_max_abs) if abs_diffs else None
     sample_count += 1
+
   return {
     "samples": sample_count,
     "dim": dim,
@@ -129,6 +187,158 @@ def _compare_field(
     "max_abs": _max_abs(diffs),
     "first_python_head": first_python,
     "first_cpp_head": first_cpp,
+    "threshold": threshold,
+    "first_divergence_field": field if first_divergence_index is not None else None,
+    "first_divergence_index": first_divergence_index,
+    "first_divergence_step": first_divergence_step,
+    "first_divergence_abs": first_divergence_abs,
+    "first_divergence_element_index": first_divergence_element_index,
+    "verdict": "pass" if first_divergence_index is None and sample_count > 0 else "diverged",
+  }
+
+
+def _first_divergence_across_fields(field_stats: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+  candidates: list[dict[str, Any]] = []
+  for field, stats in field_stats.items():
+    index = stats.get("first_divergence_index")
+    if index is None:
+      continue
+    candidates.append({
+      "field": field,
+      "index": int(index),
+      "step": stats.get("first_divergence_step"),
+      "abs": stats.get("first_divergence_abs"),
+      "element_index": stats.get("first_divergence_element_index"),
+      "threshold": stats.get("threshold"),
+    })
+  if not candidates:
+    return None
+  return min(candidates, key=lambda item: (item["index"], item["field"]))
+
+
+def _as_number(value: Any) -> float | None:
+  try:
+    return float(value)
+  except (TypeError, ValueError):
+    return None
+
+
+def _delta_stats(values: list[float]) -> dict[str, Any]:
+  if not values:
+    return {"count": 0, "min": None, "max": None, "mean": None, "median": None}
+  return {
+    "count": len(values),
+    "min": min(values),
+    "max": max(values),
+    "mean": sum(values) / len(values),
+    "median": statistics.median(values),
+  }
+
+
+def _adjacent_deltas(rows: list[dict[str, Any]], key: str) -> list[float]:
+  numbers = [_as_number(row.get(key)) for row in rows]
+  present = [value for value in numbers if value is not None]
+  return [b - a for a, b in zip(present, present[1:], strict=False)]
+
+
+def _summarize_cpp_freshness(cpp_rows: list[dict[str, Any]]) -> dict[str, Any]:
+  """Summarize C++ observation/history freshness diagnostics.
+
+  The gait comparator remains useful for older JSONL files, so missing
+  ``history_freshness`` fields produce an explicit unavailable verdict instead
+  of failing the compare.
+  """
+
+  histories = [
+    row.get("history_freshness")
+    for row in cpp_rows
+    if isinstance(row.get("history_freshness"), dict)
+  ]
+  lowstate_tick_deltas = _adjacent_deltas(cpp_rows, "lowstate_tick")
+  sim_time_deltas = _adjacent_deltas(cpp_rows, "sim_time")
+  policy_wall_time_deltas = _adjacent_deltas(cpp_rows, "policy_wall_time")
+
+  non_monotonic_tick_count = sum(1 for delta in lowstate_tick_deltas if delta < 0)
+  repeated_lowstate_tick_count = sum(1 for delta in lowstate_tick_deltas if delta == 0)
+  reset_epochs = sorted(
+    {
+      int(history["reset_epoch"])
+      for history in histories
+      if isinstance(history.get("reset_epoch"), int)
+    }
+  )
+
+  if not histories:
+    return {
+      "verdict": "unavailable",
+      "samples_with_history": 0,
+      "samples_total": len(cpp_rows),
+      "reason": "cpp JSONL has no history_freshness objects",
+      "lowstate_tick_delta": _delta_stats(lowstate_tick_deltas),
+      "sim_time_delta": _delta_stats(sim_time_deltas),
+      "policy_wall_time_delta": _delta_stats(policy_wall_time_deltas),
+    }
+
+  repeated_counts = [
+    int(history.get("repeated_frame_count", 0))
+    for history in histories
+    if isinstance(history.get("repeated_frame_count", 0), int | float)
+  ]
+  skipped_counts = [
+    int(history.get("skipped_tick_count", 0))
+    for history in histories
+    if isinstance(history.get("skipped_tick_count", 0), int | float)
+  ]
+  last_action_ages = [
+    int(history.get("last_action_age_steps", 0))
+    for history in histories
+    if isinstance(history.get("last_action_age_steps", 0), int | float)
+  ]
+  expected_tick_delta = next(
+    (
+      int(history.get("expected_tick_delta"))
+      for history in histories
+      if isinstance(history.get("expected_tick_delta"), int | float)
+    ),
+    None,
+  )
+  problems: list[str] = []
+  lowstate_tick_jitter_count = 0
+  if expected_tick_delta is not None:
+    lowstate_tick_jitter_count = sum(
+      1
+      for delta in lowstate_tick_deltas
+      if abs(delta - expected_tick_delta) > 2
+    )
+  if non_monotonic_tick_count:
+    problems.append("lowstate tick moved backwards")
+  if repeated_lowstate_tick_count or max(repeated_counts, default=0) > 0:
+    problems.append("lowstate/history frame repeated")
+  if lowstate_tick_jitter_count:
+    problems.append("lowstate tick delta deviated from expected policy cadence")
+  if max(skipped_counts, default=0) > 0:
+    problems.append("lowstate/history tick skip exceeded tolerance")
+  if max(last_action_ages, default=0) > 1:
+    problems.append("last action age exceeded one policy step")
+
+  return {
+    "verdict": "pass" if not problems else "fail",
+    "problems": problems,
+    "samples_with_history": len(histories),
+    "samples_total": len(cpp_rows),
+    "expected_tick_delta": expected_tick_delta,
+    "lowstate_tick_delta": _delta_stats(lowstate_tick_deltas),
+    "sim_time_delta": _delta_stats(sim_time_deltas),
+    "policy_wall_time_delta": _delta_stats(policy_wall_time_deltas),
+    "non_monotonic_lowstate_tick_count": non_monotonic_tick_count,
+    "repeated_lowstate_tick_count": repeated_lowstate_tick_count,
+    "lowstate_tick_jitter_count": lowstate_tick_jitter_count,
+    "max_history_repeated_frame_count": max(repeated_counts, default=0),
+    "total_history_repeated_frame_count": sum(repeated_counts),
+    "max_history_skipped_tick_count": max(skipped_counts, default=0),
+    "total_history_skipped_tick_count": sum(skipped_counts),
+    "max_last_action_age_steps": max(last_action_ages, default=0),
+    "reset_epochs": reset_epochs,
   }
 
 
@@ -208,6 +418,7 @@ def _diagnose_with_early_window(
 
 def main(argv: Iterable[str] | None = None) -> int:
   args = parse_args(argv)
+  thresholds = _parse_field_thresholds(args.field_threshold)
   python_rows = _load_jsonl(args.python_jsonl)
   cpp_rows = _load_jsonl(args.cpp_jsonl)
   skip = max(0, args.skip_samples)
@@ -216,12 +427,22 @@ def main(argv: Iterable[str] | None = None) -> int:
   cpp_slice = cpp_rows[skip : skip + max_samples]
   fields = tuple(args.fields or DEFAULT_FIELDS)
   field_stats = {
-    field: _compare_field(python_slice, cpp_slice, field)
+    field: _compare_field(
+      python_slice,
+      cpp_slice,
+      field,
+      threshold=thresholds.get(field, 0.1),
+    )
     for field in fields
   }
   early_count = max(1, min(args.early_samples, len(python_slice), len(cpp_slice)))
   early_stats = {
-    field: _compare_field(python_slice[:early_count], cpp_slice[:early_count], field)
+    field: _compare_field(
+      python_slice[:early_count],
+      cpp_slice[:early_count],
+      field,
+      threshold=thresholds.get(field, 0.1),
+    )
     for field in fields
   }
   sample_count = min(len(python_slice), len(cpp_slice))
@@ -237,6 +458,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     "fields": field_stats,
     "early_samples": early_count,
     "early_fields": early_stats,
+    "field_thresholds": {field: thresholds.get(field, 0.1) for field in fields},
+    "first_divergence": _first_divergence_across_fields(field_stats),
+    "early_first_divergence": _first_divergence_across_fields(early_stats),
+    "cpp_freshness": _summarize_cpp_freshness(cpp_slice),
     "diagnosis": _diagnose_with_early_window(
       full_stats=field_stats,
       early_stats=early_stats,

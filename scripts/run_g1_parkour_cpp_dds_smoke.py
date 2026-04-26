@@ -178,6 +178,13 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
   )
   parser.add_argument("--headless-sim", action="store_true", help="Run simulator with --headless for control-only diagnostics.")
   parser.add_argument("--sim-scene", type=Path, help="Optional MuJoCo scene XML/MJB to pass through to the simulator.")
+  parser.add_argument("--sim-pd-kp-scale", type=float, default=None, help="Pass --lowcmd-kp-scale to the simulator bridge for PD ablation diagnostics.")
+  parser.add_argument("--sim-pd-kd-scale", type=float, default=None, help="Pass --lowcmd-kd-scale to the simulator bridge for PD ablation diagnostics.")
+  parser.add_argument(
+    "--sim-lowcmd-control-mode",
+    choices=("torque-pd", "position-target"),
+    help="Pass --lowcmd-control-mode to the simulator bridge for actuator semantic A/B diagnostics.",
+  )
   parser.add_argument("--constant-depth", type=float, default=None, help="Set G1_PARKOUR_DEBUG_CONSTANT_DEPTH for controller diagnostics.")
   parser.add_argument(
     "--ctrl-gait-record-jsonl",
@@ -189,6 +196,51 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     type=int,
     default=1,
     help="Pass --gait-record-every to the controller when gait recording is enabled.",
+  )
+  parser.add_argument(
+    "--ctrl-gait-replay-jsonl",
+    "--gait-replay-jsonl",
+    dest="ctrl_gait_replay_jsonl",
+    type=Path,
+    help="Pass --gait-replay-jsonl to the controller for short-window gait replay diagnostics.",
+  )
+  parser.add_argument(
+    "--ctrl-gait-replay-mode",
+    "--gait-replay-mode",
+    dest="ctrl_gait_replay_mode",
+    choices=("raw-action-policy", "target-q-deploy"),
+    help="Pass --gait-replay-mode to the controller when replay is enabled.",
+  )
+  parser.add_argument(
+    "--ctrl-gait-replay-start-step",
+    "--gait-replay-start-step",
+    dest="ctrl_gait_replay_start_step",
+    type=int,
+    default=0,
+    help="Pass --gait-replay-start-step to the controller when replay is enabled.",
+  )
+  parser.add_argument(
+    "--ctrl-gait-replay-max-steps",
+    "--gait-replay-max-steps",
+    dest="ctrl_gait_replay_max_steps",
+    type=int,
+    default=0,
+    help="Pass --gait-replay-max-steps to the controller when replay is enabled.",
+  )
+  parser.add_argument(
+    "--ctrl-joint-vel-source",
+    choices=("sensor", "finite-diff-policy", "finite-diff-lowstate"),
+    help="Pass --joint-vel-source to the controller for joint velocity source A/B diagnostics.",
+  )
+  parser.add_argument(
+    "--ctrl-policy-tick-sync",
+    action="store_true",
+    help="Pass --policy-tick-sync to the controller for 50 Hz lowstate-tick-gated policy diagnostics.",
+  )
+  parser.add_argument(
+    "--ctrl-no-policy-tick-sync",
+    action="store_true",
+    help="Pass --no-policy-tick-sync to the controller to reproduce the old wall-clock-only loopback timing.",
   )
   return parser.parse_args(argv)
 
@@ -224,6 +276,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     sim_cmd += ["--scene", str(sim_scene)]
   if args.headless_sim:
     sim_cmd += ["--headless", "--headless-seconds", str(args.timeout_seconds)]
+  if args.sim_pd_kp_scale is not None:
+    sim_cmd += ["--lowcmd-kp-scale", str(args.sim_pd_kp_scale)]
+  if args.sim_pd_kd_scale is not None:
+    sim_cmd += ["--lowcmd-kd-scale", str(args.sim_pd_kd_scale)]
+  if args.sim_lowcmd_control_mode is not None:
+    sim_cmd += ["--lowcmd-control-mode", args.sim_lowcmd_control_mode]
   sim_cmd += [
     "--walk-distance-marker", str(args.walk_distance),
     "--progress-log-interval", str(args.progress_log_interval),
@@ -253,6 +311,22 @@ def main(argv: Iterable[str] | None = None) -> int:
       "--gait-record-jsonl", str(ctrl_gait_record_path),
       "--gait-record-every", str(max(1, args.ctrl_gait_record_every)),
     ]
+  if args.ctrl_gait_replay_jsonl is not None:
+    ctrl_gait_replay_path = args.ctrl_gait_replay_jsonl
+    if not ctrl_gait_replay_path.is_absolute():
+      ctrl_gait_replay_path = root / ctrl_gait_replay_path
+    ctrl_cmd += [
+      "--gait-replay-jsonl", str(ctrl_gait_replay_path),
+      "--gait-replay-mode", args.ctrl_gait_replay_mode or "target-q-deploy",
+      "--gait-replay-start-step", str(max(0, args.ctrl_gait_replay_start_step)),
+      "--gait-replay-max-steps", str(max(0, args.ctrl_gait_replay_max_steps)),
+    ]
+  if args.ctrl_joint_vel_source is not None:
+    ctrl_cmd += ["--joint-vel-source", args.ctrl_joint_vel_source]
+  if args.ctrl_policy_tick_sync:
+    ctrl_cmd += ["--policy-tick-sync"]
+  if args.ctrl_no_policy_tick_sync:
+    ctrl_cmd += ["--no-policy-tick-sync"]
   ctrl_spec = ProcessSpec(
     name="ctrl",
     cmd=ctrl_cmd,

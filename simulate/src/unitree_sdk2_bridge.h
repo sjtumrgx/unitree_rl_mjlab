@@ -186,9 +186,13 @@ public:
             for(int i(0); i<num_motor_; i++) {
                 auto & m = lowcmd->msg_.motor_cmd()[i];
                 lowcmd_active = lowcmd_active || m.kp() > 0.0f || std::abs(m.tau()) > 0.0f;
-                mj_data_->ctrl[i] = m.tau() +
-                                    m.kp() * (m.q() - mj_data_->sensordata[i]) +
-                                    m.kd() * (m.dq() - mj_data_->sensordata[i + num_motor_]);
+                if (param::config.lowcmd_control_mode == "position-target") {
+                    mj_data_->ctrl[i] = m.q();
+                } else {
+                    mj_data_->ctrl[i] = m.tau() +
+                                        (m.kp() * param::config.lowcmd_kp_scale) * (m.q() - mj_data_->sensordata[i]) +
+                                        (m.kd() * param::config.lowcmd_kd_scale) * (m.dq() - mj_data_->sensordata[i + num_motor_]);
+                }
             }
         }
         param::lowcmd_has_active_control.store(lowcmd_active);

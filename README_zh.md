@@ -275,6 +275,11 @@ python scripts/run_g1_parkour_cpp_dds_smoke.py \
 （`live_depth_blend: 1.0`）保留为调试/继续对齐模式，不作为默认 200 m 稳定
 设置。
 
+loopback 仿真（`--sim-autostart-parkour`）下，controller 会默认把 50 Hz
+policy step 同步到 simulator lowstate tick，而不是只按本机 wall-clock
+定时。这样 C++/DDS 的步态相位更接近 `scripts/play_parkour.py`；只有需要复现
+旧的 wall-clock-only 诊断行为时才加 `--no-policy-tick-sync`。
+
 如果要手动分两个终端运行，不能只执行裸命令；controller 需要显式进入
 Parkour 仿真自启动模式，并且必须使用 loopback 网络：
 

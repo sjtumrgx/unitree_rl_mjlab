@@ -74,6 +74,11 @@ public:
         return last_proprio_stats_;
     }
 
+    static std::vector<float> policy_order_action_to_deploy_order(const std::vector<float>& policy_order_action)
+    {
+        return policy_action_to_deploy_action(policy_order_action);
+    }
+
     std::vector<float> act(std::unordered_map<std::string, std::vector<float>> obs) override
     {
         const auto& proprio = obs.at("proprio");

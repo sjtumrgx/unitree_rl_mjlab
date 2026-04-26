@@ -29,6 +29,9 @@ inline struct SimulationConfig
     float walk_distance_marker = 5.0f;
     float progress_log_interval = 1.0f;
     int realtime_lockstep = 0;
+    float lowcmd_kp_scale = 1.0f;
+    float lowcmd_kd_scale = 1.0f;
+    std::string lowcmd_control_mode = "torque-pd";
 
     int enable_elastic_band;
     int band_attached_link = 0;
@@ -156,6 +159,9 @@ inline po::variables_map helper(int argc, char** argv)
         ("walk-distance-marker", po::value<float>(&config.walk_distance_marker)->default_value(config.walk_distance_marker), "Emit DISTANCE_X marker and stop headless run after this forward distance in meters")
         ("progress-log-interval", po::value<float>(&config.progress_log_interval)->default_value(config.progress_log_interval), "Emit PARKOUR_PROGRESS every N simulation seconds")
         ("realtime-lockstep", po::value<int>(&config.realtime_lockstep)->default_value(config.realtime_lockstep), "Run viewer physics at one MuJoCo step per wall-clock timestep instead of batching catch-up steps")
+        ("lowcmd-kp-scale", po::value<float>(&config.lowcmd_kp_scale)->default_value(config.lowcmd_kp_scale), "Diagnostic scale for Unitree LowCmd position gain in the MuJoCo bridge")
+        ("lowcmd-kd-scale", po::value<float>(&config.lowcmd_kd_scale)->default_value(config.lowcmd_kd_scale), "Diagnostic scale for Unitree LowCmd velocity gain in the MuJoCo bridge")
+        ("lowcmd-control-mode", po::value<std::string>(&config.lowcmd_control_mode)->default_value(config.lowcmd_control_mode), "Diagnostic LowCmd bridge mode: torque-pd or position-target")
     ;
 
     po::variables_map vm;
@@ -169,6 +175,10 @@ inline po::variables_map helper(int argc, char** argv)
     }
     if (vm["headless"].as<bool>()) {
         config.headless = 1;
+    }
+    if (config.lowcmd_control_mode != "torque-pd" && config.lowcmd_control_mode != "position-target") {
+        std::cerr << "--lowcmd-control-mode must be torque-pd or position-target" << std::endl;
+        exit(EXIT_FAILURE);
     }
 
     return vm;

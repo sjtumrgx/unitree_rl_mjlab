@@ -284,6 +284,12 @@ alive, but uses a conservative policy-depth baseline
 acceptance path.  Full live-depth policy input (`live_depth_blend: 1.0`) is a
 debug/tuning mode and is not the default 200 m stability setting.
 
+For loopback simulation (`--sim-autostart-parkour`), the controller
+automatically synchronizes the 50 Hz policy step to the simulator lowstate tick.
+This keeps the C++/DDS gait timing aligned with `scripts/play_parkour.py`.
+Use `--no-policy-tick-sync` only to reproduce the older wall-clock-only
+diagnostic behavior.
+
 For manual two-terminal runs, do not use the bare commands alone; the controller
 must explicitly enter simulation Parkour autostart mode on loopback:
 

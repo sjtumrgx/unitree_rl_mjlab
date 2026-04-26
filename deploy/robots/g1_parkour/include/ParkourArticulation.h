@@ -1,8 +1,12 @@
 #pragma once
 
 #include <eigen3/Eigen/Dense>
+#include <cmath>
 #include <mutex>
+#include <string>
+#include <vector>
 
+#include "param.h"
 #include "isaaclab/assets/articulation/articulation.h"
 
 namespace unitree
@@ -53,16 +57,63 @@ public:
             data.projected_gravity_b = align_policy_body_vector(raw_projected_gravity_b);
         }
 
+        std::vector<float> current_joint_pos(data.joint_ids_map.size(), 0.0f);
+        last_sensor_joint_vel_.assign(data.joint_ids_map.size(), 0.0f);
         for (int i = 0; i < data.joint_ids_map.size(); ++i) {
-            data.joint_pos[i] = lowstate->msg_.motor_state()[data.joint_ids_map[i]].q();
-            data.joint_vel[i] = lowstate->msg_.motor_state()[data.joint_ids_map[i]].dq();
+            current_joint_pos[i] = lowstate->msg_.motor_state()[data.joint_ids_map[i]].q();
+            data.joint_pos[i] = current_joint_pos[i];
+            last_sensor_joint_vel_[i] = lowstate->msg_.motor_state()[data.joint_ids_map[i]].dq();
         }
+
+        const auto tick = lowstate->msg_.tick();
+        last_finite_diff_joint_vel_ = last_sensor_joint_vel_;
+        if ((param::joint_vel_source == "finite-diff-policy" || param::joint_vel_source == "finite-diff-lowstate")
+            && finite_diff_initialized_) {
+            float dt = 0.02f;
+            if (param::joint_vel_source == "finite-diff-lowstate" && tick > last_lowstate_tick_) {
+                dt = static_cast<float>(tick - last_lowstate_tick_) * 1.0e-3f;
+            }
+            if (dt > 1.0e-6f && last_joint_pos_.size() == current_joint_pos.size()) {
+                for (size_t i = 0; i < current_joint_pos.size(); ++i) {
+                    last_finite_diff_joint_vel_[i] = (current_joint_pos[i] - last_joint_pos_[i]) / dt;
+                    data.joint_vel[i] = last_finite_diff_joint_vel_[i];
+                }
+            }
+        } else {
+            for (int i = 0; i < data.joint_ids_map.size(); ++i) {
+                data.joint_vel[i] = last_sensor_joint_vel_[i];
+            }
+        }
+
+        last_joint_pos_ = std::move(current_joint_pos);
+        last_lowstate_tick_ = tick;
+        finite_diff_initialized_ = true;
+    }
+
+    std::string joint_vel_source() const
+    {
+        return param::joint_vel_source;
+    }
+
+    std::vector<float> last_sensor_joint_vel() const
+    {
+        return last_sensor_joint_vel_;
+    }
+
+    std::vector<float> last_finite_diff_joint_vel() const
+    {
+        return last_finite_diff_joint_vel_;
     }
 
     LowStatePtr lowstate;
 
 private:
     bool use_mjlab_body_frame_ = false;
+    bool finite_diff_initialized_ = false;
+    uint32_t last_lowstate_tick_ = 0;
+    std::vector<float> last_joint_pos_;
+    std::vector<float> last_sensor_joint_vel_;
+    std::vector<float> last_finite_diff_joint_vel_;
 };
 
 } // namespace unitree
