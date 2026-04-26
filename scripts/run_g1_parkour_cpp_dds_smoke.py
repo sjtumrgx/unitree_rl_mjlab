@@ -34,6 +34,7 @@ REQUIRED_MARKERS = (
 )
 
 LOW_OBSTACLE_SCENE = Path("src/assets/robots/unitree_g1/xmls/scene_g1_parkour_low_obstacles.xml")
+COMPLEX_TERRAIN_SCENE = Path("src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml")
 
 
 @dataclass
@@ -188,6 +189,14 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     action="store_true",
     help="Use the conservative low-obstacle parkour scene for depth/obstacle bring-up.",
   )
+  parser.add_argument(
+    "--complex-terrain-course",
+    action="store_true",
+    help=(
+      "Use the full InstinctLab-inspired deterministic parkour scene "
+      "with stairs, safe gap surrogates, boxes, and mesh-box stepping stones."
+    ),
+  )
   parser.add_argument("--sim-pd-kp-scale", type=float, default=None, help="Pass --lowcmd-kp-scale to the simulator bridge for PD ablation diagnostics.")
   parser.add_argument("--sim-pd-kd-scale", type=float, default=None, help="Pass --lowcmd-kd-scale to the simulator bridge for PD ablation diagnostics.")
   parser.add_argument(
@@ -297,9 +306,24 @@ def main(argv: Iterable[str] | None = None) -> int:
     required_markers = tuple(marker for marker in REQUIRED_MARKERS if marker != "PUBLISHER_READY")
 
   sim_cmd = [str(sim_bin), "--network", args.network]
-  if args.low_obstacle_course and args.sim_scene is not None:
-    raise ValueError("--low-obstacle-course and --sim-scene are mutually exclusive")
-  sim_scene_arg = LOW_OBSTACLE_SCENE if args.low_obstacle_course else args.sim_scene
+  selected_named_scenes = [
+    flag
+    for flag, enabled in (
+      ("--low-obstacle-course", args.low_obstacle_course),
+      ("--complex-terrain-course", args.complex_terrain_course),
+    )
+    if enabled
+  ]
+  if args.sim_scene is not None and selected_named_scenes:
+    raise ValueError(f"{selected_named_scenes[0]} and --sim-scene are mutually exclusive")
+  if len(selected_named_scenes) > 1:
+    raise ValueError("--low-obstacle-course and --complex-terrain-course are mutually exclusive")
+  if args.low_obstacle_course:
+    sim_scene_arg = LOW_OBSTACLE_SCENE
+  elif args.complex_terrain_course:
+    sim_scene_arg = COMPLEX_TERRAIN_SCENE
+  else:
+    sim_scene_arg = args.sim_scene
   if sim_scene_arg is not None:
     sim_scene = sim_scene_arg if sim_scene_arg.is_absolute() else root / sim_scene_arg
     sim_cmd += ["--scene", str(sim_scene)]

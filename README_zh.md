@@ -301,6 +301,29 @@ python scripts/run_g1_parkour_cpp_dds_smoke.py \
 三个稀疏方块/台阶。如果该闭环稳定，再逐步把 `--live-depth-blend` 提到
 `1.0`。
 
+当低障碍闭环稳定后，可以切到和 `python scripts/play_parkour.py` 对齐的
+C++/DDS 复杂地形 XML。该场景包含上/下楼梯、两个最大 0.40 m 的安全 gap
+近似、方块障碍和 mesh-box stepping stones；当前 C++ controller 仍使用沿
+x 轴中心线的固定速度指令，因此建议先短距离验证，再逐步拉长：
+
+```bash
+DISPLAY=:1 \
+python scripts/run_g1_parkour_cpp_dds_smoke.py \
+  --sim-bin simulate/build/unitree_mujoco_parkour \
+  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+  --network lo \
+  --sim-autostart-parkour \
+  --sim-command-x 0.20 \
+  --sim-command-y 0.0 \
+  --sim-command-yaw 0.0 \
+  --complex-terrain-course \
+  --walk-distance 8.0 \
+  --timeout-seconds 160 \
+  --hide-depth-debug-window \
+  --live-depth-blend 1.0 \
+  --log-dir /tmp/g1_parkour_complex_live_depth
+```
+
 loopback 仿真（`--sim-autostart-parkour`）下，controller 会默认把 50 Hz
 policy step 同步到 simulator lowstate tick，而不是只按本机 wall-clock
 定时。这样 C++/DDS 的步态相位更接近 `scripts/play_parkour.py`；只有需要复现

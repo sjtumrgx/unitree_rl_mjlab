@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
 import mjlab.tasks  # noqa: F401
 import src.tasks  # noqa: F401
 from mjlab.tasks.registry import list_tasks, load_env_cfg
@@ -12,6 +15,12 @@ from src.tasks.velocity.config.g1_parkour.env_cfgs import (
   PARKOUR_COMPLEX_TERRAIN_GEOMS,
   PARKOUR_TASK_ID,
 )
+
+ROOT = Path(__file__).resolve().parents[2]
+CXX_COMPLEX_SCENE = (
+  ROOT / "src" / "assets" / "robots" / "unitree_g1" / "xmls" / "scene_g1_parkour.xml"
+)
+CXX_SMOKE_HARNESS = ROOT / "scripts" / "run_g1_parkour_cpp_dds_smoke.py"
 
 
 def test_only_formal_g1_parkour_task_is_publicly_registered() -> None:
@@ -84,6 +93,29 @@ def _gap_distance(spec, near_name: str, far_name: str) -> float:
   return far_near_edge - near_far_edge
 
 
+def _xml_geom_map(path: Path) -> dict[str, ET.Element]:
+  root = ET.parse(path).getroot()
+  return {
+    str(geom.attrib["name"]): geom
+    for geom in root.findall(".//geom")
+    if "name" in geom.attrib
+  }
+
+
+def _xml_gap_distance(
+  geoms: dict[str, ET.Element],
+  near_name: str,
+  far_name: str,
+) -> float:
+  near = geoms[near_name]
+  far = geoms[far_name]
+  near_pos_x = float(near.attrib["pos"].split()[0])
+  near_size_x = float(near.attrib["size"].split()[0])
+  far_pos_x = float(far.attrib["pos"].split()[0])
+  far_size_x = float(far.attrib["size"].split()[0])
+  return (far_pos_x - far_size_x) - (near_pos_x + near_size_x)
+
+
 def test_g1_parkour_complex_terrain_spec_contains_expected_assets() -> None:
   spec = get_g1_parkour_complex_terrain_debug_spec()
   geom_names = {geom.name for geom in spec.worldbody.geoms}
@@ -119,3 +151,60 @@ def test_g1_parkour_complex_terrain_gaps_are_no_more_than_40cm() -> None:
     "parkour_complex_second_gap_near_platform",
     "parkour_complex_second_gap_far_platform",
   ) <= 0.40
+
+
+def test_cxx_parkour_complex_scene_mirrors_python_play_terrain_assets() -> None:
+  geoms = _xml_geom_map(CXX_COMPLEX_SCENE)
+
+  assert "parkour_complex_terrain_course" in CXX_COMPLEX_SCENE.read_text()
+  assert {
+    "parkour_complex_up_stair_01",
+    "parkour_complex_up_stair_05",
+    "parkour_complex_top_platform",
+    "parkour_complex_down_stair_01",
+    "parkour_complex_down_stair_05",
+    "parkour_complex_gap_near_platform",
+    "parkour_complex_gap_floor_marker",
+    "parkour_complex_gap_far_platform",
+    "parkour_complex_discrete_box_01",
+    "parkour_complex_discrete_box_06",
+    "parkour_complex_up_stair_b_04",
+    "parkour_complex_second_gap_floor_marker",
+    "parkour_complex_mesh_box_01",
+    "parkour_complex_mesh_box_06",
+  }.issubset(geoms)
+  assert (
+    float(geoms["parkour_complex_up_stair_05"].attrib["size"].split()[2])
+    == 0.15
+  )
+  assert (
+    float(geoms["parkour_complex_up_stair_b_04"].attrib["size"].split()[2])
+    == 0.14
+  )
+
+
+def test_cxx_parkour_complex_scene_keeps_gap_spans_at_most_40cm() -> None:
+  geoms = _xml_geom_map(CXX_COMPLEX_SCENE)
+
+  assert _xml_gap_distance(
+    geoms,
+    "parkour_complex_gap_near_platform",
+    "parkour_complex_gap_far_platform",
+  ) <= 0.40
+  assert _xml_gap_distance(
+    geoms,
+    "parkour_complex_second_gap_near_platform",
+    "parkour_complex_second_gap_far_platform",
+  ) <= 0.40
+
+
+def test_cpp_dds_smoke_harness_exposes_complex_terrain_scene_flag() -> None:
+  text = CXX_SMOKE_HARNESS.read_text()
+
+  assert "COMPLEX_TERRAIN_SCENE" in text
+  assert "--complex-terrain-course" in text
+  assert "scene_g1_parkour.xml" in text
+  assert (
+    "--low-obstacle-course and --complex-terrain-course are mutually exclusive"
+    in text
+  )

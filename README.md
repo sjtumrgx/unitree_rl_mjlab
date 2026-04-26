@@ -311,6 +311,30 @@ The low-obstacle course is intentionally easier than the full complex parkour
 scene: three sparse centerline blocks/steps of 4 cm, 6 cm, and 8 cm.  If this
 closed-loop run is stable, raise `--live-depth-blend` gradually toward `1.0`.
 
+After the low-obstacle loop is stable, switch to the C++/DDS complex-terrain XML
+that mirrors `python scripts/play_parkour.py`: up/down stairs, two safe
+gap-surrogate strips capped at 0.40 m, discrete boxes, and mesh-box stepping
+stones.  The current C++ controller still uses a fixed centerline velocity
+command, so start with a short acceptance distance before extending the run:
+
+```bash
+DISPLAY=:1 \
+python scripts/run_g1_parkour_cpp_dds_smoke.py \
+  --sim-bin simulate/build/unitree_mujoco_parkour \
+  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+  --network lo \
+  --sim-autostart-parkour \
+  --sim-command-x 0.20 \
+  --sim-command-y 0.0 \
+  --sim-command-yaw 0.0 \
+  --complex-terrain-course \
+  --walk-distance 8.0 \
+  --timeout-seconds 160 \
+  --hide-depth-debug-window \
+  --live-depth-blend 1.0 \
+  --log-dir /tmp/g1_parkour_complex_live_depth
+```
+
 For loopback simulation (`--sim-autostart-parkour`), the controller
 automatically synchronizes the 50 Hz policy step to the simulator lowstate tick.
 This keeps the C++/DDS gait timing aligned with `scripts/play_parkour.py`.
