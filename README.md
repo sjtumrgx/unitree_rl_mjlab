@@ -284,6 +284,33 @@ alive, but uses a conservative policy-depth baseline
 acceptance path.  Full live-depth policy input (`live_depth_blend: 1.0`) is a
 debug/tuning mode and is not the default 200 m stability setting.
 
+For the next low-obstacle / live-depth closed-loop bring-up, use the conservative
+low-obstacle scene and start with a partial live-depth blend before trying full
+depth.  This path requires a graphical display because the simulator depth
+bridge renders through MuJoCo/OpenGL:
+
+```bash
+DISPLAY=:1 \
+python scripts/run_g1_parkour_cpp_dds_smoke.py \
+  --sim-bin simulate/build/unitree_mujoco_parkour \
+  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+  --network lo \
+  --sim-autostart-parkour \
+  --sim-command-x 0.25 \
+  --sim-command-y 0.0 \
+  --sim-command-yaw 0.0 \
+  --low-obstacle-course \
+  --walk-distance 5.5 \
+  --timeout-seconds 120 \
+  --hide-depth-debug-window \
+  --live-depth-blend 0.2 \
+  --log-dir /tmp/g1_parkour_low_obstacle_live_depth
+```
+
+The low-obstacle course is intentionally easier than the full complex parkour
+scene: three sparse centerline blocks/steps of 4 cm, 6 cm, and 8 cm.  If this
+closed-loop run is stable, raise `--live-depth-blend` gradually toward `1.0`.
+
 For loopback simulation (`--sim-autostart-parkour`), the controller
 automatically synchronizes the 50 Hz policy step to the simulator lowstate tick.
 This keeps the C++/DDS gait timing aligned with `scripts/play_parkour.py`.

@@ -33,6 +33,8 @@ REQUIRED_MARKERS = (
   "NO_FALL_RESET",
 )
 
+LOW_OBSTACLE_SCENE = Path("src/assets/robots/unitree_g1/xmls/scene_g1_parkour_low_obstacles.xml")
+
 
 @dataclass
 class ProcessSpec:
@@ -50,6 +52,7 @@ class HarnessState:
   lines: list[tuple[str, str]] = field(default_factory=list)
   distance_x: float = 0.0
   latest_progress: dict[str, float | str | bool] = field(default_factory=dict)
+  depth_blend_config: dict[str, float | str | bool] = field(default_factory=dict)
   fall_reset_detected: bool = False
   processes_exited: dict[str, int | None] = field(default_factory=dict)
   sim_ready: bool = False
@@ -62,6 +65,8 @@ class HarnessState:
       self.markers["PUBLISHER_READY"] = True
     if "FIRST_VALID_DEPTH_STACK" in line:
       self.markers["FIRST_VALID_DEPTH_STACK"] = True
+    if "DEPTH_BLEND_CONFIG" in line:
+      self.depth_blend_config = _parse_key_value_line(line)
     if "ENTERED_PARKOUR" in line:
       self.markers["ENTERED_PARKOUR"] = True
     if "NONZERO_COMMAND" in line:
@@ -178,6 +183,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
   )
   parser.add_argument("--headless-sim", action="store_true", help="Run simulator with --headless for control-only diagnostics.")
   parser.add_argument("--sim-scene", type=Path, help="Optional MuJoCo scene XML/MJB to pass through to the simulator.")
+  parser.add_argument(
+    "--low-obstacle-course",
+    action="store_true",
+    help="Use the conservative low-obstacle parkour scene for depth/obstacle bring-up.",
+  )
   parser.add_argument("--sim-pd-kp-scale", type=float, default=None, help="Pass --lowcmd-kp-scale to the simulator bridge for PD ablation diagnostics.")
   parser.add_argument("--sim-pd-kd-scale", type=float, default=None, help="Pass --lowcmd-kd-scale to the simulator bridge for PD ablation diagnostics.")
   parser.add_argument(
@@ -186,6 +196,18 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     help="Pass --lowcmd-control-mode to the simulator bridge for actuator semantic A/B diagnostics.",
   )
   parser.add_argument("--constant-depth", type=float, default=None, help="Set G1_PARKOUR_DEBUG_CONSTANT_DEPTH for controller diagnostics.")
+  parser.add_argument(
+    "--live-depth-blend",
+    type=float,
+    default=None,
+    help="Set G1_PARKOUR_LIVE_DEPTH_BLEND for controller live-depth closed-loop diagnostics.",
+  )
+  parser.add_argument(
+    "--live-depth-baseline",
+    type=float,
+    default=None,
+    help="Set G1_PARKOUR_LIVE_DEPTH_BASELINE for controller live-depth closed-loop diagnostics.",
+  )
   parser.add_argument(
     "--ctrl-gait-record-jsonl",
     type=Path,
@@ -265,14 +287,21 @@ def main(argv: Iterable[str] | None = None) -> int:
     env["G1_PARKOUR_DEPTH_BRIDGE"] = "0"
   if args.constant_depth is not None:
     env["G1_PARKOUR_DEBUG_CONSTANT_DEPTH"] = str(args.constant_depth)
+  if args.live_depth_blend is not None:
+    env["G1_PARKOUR_LIVE_DEPTH_BLEND"] = str(max(0.0, min(1.0, args.live_depth_blend)))
+  if args.live_depth_baseline is not None:
+    env["G1_PARKOUR_LIVE_DEPTH_BASELINE"] = str(max(0.0, min(1.0, args.live_depth_baseline)))
 
   required_markers = REQUIRED_MARKERS
   if (args.headless_sim or args.disable_depth_bridge) and args.constant_depth is not None:
     required_markers = tuple(marker for marker in REQUIRED_MARKERS if marker != "PUBLISHER_READY")
 
   sim_cmd = [str(sim_bin), "--network", args.network]
-  if args.sim_scene is not None:
-    sim_scene = args.sim_scene if args.sim_scene.is_absolute() else root / args.sim_scene
+  if args.low_obstacle_course and args.sim_scene is not None:
+    raise ValueError("--low-obstacle-course and --sim-scene are mutually exclusive")
+  sim_scene_arg = LOW_OBSTACLE_SCENE if args.low_obstacle_course else args.sim_scene
+  if sim_scene_arg is not None:
+    sim_scene = sim_scene_arg if sim_scene_arg.is_absolute() else root / sim_scene_arg
     sim_cmd += ["--scene", str(sim_scene)]
   if args.headless_sim:
     sim_cmd += ["--headless", "--headless-seconds", str(args.timeout_seconds)]
@@ -405,6 +434,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     "walk_distance_target": args.walk_distance,
     "distance_x": state.distance_x,
     "latest_progress": state.latest_progress,
+    "depth_blend_config": state.depth_blend_config,
     "fall_reset_detected": state.fall_reset_detected,
     "processes_exited": state.processes_exited,
     "commands": {"sim": sim_spec.cmd, "ctrl": ctrl_spec.cmd},

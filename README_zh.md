@@ -275,6 +275,32 @@ python scripts/run_g1_parkour_cpp_dds_smoke.py \
 （`live_depth_blend: 1.0`）保留为调试/继续对齐模式，不作为默认 200 m 稳定
 设置。
 
+下一步低障碍 / 实时深度闭环 bring-up 建议使用保守低障碍场景，并先用部分
+实时深度混合，再逐步加到完整实时深度。这个路径需要图形显示，因为 simulator
+depth bridge 依赖 MuJoCo/OpenGL 渲染：
+
+```bash
+DISPLAY=:1 \
+python scripts/run_g1_parkour_cpp_dds_smoke.py \
+  --sim-bin simulate/build/unitree_mujoco_parkour \
+  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+  --network lo \
+  --sim-autostart-parkour \
+  --sim-command-x 0.25 \
+  --sim-command-y 0.0 \
+  --sim-command-yaw 0.0 \
+  --low-obstacle-course \
+  --walk-distance 5.5 \
+  --timeout-seconds 120 \
+  --hide-depth-debug-window \
+  --live-depth-blend 0.2 \
+  --log-dir /tmp/g1_parkour_low_obstacle_live_depth
+```
+
+低障碍场景刻意比完整复杂 parkour 场景简单：沿中心线放置 4 cm、6 cm、8 cm
+三个稀疏方块/台阶。如果该闭环稳定，再逐步把 `--live-depth-blend` 提到
+`1.0`。
+
 loopback 仿真（`--sim-autostart-parkour`）下，controller 会默认把 50 Hz
 policy step 同步到 simulator lowstate tick，而不是只按本机 wall-clock
 定时。这样 C++/DDS 的步态相位更接近 `scripts/play_parkour.py`；只有需要复现

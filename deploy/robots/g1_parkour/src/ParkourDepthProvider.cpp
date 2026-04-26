@@ -5,12 +5,33 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <numeric>
 
 #include <spdlog/spdlog.h>
 #include <unitree/idl/ros2/PointField_.hpp>
 
 #include "isaaclab/assets/articulation/articulation.h"
+
+namespace
+{
+
+std::optional<float> parse_env_float(const char* name)
+{
+    const char* raw = std::getenv(name);
+    if (raw == nullptr) {
+        return std::nullopt;
+    }
+    char* parse_end = nullptr;
+    const float parsed = std::strtof(raw, &parse_end);
+    if (parse_end == raw) {
+        spdlog::warn("ParkourDepthProvider ignored invalid {}='{}'.", name, raw);
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+} // namespace
 
 ParkourDepthProvider::ParkourDepthProvider(const YAML::Node& cfg)
 {
@@ -50,6 +71,22 @@ ParkourDepthProvider::ParkourDepthProvider(const YAML::Node& cfg)
         output_min_,
         output_max_
     );
+    if (const auto env_blend = parse_env_float("G1_PARKOUR_LIVE_DEPTH_BLEND")) {
+        live_depth_blend_ = std::clamp(*env_blend, 0.0f, 1.0f);
+        spdlog::warn(
+            "ParkourDepthProvider '{}' overriding live_depth_blend from G1_PARKOUR_LIVE_DEPTH_BLEND={}.",
+            sensor_name_,
+            live_depth_blend_
+        );
+    }
+    if (const auto env_baseline = parse_env_float("G1_PARKOUR_LIVE_DEPTH_BASELINE")) {
+        live_depth_baseline_ = std::clamp(*env_baseline, output_min_, output_max_);
+        spdlog::warn(
+            "ParkourDepthProvider '{}' overriding live_depth_baseline from G1_PARKOUR_LIVE_DEPTH_BASELINE={}.",
+            sensor_name_,
+            live_depth_baseline_
+        );
+    }
     gaussian_kernel_size_ = depth_cfg["gaussian_kernel_size"].as<int>(gaussian_kernel_size_);
     gaussian_sigma_ = depth_cfg["gaussian_sigma"].as<float>(gaussian_sigma_);
     if (const auto field_names = depth_cfg["pointcloud_field_names"]) {
@@ -62,25 +99,22 @@ ParkourDepthProvider::ParkourDepthProvider(const YAML::Node& cfg)
         enabled_ = false;
         return;
     }
+    spdlog::info(
+        "DEPTH_BLEND_CONFIG sensor={} live_depth_blend={} live_depth_baseline={} artifact_ceiling={}",
+        sensor_name_,
+        live_depth_blend_,
+        live_depth_baseline_,
+        artifact_ceiling_
+    );
 
-    if (const char* raw_constant_depth = std::getenv("G1_PARKOUR_DEBUG_CONSTANT_DEPTH")) {
-        char* parse_end = nullptr;
-        const float parsed_depth = std::strtof(raw_constant_depth, &parse_end);
-        if (parse_end != raw_constant_depth) {
-            constant_depth_enabled_ = true;
-            constant_depth_value_ = std::clamp(parsed_depth, output_min_, output_max_);
-            spdlog::warn(
-                "ParkourDepthProvider '{}' enabling constant-depth debug mode from G1_PARKOUR_DEBUG_CONSTANT_DEPTH={}.",
-                sensor_name_,
-                constant_depth_value_
-            );
-        } else {
-            spdlog::warn(
-                "ParkourDepthProvider '{}' ignored invalid G1_PARKOUR_DEBUG_CONSTANT_DEPTH='{}'.",
-                sensor_name_,
-                raw_constant_depth
-            );
-        }
+    if (const auto constant_depth = parse_env_float("G1_PARKOUR_DEBUG_CONSTANT_DEPTH")) {
+        constant_depth_enabled_ = true;
+        constant_depth_value_ = std::clamp(*constant_depth, output_min_, output_max_);
+        spdlog::warn(
+            "ParkourDepthProvider '{}' enabling constant-depth debug mode from G1_PARKOUR_DEBUG_CONSTANT_DEPTH={}.",
+            sensor_name_,
+            constant_depth_value_
+        );
     }
 
     pointcloud_sub_ = std::make_shared<PointCloudSub>(topic_name_);
