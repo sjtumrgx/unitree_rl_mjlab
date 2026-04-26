@@ -46,7 +46,7 @@ inline struct SimulationConfig
     int depth_camera_height = 36;
     int depth_window_scale = 10;
     float depth_max_distance = 2.5f;
-    float depth_camera_min_distance = 0.1f;
+    float depth_camera_min_distance = 0.0f;
     std::string depth_camera_ray_alignment = "base";
     int depth_debug_crop_top = 0;
     int depth_debug_crop_left = 0;

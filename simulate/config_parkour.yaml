@@ -34,7 +34,9 @@ depth_camera_width: 64
 depth_camera_height: 36
 depth_window_scale: 10
 depth_max_distance: 2.5
-depth_camera_min_distance: 0.1
+# Preserve very near pixels as near/dark policy-depth observations.  Mapping
+# sub-10cm self/foreground pixels to far/white destabilizes full live depth.
+depth_camera_min_distance: 0.0
 depth_camera_ray_alignment: "yaw"
 depth_debug_crop_top: 0
 depth_debug_crop_left: 0
