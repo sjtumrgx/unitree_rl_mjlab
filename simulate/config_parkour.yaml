@@ -1,9 +1,10 @@
 robot: "g1"
-# C++/DDS flat acceptance target is stable 200m walking with the depth bridge
-# enabled, not obstacle/parkour traversal. Keep the complex obstacle scene as
-# scene_g1_parkour.xml for later terrain work, but default the loopback
-# simulator to the flat parkour scene so smoke tests do not hit stairs/gaps.
-robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_parkour_flat.xml"
+# Default interactive parkour simulator shows the same deterministic complex
+# terrain family used by scripts/play_parkour.py: up/down stairs, safe gap
+# surrogates, centered boxes, and mesh-box stepping stones.
+# Automated flat 200m smoke tests pass scene_g1_parkour_flat.xml explicitly
+# through scripts/run_g1_parkour_cpp_dds_smoke.py.
+robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml"
 
 domain_id: 0
 interface: "lo"
@@ -40,8 +41,15 @@ depth_max_distance: 2.5
 # sub-10cm self/foreground pixels to far/white destabilizes full live depth.
 depth_camera_min_distance: 0.0
 depth_camera_ray_alignment: "yaw"
-depth_debug_crop_top: 0
-depth_debug_crop_left: 0
-depth_debug_crop_width: 64
-depth_debug_crop_height: 36
+# Default depth debug window shows the same 18x32 policy crop configured in
+# deploy.yaml crop_region=[18, 0, 16, 16], not the full raw 64x36 renderer
+# frame.  This avoids misleading raw-frame self/edge artifacts in the live
+# policy-depth window.
+depth_debug_crop_top: 18
+depth_debug_crop_left: 16
+depth_debug_crop_width: 32
+depth_debug_crop_height: 18
+depth_debug_policy_display: 1
+depth_debug_artifact_floor: 0.10
+depth_debug_artifact_ceiling: 0.75
 depth_publish_period_ms: 100

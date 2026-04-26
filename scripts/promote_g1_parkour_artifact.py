@@ -223,6 +223,7 @@ def _extract_keyboard_command_limits(env_cfg: dict[str, Any]) -> dict[str, float
     'ang_vel_z_min': ang_vel_z_min,
     'ang_vel_z_max': ang_vel_z_max,
     'lin_vel_step': 0.1,
+    'hold_timeout_s': 0.45,
   }
 
 

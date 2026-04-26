@@ -138,6 +138,7 @@ commands:
       ang_vel_z_min: -1.0
       ang_vel_z_max: 1.0
       lin_vel_step: 0.1
+      hold_timeout_s: 0.45
 actions:
   JointPositionAction:
     clip: null

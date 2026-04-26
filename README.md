@@ -357,11 +357,15 @@ publishing was observed to destabilize the complex course.
 
 For manual two-terminal interactive runs, the loopback defaults are now safe to
 use directly.  The simulator opens the MuJoCo window and the policy depth debug
-window by default; the controller starts directly in Parkour with full live
-depth, keyboard control, and a small idle-hold command
+window by default, and loads the deterministic complex terrain scene used by
+`scripts/play_parkour.py` (up/down stairs, safe gap surrogates, boxes, and
+mesh-box stepping stones).  The depth window defaults to the cropped 18x32
+policy-depth input view rather than the raw 64x36 renderer frame.  The
+controller starts directly in Parkour with full live depth, keyboard control,
+and a small idle-hold command
 (`--sim-idle-command-x`, default `-0.15`) that cancels the policy's
 zero-command forward drift.  With no key pressed the robot holds a
-standing/walking-in-place posture; press `w` / `up` to walk forward:
+standing/walking-in-place posture; hold `w` / `up` to walk forward and release it to stop walking:
 
 ```bash
 # First clear stale DDS simulator/controller processes so the controller cannot
@@ -378,14 +382,14 @@ pkill -f g1_parkour_ctrl || true
 
 Keyboard controls in the controller terminal:
 
-- `w` / `up`: set the forward cruise speed to the default `--sim-command-x`
-  value (`0.30 m/s`).
+- `w` / `up`: walk only while the key is held, using the default
+  `--sim-command-x` value (`0.30 m/s`).
 - `k`: enter Parkour from `FixStand` if you explicitly opted out of the default
   interactive mode.
-- `+` / `=` and `-`: adjust forward speed by the policy keyboard step.
+- `+` / `=` and `-`: adjust the held-`w` forward speed by the policy keyboard step; they do not start walking by themselves.
 - `a` / `left` / `q`: turn left; `d` / `right` / `e`: turn right; `c`: stop yaw.
-- `s` / `down` / `x` / `space`: return to the idle-hold command while staying
-  in Parkour; `p`: Passive.
+- Releasing movement keys, or pressing `s` / `down` / `x` / `space`, returns to
+  the idle-hold command while staying in Parkour; `p`: Passive.
 
 Use `--sim-autostart-parkour` only for automated smoke / route-following runs
 where the controller should enter Parkour immediately.  Use

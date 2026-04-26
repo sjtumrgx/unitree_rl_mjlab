@@ -31,17 +31,26 @@ public:
             current_tick = lowstate->msg_.tick();
         }
 
-        if (reset_on_tick_rewind_ && lowstate_tick_initialized_ && rl_reset::tick_rewound(last_lowstate_tick_, current_tick))
+        const bool reset_on_tick_rewind_enabled =
+            reset_on_tick_rewind_ || param::sim_loopback_interactive || param::sim_autostart_parkour;
+        if (reset_on_tick_rewind_enabled && lowstate_tick_initialized_ && rl_reset::tick_rewound(last_lowstate_tick_, current_tick))
         {
             std::lock_guard<std::mutex> env_lock(env_mutex_);
+            env->robot->update();
             env->reset();
+            policy_blend_start_action_ = env->action_manager->processed_actions();
+            policy_blend_elapsed_s_ = 0.0f;
             if (depth_provider_ && depth_provider_->enabled()) {
                 depth_provider_->reset(env->robot.get());
             }
             ++reset_epoch_;
             lowstate_tick_history_.clear();
+            last_replay_applied_ = false;
+            last_replay_mode_ = "off";
+            last_replay_source_step_ = -1;
+            policy_wall_start_time_ = std::chrono::high_resolution_clock::now();
             spdlog::info(
-                "State_{} detected lowstate tick rewind ({} -> {}); resetting deploy env history.",
+                "State_{} detected lowstate tick rewind ({} -> {}); resetting deploy env/depth/action history.",
                 getStateString(),
                 last_lowstate_tick_,
                 current_tick

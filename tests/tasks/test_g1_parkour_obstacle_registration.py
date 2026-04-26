@@ -20,10 +20,20 @@ ROOT = Path(__file__).resolve().parents[2]
 CXX_COMPLEX_SCENE = (
   ROOT / "src" / "assets" / "robots" / "unitree_g1" / "xmls" / "scene_g1_parkour.xml"
 )
+CXX_SIM_CONFIG = ROOT / "simulate" / "config_parkour.yaml"
 CXX_SMOKE_HARNESS = ROOT / "scripts" / "run_g1_parkour_cpp_dds_smoke.py"
 CPP_DEPLOY_PARAM = ROOT / "deploy" / "include" / "param.h"
+CPP_OBSERVATIONS = (
+  ROOT / "deploy" / "include" / "isaaclab" / "envs" / "mdp" / "observations" / "observations.h"
+)
 CPP_DEPTH_PROVIDER = (
   ROOT / "deploy" / "robots" / "g1_parkour" / "src" / "ParkourDepthProvider.cpp"
+)
+CPP_DEPTH_BRIDGE = ROOT / "simulate" / "src" / "parkour_depth_bridge.cc"
+SIM_PARAM = ROOT / "simulate" / "src" / "param.h"
+SIM_MAIN = ROOT / "simulate" / "src" / "main.cc"
+DEPLOY_YAML = (
+  ROOT / "deploy" / "robots" / "g1_parkour" / "config" / "policy" / "parkour" / "v0" / "params" / "deploy.yaml"
 )
 
 
@@ -187,6 +197,29 @@ def test_cxx_parkour_complex_scene_mirrors_python_play_terrain_assets() -> None:
   )
 
 
+def test_cxx_default_interactive_scene_uses_complex_policy_depth_assets() -> None:
+  config_text = CXX_SIM_CONFIG.read_text()
+  scene_text = CXX_COMPLEX_SCENE.read_text()
+
+  assert "scene_g1_parkour.xml" in config_text
+  assert "enable_depth_camera: 1" in config_text
+  assert "parkour_depth_camera" in scene_text
+  assert "parkour_complex_terrain_course" in scene_text
+  assert "parkour_complex_up_stair_05" in scene_text
+  assert "parkour_complex_down_stair_05" in scene_text
+  assert "parkour_complex_gap_near_platform" in scene_text
+  assert "parkour_complex_gap_far_platform" in scene_text
+  assert "parkour_complex_discrete_box_06" in scene_text
+  assert "parkour_complex_mesh_box_06" in scene_text
+  assert "depth_debug_crop_top: 18" in config_text
+  assert "depth_debug_crop_left: 16" in config_text
+  assert "depth_debug_crop_width: 32" in config_text
+  assert "depth_debug_crop_height: 18" in config_text
+  assert "depth_debug_policy_display: 1" in config_text
+  assert "depth_debug_artifact_floor: 0.10" in config_text
+  assert "depth_debug_artifact_ceiling: 0.75" in config_text
+
+
 def test_cxx_parkour_complex_scene_keeps_gap_spans_at_most_40cm() -> None:
   geoms = _xml_geom_map(CXX_COMPLEX_SCENE)
 
@@ -205,6 +238,8 @@ def test_cxx_parkour_complex_scene_keeps_gap_spans_at_most_40cm() -> None:
 def test_cpp_dds_smoke_harness_exposes_complex_terrain_scene_flag() -> None:
   text = CXX_SMOKE_HARNESS.read_text()
 
+  assert "FLAT_SCENE" in text
+  assert "args.sim_scene or FLAT_SCENE" in text
   assert "COMPLEX_TERRAIN_SCENE" in text
   assert "--complex-terrain-course" in text
   assert "scene_g1_parkour.xml" in text
@@ -226,3 +261,50 @@ def test_cpp_dds_sim_autostart_defaults_to_live_depth_for_terrain() -> None:
   assert "param::parkour_live_depth_blend_override" in provider
   assert "param::parkour_constant_depth_override" in provider
   assert "artifact_floor_" in provider
+
+
+def test_cpp_depth_window_starts_visible_without_dds_ready_gate() -> None:
+  bridge = CPP_DEPTH_BRIDGE.read_text()
+  sim_param = SIM_PARAM.read_text()
+
+  assert "Parkour Policy Depth" in bridge
+  assert "DEPTH_DEBUG_WINDOW_VISIBLE" in bridge
+  assert "G1_PARKOUR_DEPTH_DEBUG_WINDOW" in bridge
+  assert "while (!stop_requested_ && dds_ready_ && !dds_ready_->load())" not in bridge
+  assert "if ((!dds_ready_ || dds_ready_->load()) && !pointcloud_publisher_)" in bridge
+  assert "depth_debug_policy_display" in sim_param
+  assert "depth_debug_artifact_floor" in sim_param
+  assert "depth_debug_artifact_ceiling" in sim_param
+  assert "std::clamp(normalized, artifact_floor, artifact_ceiling)" in bridge
+
+
+def test_cpp_loopback_keyboard_forward_is_hold_to_walk_not_latched() -> None:
+  observations = CPP_OBSERVATIONS.read_text()
+  deploy_yaml = DEPLOY_YAML.read_text()
+
+  assert "static float parkour_keyboard_cruise_speed" in observations
+  assert "static std::vector<float> parkour_keyboard_command" not in observations
+  assert "last_forward_key_time" in observations
+  assert "hold_timeout_s" in observations
+  assert "hold_timeout_s: 0.45" in deploy_yaml
+  assert "std::vector<float> parkour_keyboard_command(3, 0.0f);" in observations
+  assert "parkour_keyboard_command[0] = idle_speed;" in observations
+  assert 'key == "w" || key == "up"' in observations
+  assert "parkour_keyboard_command[0] = parkour_keyboard_cruise_speed;" in observations
+  assert "key.empty()" in observations
+  assert "param::sim_heading_lock" in observations
+  assert "param::sim_heading_target_yaw - current_yaw" in observations
+  assert "parkour_keyboard_cruise_speed + lin_vel_step" in observations
+  assert "parkour_keyboard_cruise_speed - lin_vel_step" in observations
+
+
+def test_mujoco_reset_uses_configured_parkour_initial_pose() -> None:
+  sim_main = SIM_MAIN.read_text()
+
+  assert "PARKOUR_SIM_RESET_REAPPLIED_CONFIGURED_POSE" in sim_main
+  assert "d->time + 1.0e-9 < last_observed_sim_time" in sim_main
+  assert "apply_configured_pose_to_qpos(m, d->qpos)" in sim_main
+  assert "mju_zero(d->qvel, m->nv)" in sim_main
+  assert "mju_zero(d->ctrl, m->nu)" in sim_main
+  assert "Do not mutate the model default pose" in sim_main
+  assert "model->qpos0" not in sim_main

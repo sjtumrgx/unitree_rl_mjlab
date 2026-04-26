@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 
@@ -53,38 +54,60 @@ inline std::vector<float> keyboard_velocity_command(ManagerBasedRLEnv* env)
     const auto keyboard_cfg = env->cfg["commands"]["base_velocity"]["keyboard"];
     if (keyboard_cfg)
     {
-        static std::vector<float> parkour_keyboard_command(3, 0.0f);
-        static bool command_initialized = false;
+        static float parkour_keyboard_cruise_speed = 0.0f;
+        static bool cruise_speed_initialized = false;
         static std::string last_logged_key = "";
+        static std::chrono::steady_clock::time_point last_forward_key_time{};
+        static bool forward_key_seen = false;
         const float lin_vel_x_min = keyboard_cfg["lin_vel_x_min"].as<float>();
         const float lin_vel_x_max = keyboard_cfg["lin_vel_x_max"].as<float>();
         const float ang_vel_z_min = keyboard_cfg["ang_vel_z_min"].as<float>();
         const float ang_vel_z_max = keyboard_cfg["ang_vel_z_max"].as<float>();
         const float lin_vel_step = keyboard_cfg["lin_vel_step"].as<float>(0.1f);
-        const float cruise_speed = std::clamp(
-            std::abs(param::sim_command_x) > 1.0e-4f ? std::abs(param::sim_command_x) : lin_vel_step,
-            lin_vel_x_min,
-            lin_vel_x_max
-        );
+        const float hold_timeout_s = keyboard_cfg["hold_timeout_s"].as<float>(0.45f);
+        const auto now = std::chrono::steady_clock::now();
+        if (!cruise_speed_initialized)
+        {
+            parkour_keyboard_cruise_speed = std::clamp(
+                std::abs(param::sim_command_x) > 1.0e-4f ? std::abs(param::sim_command_x) : lin_vel_step,
+                lin_vel_x_min,
+                lin_vel_x_max
+            );
+            cruise_speed_initialized = true;
+        }
         const float idle_speed = param::sim_loopback_interactive
             ? std::clamp(param::sim_keyboard_idle_command_x, -std::max(1.0f, std::abs(lin_vel_x_max)), lin_vel_x_max)
             : 0.0f;
 
-        if (!command_initialized)
-        {
-            parkour_keyboard_command[0] = idle_speed;
-            command_initialized = true;
-        }
+        std::vector<float> parkour_keyboard_command(3, 0.0f);
+        parkour_keyboard_command[0] = idle_speed;
 
         if (key == "w" || key == "up")
         {
-            parkour_keyboard_command[0] = cruise_speed;
+            parkour_keyboard_command[0] = parkour_keyboard_cruise_speed;
+            last_forward_key_time = now;
+            forward_key_seen = true;
+        }
+        else if (
+            key.empty()
+            && forward_key_seen
+            && std::chrono::duration<float>(now - last_forward_key_time).count() <= hold_timeout_s
+        )
+        {
+            // Terminal stdin does not provide key-release events; it only
+            // provides repeated key-press bytes while a key is held.  Keep the
+            // last forward key alive briefly so 50 Hz policy frames do not
+            // alternate between cruise and idle during normal OS key-repeat
+            // gaps.  The timeout remains finite, so releasing w/up still
+            // returns to idle instead of latching forward indefinitely.
+            parkour_keyboard_command[0] = parkour_keyboard_cruise_speed;
         }
         else if (key == "s" || key == "down" || key == "x" || key == " ")
         {
             parkour_keyboard_command[0] = idle_speed;
             parkour_keyboard_command[1] = 0.0f;
             parkour_keyboard_command[2] = 0.0f;
+            forward_key_seen = false;
         }
         else if (key == "a" || key == "left" || key == "q")
         {
@@ -100,19 +123,38 @@ inline std::vector<float> keyboard_velocity_command(ManagerBasedRLEnv* env)
         }
         else if (key == "+" || key == "=")
         {
-            parkour_keyboard_command[0] = std::clamp(
-                parkour_keyboard_command[0] + lin_vel_step,
+            parkour_keyboard_cruise_speed = std::clamp(
+                parkour_keyboard_cruise_speed + lin_vel_step,
                 lin_vel_x_min,
                 lin_vel_x_max
             );
+            parkour_keyboard_command[0] = idle_speed;
         }
         else if (key == "-")
         {
-            parkour_keyboard_command[0] = std::clamp(
-                parkour_keyboard_command[0] - lin_vel_step,
+            parkour_keyboard_cruise_speed = std::clamp(
+                parkour_keyboard_cruise_speed - lin_vel_step,
                 lin_vel_x_min,
                 lin_vel_x_max
             );
+            parkour_keyboard_command[0] = idle_speed;
+        }
+
+        if (
+            param::sim_loopback_interactive
+            && param::sim_heading_lock
+            && std::abs(parkour_keyboard_command[0]) > std::max(0.05f, std::abs(idle_speed) + 1.0e-4f)
+            && std::abs(parkour_keyboard_command[2]) < 1.0e-4f
+        )
+        {
+            const float current_yaw = detail::yaw_from_quaternion(env->robot->data.root_quat_w);
+            const float yaw_error = detail::wrap_to_pi(param::sim_heading_target_yaw - current_yaw);
+            const float correction = std::clamp(
+                param::sim_heading_kp * yaw_error,
+                -std::abs(param::sim_heading_max_yaw),
+                std::abs(param::sim_heading_max_yaw)
+            );
+            parkour_keyboard_command[2] = std::clamp(correction, ang_vel_z_min, ang_vel_z_max);
         }
 
         if (key != last_logged_key && !key.empty())
@@ -120,7 +162,10 @@ inline std::vector<float> keyboard_velocity_command(ManagerBasedRLEnv* env)
             std::cout << "[parkour keyboard] key=" << key
                       << " command=[" << parkour_keyboard_command[0] << ","
                       << parkour_keyboard_command[1] << ","
-                      << parkour_keyboard_command[2] << "]" << std::endl;
+                      << parkour_keyboard_command[2] << "]"
+                      << " cruise_speed=" << parkour_keyboard_cruise_speed
+                      << " hold_timeout_s=" << hold_timeout_s
+                      << std::endl;
             last_logged_key = key;
         }
         if (key.empty())

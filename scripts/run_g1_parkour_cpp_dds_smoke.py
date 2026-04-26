@@ -33,6 +33,7 @@ REQUIRED_MARKERS = (
   "NO_FALL_RESET",
 )
 
+FLAT_SCENE = Path("src/assets/robots/unitree_g1/xmls/scene_g1_parkour_flat.xml")
 LOW_OBSTACLE_SCENE = Path("src/assets/robots/unitree_g1/xmls/scene_g1_parkour_low_obstacles.xml")
 COMPLEX_TERRAIN_SCENE = Path("src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml")
 
@@ -343,7 +344,7 @@ def main(argv: Iterable[str] | None = None) -> int:
   elif args.complex_terrain_course:
     sim_scene_arg = COMPLEX_TERRAIN_SCENE
   else:
-    sim_scene_arg = args.sim_scene
+    sim_scene_arg = args.sim_scene or FLAT_SCENE
   if sim_scene_arg is not None:
     sim_scene = sim_scene_arg if sim_scene_arg.is_absolute() else root / sim_scene_arg
     sim_cmd += ["--scene", str(sim_scene)]

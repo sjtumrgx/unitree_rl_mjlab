@@ -341,10 +341,13 @@ controller 会默认把 50 Hz policy step 同步到 simulator lowstate tick，�
 实时深度发布会明显增加渲染/策略扰动，复杂地形测试中会更容易摔倒。
 
 如果要手动分两个终端交互运行，现在可以直接使用 loopback 默认配置。
-simulator 默认打开 MuJoCo 主窗口和 policy 深度调试窗口；controller 默认直接
-进入 Parkour，同时启用完整实时深度、键盘控制，以及一个很小的 idle-hold
+simulator 默认打开 MuJoCo 主窗口和 policy 深度调试窗口，并加载和
+`scripts/play_parkour.py` 对齐的确定性复杂地形（上/下楼梯、安全 gap 近似、
+方块和 mesh-box stepping stones）。深度窗口默认展示裁剪后的 18x32 policy-depth
+输入视图，而不是原始 64x36 renderer 画面；controller 默认直接进入 Parkour，同时
+启用完整实时深度、键盘控制，以及一个很小的 idle-hold
 命令（`--sim-idle-command-x`，默认 `-0.15`），用来抵消 policy 在零命令下的
-前向漂移。不给按键时机器人会保持站立/原地踏步状态；按 `w` / `up` 后向前走：
+前向漂移。不给按键时机器人会保持站立/原地踏步状态；按住 `w` / `up` 时向前走，松开后停止前进：
 
 ```bash
 # 建议先清理旧的 DDS 仿真/控制进程，避免 controller 连到旧 simulator。
@@ -360,11 +363,11 @@ pkill -f g1_parkour_ctrl || true
 
 controller 终端里的键盘控制：
 
-- `w` / `up`：把前进巡航速度设为默认 `--sim-command-x`（`0.30 m/s`）。
+- `w` / `up`：只有按住时才按默认 `--sim-command-x`（`0.30 m/s`）向前走。
 - `k`：如果你显式关闭默认交互模式并停在 `FixStand`，则用它进入 Parkour。
-- `+` / `=` 和 `-`：按 policy keyboard step 调整前进速度。
+- `+` / `=` 和 `-`：按 policy keyboard step 调整按住 `w` 时的前进速度；它们本身不会触发前进。
 - `a` / `left` / `q`：左转；`d` / `right` / `e`：右转；`c`：停止转向。
-- `s` / `down` / `x` / `space`：在 Parkour 中回到 idle-hold 命令；`p`：Passive。
+- 松开移动键，或按 `s` / `down` / `x` / `space`：在 Parkour 中回到 idle-hold 命令；`p`：Passive。
 
 只有自动 smoke / route-following 验证需要 controller 立刻进入 Parkour 时，才使用
 `--sim-autostart-parkour`。如果需要旧的 joystick/FSM loopback 流程，可以传

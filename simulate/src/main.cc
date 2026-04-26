@@ -251,6 +251,47 @@ namespace
 
   using Seconds = std::chrono::duration<double>;
 
+  void apply_configured_pose_to_qpos(const mjModel* model, mjtNum* qpos)
+  {
+    if (!model || !qpos) {
+      return;
+    }
+    if (!param::config.initial_base_pos.empty() && param::config.initial_base_pos.size() == 3 && model->nq >= 3) {
+      qpos[0] = param::config.initial_base_pos[0];
+      qpos[1] = param::config.initial_base_pos[1];
+      qpos[2] = param::config.initial_base_pos[2];
+    }
+    if (!param::config.initial_base_quat.empty() && param::config.initial_base_quat.size() == 4 && model->nq >= 7) {
+      qpos[3] = param::config.initial_base_quat[0];
+      qpos[4] = param::config.initial_base_quat[1];
+      qpos[5] = param::config.initial_base_quat[2];
+      qpos[6] = param::config.initial_base_quat[3];
+    }
+    if (param::config.initial_joint_pos.empty()) {
+      return;
+    }
+    if (param::config.initial_joint_pos.size() == static_cast<size_t>(model->nu)) {
+      // Parkour initial_joint_pos is interpreted in actuator/motor order, which
+      // matches lowcmd/lowstate sensors but differs from the XML joint order.
+      for (int actuator_id = 0; actuator_id < model->nu; ++actuator_id) {
+        const int joint_id = model->actuator_trnid[2 * actuator_id];
+        if (joint_id < 0 || model->jnt_type[joint_id] == mjJNT_FREE) {
+          continue;
+        }
+        qpos[model->jnt_qposadr[joint_id]] = param::config.initial_joint_pos[actuator_id];
+      }
+      return;
+    }
+    size_t joint_index = 0;
+    for (int joint_id = 0; joint_id < model->njnt && joint_index < param::config.initial_joint_pos.size(); ++joint_id)
+    {
+      if (model->jnt_type[joint_id] == mjJNT_FREE) {
+        continue;
+      }
+      qpos[model->jnt_qposadr[joint_id]] = param::config.initial_joint_pos[joint_index++];
+    }
+  }
+
   //---------------------------------------- plugin handling -----------------------------------------
 
   // return the path to the directory containing the current executable
@@ -473,51 +514,14 @@ namespace
   // simulate in background thread (while rendering in main thread)
   void apply_initial_joint_pose()
   {
-    if (!m || !d || param::config.initial_joint_pos.empty()) {
-      if (!param::config.initial_base_pos.empty() && param::config.initial_base_pos.size() == 3) {
-        d->qpos[0] = param::config.initial_base_pos[0];
-        d->qpos[1] = param::config.initial_base_pos[1];
-        d->qpos[2] = param::config.initial_base_pos[2];
-      }
-      if (!param::config.initial_base_quat.empty() && param::config.initial_base_quat.size() == 4) {
-        d->qpos[3] = param::config.initial_base_quat[0];
-        d->qpos[4] = param::config.initial_base_quat[1];
-        d->qpos[5] = param::config.initial_base_quat[2];
-        d->qpos[6] = param::config.initial_base_quat[3];
-      }
+    if (!m || !d) {
       return;
     }
-    if (!param::config.initial_base_pos.empty() && param::config.initial_base_pos.size() == 3) {
-      d->qpos[0] = param::config.initial_base_pos[0];
-      d->qpos[1] = param::config.initial_base_pos[1];
-      d->qpos[2] = param::config.initial_base_pos[2];
-    }
-    if (!param::config.initial_base_quat.empty() && param::config.initial_base_quat.size() == 4) {
-      d->qpos[3] = param::config.initial_base_quat[0];
-      d->qpos[4] = param::config.initial_base_quat[1];
-      d->qpos[5] = param::config.initial_base_quat[2];
-      d->qpos[6] = param::config.initial_base_quat[3];
-    }
-    if (param::config.initial_joint_pos.size() == static_cast<size_t>(m->nu)) {
-      // Parkour initial_joint_pos is interpreted in actuator/motor order, which
-      // matches lowcmd/lowstate sensors but differs from the XML joint order.
-      for (int actuator_id = 0; actuator_id < m->nu; ++actuator_id) {
-        const int joint_id = m->actuator_trnid[2 * actuator_id];
-        if (joint_id < 0 || m->jnt_type[joint_id] == mjJNT_FREE) {
-          continue;
-        }
-        d->qpos[m->jnt_qposadr[joint_id]] = param::config.initial_joint_pos[actuator_id];
-      }
-      return;
-    }
-    size_t joint_index = 0;
-    for (int joint_id = 0; joint_id < m->njnt && joint_index < param::config.initial_joint_pos.size(); ++joint_id)
-    {
-      if (m->jnt_type[joint_id] == mjJNT_FREE) {
-        continue;
-      }
-      d->qpos[m->jnt_qposadr[joint_id]] = param::config.initial_joint_pos[joint_index++];
-    }
+    apply_configured_pose_to_qpos(m, d->qpos);
+    mju_zero(d->qvel, m->nv);
+    mju_zero(d->qacc, m->nv);
+    mju_zero(d->qacc_warmstart, m->nv);
+    mju_zero(d->ctrl, m->nu);
   }
 
   void PhysicsLoop(mj::Simulate &sim)
@@ -527,6 +531,8 @@ namespace
     std::chrono::time_point<mj::Simulate::Clock> nextLockstepCPU;
     mjtNum syncSim = 0;
     ParkourProgressTracker progress_tracker;
+    double last_observed_sim_time = 0.0;
+    bool observed_sim_time_initialized = false;
 
     // ChannelFactory::Instance()->Init(0);
     // UnitreeDds ud(d);
@@ -557,6 +563,7 @@ namespace
           mj_forward(m, d);
           mujoco_data_initialized.store(true);
           reset_progress_tracker(progress_tracker);
+          observed_sim_time_initialized = false;
 
           // allocate ctrlnoise
           free(ctrlnoise);
@@ -591,6 +598,7 @@ namespace
           mj_forward(m, d);
           mujoco_data_initialized.store(true);
           reset_progress_tracker(progress_tracker);
+          observed_sim_time_initialized = false;
 
           // allocate ctrlnoise
           free(ctrlnoise);
@@ -621,6 +629,34 @@ namespace
         // run only if model is present
         if (m)
         {
+          if (
+            observed_sim_time_initialized &&
+            d &&
+            d->time + 1.0e-9 < last_observed_sim_time
+          )
+          {
+            // MuJoCo's native UI reset path calls mj_resetData() internally.
+            // Do not mutate the model default pose to intercept that path:
+            // changing it after XML compilation changes simulator dynamics
+            // enough to destabilize the parkour policy.  Instead, detect the
+            // time rewind before the next physics step and reapply the
+            // configured parkour pose directly to mjData.
+            apply_initial_joint_pose();
+            mj_forward(m, d);
+            reset_progress_tracker(progress_tracker);
+            syncCPU = mj::Simulate::Clock::time_point{};
+            nextLockstepCPU = mj::Simulate::Clock::time_point{};
+            syncSim = d->time;
+            sim.speed_changed = true;
+            std::cout << "PARKOUR_SIM_RESET_REAPPLIED_CONFIGURED_POSE time="
+                      << d->time << std::endl;
+          }
+          if (d)
+          {
+            observed_sim_time_initialized = true;
+            last_observed_sim_time = d->time;
+          }
+
           // running
           if (sim.run)
           {

@@ -202,26 +202,19 @@ void ParkourDepthBridge::run()
   glfwMakeContextCurrent(window_);
   glfwSwapInterval(1);
 
-  while (!stop_requested_ && dds_ready_ && !dds_ready_->load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(std::max(param::config.depth_publish_period_ms, 1)));
-  }
-  if (stop_requested_) {
-    glfwMakeContextCurrent(nullptr);
-    return;
-  }
-  if (!pointcloud_publisher_) {
-    pointcloud_publisher_ = std::make_unique<PointCloudPublisher>(param::config.depth_pointcloud_topic);
-    spdlog::info(
-      "PUBLISHER_READY topic={} camera={} raw={}x{} max_distance={}",
-      param::config.depth_pointcloud_topic,
-      param::config.depth_camera_name,
-      param::config.depth_camera_width,
-      param::config.depth_camera_height,
-      param::config.depth_max_distance
-    );
-  }
-
   while (!stop_requested_) {
+    if ((!dds_ready_ || dds_ready_->load()) && !pointcloud_publisher_) {
+      pointcloud_publisher_ = std::make_unique<PointCloudPublisher>(param::config.depth_pointcloud_topic);
+      spdlog::info(
+        "PUBLISHER_READY topic={} camera={} raw={}x{} max_distance={}",
+        param::config.depth_pointcloud_topic,
+        param::config.depth_camera_name,
+        param::config.depth_camera_width,
+        param::config.depth_camera_height,
+        param::config.depth_max_distance
+      );
+    }
+
     if (!ensure_render_resources()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
       continue;
@@ -307,9 +300,10 @@ bool ParkourDepthBridge::create_render_window(int width, int height)
   if (want_visible_window) {
     glfwDefaultWindowHints();
     glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
-    window_ = glfwCreateWindow(width, height, "Parkour Depth", nullptr, shared_window_);
+    window_ = glfwCreateWindow(width, height, "Parkour Policy Depth", nullptr, nullptr);
     if (window_) {
       debug_window_visible_ = true;
+      spdlog::info("DEPTH_DEBUG_WINDOW_VISIBLE size={}x{}", width, height);
       return true;
     }
     spdlog::warn("Failed to create visible parkour depth debug window; retrying with a hidden render context.");
@@ -317,7 +311,7 @@ bool ParkourDepthBridge::create_render_window(int width, int height)
 
   glfwDefaultWindowHints();
   glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-  window_ = glfwCreateWindow(width, height, "Parkour Depth Render Context", nullptr, shared_window_);
+  window_ = glfwCreateWindow(width, height, "Parkour Depth Render Context", nullptr, nullptr);
   glfwDefaultWindowHints();
   if (!window_) {
     debug_window_visible_ = false;
@@ -467,6 +461,12 @@ void ParkourDepthBridge::draw_depth_window(const std::vector<float>& linear_dept
   const int crop_left = std::clamp(param::config.depth_debug_crop_left, 0, std::max(width - 1, 0));
   const int crop_width = std::clamp(param::config.depth_debug_crop_width, 1, width - crop_left);
   const int crop_height = std::clamp(param::config.depth_debug_crop_height, 1, height - crop_top);
+  const bool policy_display = param::config.depth_debug_policy_display == 1;
+  const float artifact_floor = std::clamp(param::config.depth_debug_artifact_floor, 0.0f, 1.0f);
+  const float artifact_ceiling = std::max(
+    artifact_floor,
+    std::clamp(param::config.depth_debug_artifact_ceiling, 0.0f, 1.0f)
+  );
   for (int display_row = 0; display_row < display_height; ++display_row) {
     // `mjr_readPixels` returns OpenGL framebuffer rows with the first row at
     // the bottom.  The policy/debug crop is expressed in camera/top-origin
@@ -482,7 +482,20 @@ void ParkourDepthBridge::draw_depth_window(const std::vector<float>& linear_dept
     for (int display_col = 0; display_col < display_width; ++display_col) {
       const int col = crop_left + std::min(crop_width - 1, display_col * crop_width / display_width);
       const size_t source_index = static_cast<size_t>(source_row * width + col);
-      const float normalized = std::clamp(linear_depth[source_index] / max_distance, 0.0f, 1.0f);
+      float depth_m = linear_depth[source_index];
+      if (!std::isfinite(depth_m)) {
+        depth_m = max_distance;
+      }
+      float normalized = std::clamp(depth_m / max_distance, 0.0f, 1.0f);
+      if (policy_display) {
+        // The visible debug window should match the policy crop contract, not
+        // the raw renderer frame.  The controller clamps persistent near-black
+        // / far-white edge artifacts before feeding live depth to the actor;
+        // applying the same display band makes the window useful for judging
+        // policy input and removes the misleading black strip that can appear
+        // along the raw camera bottom edge.
+        normalized = std::clamp(normalized, artifact_floor, artifact_ceiling);
+      }
       const auto value = static_cast<unsigned char>(normalized * 255.0f);
       const size_t display_index = static_cast<size_t>((display_row * display_width + display_col) * 3);
       rgb[display_index + 0] = value;
