@@ -10,6 +10,7 @@ deploy/robots/h1_2/build
 deploy/robots/g1_23dof/build
 deploy/robots/r1/build
 deploy/robots/a2/build
+deploy/robots/*/build/
 src/assets/motions/g1/dance1_subject2.npz
 simulate/build
 .omx/
@@ -18,3 +19,9 @@ __pycache__/
 .history/
 .workflow/
 tests/
+.ccw/
+.vscode/
+HoST/
+cpp_dds_smoke_logs/
+*.mp4
+tea_debug.log

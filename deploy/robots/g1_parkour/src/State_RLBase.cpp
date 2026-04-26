@@ -30,7 +30,7 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
         deploy_cfg,
         std::make_shared<unitree::ParkourArticulation<LowState_t::SharedPtr>>(
             FSMState::lowstate,
-            param::sim_autostart_parkour
+            param::sim_autostart_parkour || param::sim_loopback_interactive
         )
     );
     depth_provider_ = std::make_unique<ParkourDepthProvider>(deploy_cfg);

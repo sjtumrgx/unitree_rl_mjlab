@@ -50,7 +50,9 @@ inline YAML::Node config;
 inline bool keyboard_control = false;
 inline std::shared_ptr<Keyboard> active_keyboard = nullptr;
 inline bool sim_autostart_parkour = false;
-inline float sim_command_x = 0.25f;
+inline bool sim_loopback_interactive = false;
+inline float sim_command_x = 0.30f;
+inline float sim_keyboard_idle_command_x = -0.15f;
 inline float sim_command_y = 0.0f;
 inline float sim_command_yaw = 0.0f;
 inline bool sim_route_follow = true;
@@ -172,8 +174,14 @@ inline po::variables_map helper(int argc, char** argv)
         ("keyboard,k", "enable keyboard control")
         ("sim-autostart-parkour", po::bool_switch(&sim_autostart_parkour)->default_value(false),
             "simulation-only: start directly in Parkour mode; requires --network=lo")
-        ("sim-command-x", po::value<float>(&sim_command_x)->default_value(0.25f),
+        ("no-sim-loopback-interactive", po::bool_switch()->default_value(false),
+            "simulation-only: opt out of the default safe interactive keyboard mode used by --network=lo")
+        ("no-sim-autostart-parkour", po::bool_switch()->default_value(false),
+            "simulation-only: legacy alias for --no-sim-loopback-interactive")
+        ("sim-command-x", po::value<float>(&sim_command_x)->default_value(0.30f),
             "simulation-only forward velocity command used with --sim-autostart-parkour")
+        ("sim-idle-command-x", po::value<float>(&sim_keyboard_idle_command_x)->default_value(-0.15f),
+            "simulation-only keyboard idle/stop forward command used by default loopback interactive mode")
         ("sim-command-y", po::value<float>(&sim_command_y)->default_value(0.0f),
             "simulation-only lateral velocity command used with --sim-autostart-parkour")
         ("sim-command-yaw", po::value<float>(&sim_command_yaw)->default_value(0.0f),
@@ -230,6 +238,22 @@ inline po::variables_map helper(int argc, char** argv)
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
     keyboard_control = vm.count("keyboard") > 0;
+    const std::string network = vm["network"].as<std::string>();
+    const bool explicit_sim_autostart = vm["sim-autostart-parkour"].as<bool>();
+    const bool disable_loopback_interactive =
+        vm["no-sim-loopback-interactive"].as<bool>() || vm["no-sim-autostart-parkour"].as<bool>();
+    if (network == "lo" && !explicit_sim_autostart && !disable_loopback_interactive)
+    {
+        sim_loopback_interactive = true;
+        keyboard_control = true;
+        sim_route_follow = false;
+        spdlog::warn(
+            "--network=lo defaulting to interactive simulation mode: "
+            "start_state=Parkour with idle hold, live depth, keyboard velocity commands, cruise speed={} m/s. "
+            "Pass --no-sim-loopback-interactive for the legacy joystick/FSM flow.",
+            sim_command_x
+        );
+    }
     if (vm["no-sim-heading-lock"].as<bool>())
     {
         sim_heading_lock = false;
@@ -289,6 +313,11 @@ inline po::variables_map helper(int argc, char** argv)
     {
         parkour_depth_artifact_floor = std::clamp(parkour_depth_artifact_floor, 0.0f, 1.0f);
     }
+    if (sim_loopback_interactive && !parkour_live_depth_blend_override && !parkour_constant_depth_override)
+    {
+        parkour_live_depth_blend_override = true;
+        parkour_live_depth_blend = 1.0f;
+    }
     if (sim_autostart_parkour && !parkour_live_depth_blend_override && !parkour_constant_depth_override)
     {
         parkour_live_depth_blend_override = true;
@@ -298,7 +327,7 @@ inline po::variables_map helper(int argc, char** argv)
             "pass --live-depth-blend=0.0 or --constant-depth=<value> for proprioception-only diagnostics."
         );
     }
-    if (sim_autostart_parkour && !no_policy_tick_sync)
+    if ((sim_autostart_parkour || sim_loopback_interactive) && !no_policy_tick_sync)
     {
         policy_tick_sync = true;
     }

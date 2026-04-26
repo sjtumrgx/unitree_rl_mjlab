@@ -54,14 +54,51 @@ inline std::vector<float> keyboard_velocity_command(ManagerBasedRLEnv* env)
     if (keyboard_cfg)
     {
         static std::vector<float> parkour_keyboard_command(3, 0.0f);
+        static bool command_initialized = false;
         static std::string last_logged_key = "";
         const float lin_vel_x_min = keyboard_cfg["lin_vel_x_min"].as<float>();
         const float lin_vel_x_max = keyboard_cfg["lin_vel_x_max"].as<float>();
         const float ang_vel_z_min = keyboard_cfg["ang_vel_z_min"].as<float>();
         const float ang_vel_z_max = keyboard_cfg["ang_vel_z_max"].as<float>();
         const float lin_vel_step = keyboard_cfg["lin_vel_step"].as<float>(0.1f);
+        const float cruise_speed = std::clamp(
+            std::abs(param::sim_command_x) > 1.0e-4f ? std::abs(param::sim_command_x) : lin_vel_step,
+            lin_vel_x_min,
+            lin_vel_x_max
+        );
+        const float idle_speed = param::sim_loopback_interactive
+            ? std::clamp(param::sim_keyboard_idle_command_x, -std::max(1.0f, std::abs(lin_vel_x_max)), lin_vel_x_max)
+            : 0.0f;
 
-        if (key == "w")
+        if (!command_initialized)
+        {
+            parkour_keyboard_command[0] = idle_speed;
+            command_initialized = true;
+        }
+
+        if (key == "w" || key == "up")
+        {
+            parkour_keyboard_command[0] = cruise_speed;
+        }
+        else if (key == "s" || key == "down" || key == "x" || key == " ")
+        {
+            parkour_keyboard_command[0] = idle_speed;
+            parkour_keyboard_command[1] = 0.0f;
+            parkour_keyboard_command[2] = 0.0f;
+        }
+        else if (key == "a" || key == "left" || key == "q")
+        {
+            parkour_keyboard_command[2] = ang_vel_z_max;
+        }
+        else if (key == "d" || key == "right" || key == "e")
+        {
+            parkour_keyboard_command[2] = ang_vel_z_min;
+        }
+        else if (key == "c")
+        {
+            parkour_keyboard_command[2] = 0.0f;
+        }
+        else if (key == "+" || key == "=")
         {
             parkour_keyboard_command[0] = std::clamp(
                 parkour_keyboard_command[0] + lin_vel_step,
@@ -69,23 +106,13 @@ inline std::vector<float> keyboard_velocity_command(ManagerBasedRLEnv* env)
                 lin_vel_x_max
             );
         }
-        else if (key == "f")
+        else if (key == "-")
         {
-            parkour_keyboard_command[2] = ang_vel_z_max;
-        }
-        else if (key == "g")
-        {
-            parkour_keyboard_command[2] = ang_vel_z_min;
-        }
-        else if (key == "s")
-        {
-            parkour_keyboard_command[2] = 0.0f;
-        }
-        else if (key == "x")
-        {
-            parkour_keyboard_command[0] = 0.0f;
-            parkour_keyboard_command[1] = 0.0f;
-            parkour_keyboard_command[2] = 0.0f;
+            parkour_keyboard_command[0] = std::clamp(
+                parkour_keyboard_command[0] - lin_vel_step,
+                lin_vel_x_min,
+                lin_vel_x_max
+            );
         }
 
         if (key != last_logged_key && !key.empty())

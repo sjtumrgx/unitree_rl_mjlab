@@ -339,8 +339,9 @@ python scripts/run_g1_parkour_cpp_dds_smoke.py \
   --log-dir /tmp/g1_parkour_complex_live_depth
 ```
 
-For loopback simulation (`--sim-autostart-parkour`), the controller
-automatically synchronizes the 50 Hz policy step to the simulator lowstate tick.
+For loopback simulation (`--sim-autostart-parkour` or the default
+interactive `--network=lo` mode), the controller automatically synchronizes the
+50 Hz policy step to the simulator lowstate tick.
 This keeps the C++/DDS gait timing aligned with `scripts/play_parkour.py`.
 Use `--no-policy-tick-sync` only to reproduce the older wall-clock-only
 diagnostic behavior.
@@ -354,8 +355,13 @@ need to experiment, use the smoke harness `--sim-pd-kp-scale` /
 100 ms unless you are specifically testing depth-render load; 20 ms live-depth
 publishing was observed to destabilize the complex course.
 
-For manual two-terminal runs, do not use the bare commands alone; the controller
-must explicitly enter simulation Parkour autostart mode on loopback:
+For manual two-terminal interactive runs, the loopback defaults are now safe to
+use directly.  The simulator opens the MuJoCo window and the policy depth debug
+window by default; the controller starts directly in Parkour with full live
+depth, keyboard control, and a small idle-hold command
+(`--sim-idle-command-x`, default `-0.15`) that cancels the policy's
+zero-command forward drift.  With no key pressed the robot holds a
+standing/walking-in-place posture; press `w` / `up` to walk forward:
 
 ```bash
 # First clear stale DDS simulator/controller processes so the controller cannot
@@ -363,20 +369,27 @@ must explicitly enter simulation Parkour autostart mode on loopback:
 pkill -f unitree_mujoco_parkour || true
 pkill -f g1_parkour_ctrl || true
 
-# Terminal 1: start the simulator. Visual mode opens the MuJoCo window and
-# the depth debug window.
-./simulate/build/unitree_mujoco_parkour --network lo
+# Terminal 1: start the simulator. Visual mode opens both MuJoCo and depth.
+./simulate/build/unitree_mujoco_parkour
 
-# Terminal 2: start the controller after the simulator is ready.
-./deploy/robots/g1_parkour/build/g1_parkour_ctrl \
-  --network lo \
-  --sim-autostart-parkour \
-  --sim-command-x 0.25 \
-  --sim-command-y 0.0 \
-  --sim-command-yaw 0.0 \
-  --live-depth-blend 1.0
+# Terminal 2: start the interactive controller after the simulator is ready.
+./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo
 ```
 
+Keyboard controls in the controller terminal:
+
+- `w` / `up`: set the forward cruise speed to the default `--sim-command-x`
+  value (`0.30 m/s`).
+- `k`: enter Parkour from `FixStand` if you explicitly opted out of the default
+  interactive mode.
+- `+` / `=` and `-`: adjust forward speed by the policy keyboard step.
+- `a` / `left` / `q`: turn left; `d` / `right` / `e`: turn right; `c`: stop yaw.
+- `s` / `down` / `x` / `space`: return to the idle-hold command while staying
+  in Parkour; `p`: Passive.
+
+Use `--sim-autostart-parkour` only for automated smoke / route-following runs
+where the controller should enter Parkour immediately.  Use
+`--no-sim-loopback-interactive` if you need the older joystick/FSM loopback flow.
 For headless diagnostics, also pass `--headless --headless-seconds <N>` to the
 simulator.  To isolate the control stack from live depth rendering, set
 `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` for the controller; this is the common

@@ -16,13 +16,19 @@ void print_control_help()
     if (param::keyboard_control)
     {
         std::cout << "Keyboard mode enabled. Keep this terminal focused.\n";
-        std::cout << "  f : enter FixStand\n";
-        std::cout << "  k : enter Parkour control\n";
+        if (param::sim_loopback_interactive)
+        {
+            std::cout << "  Loopback default: starts in Parkour idle-hold; press w/up to walk.\n";
+        }
+        std::cout << "  f : enter FixStand from Passive/FSM diagnostics\n";
+        std::cout << "  k : enter Parkour control (when in FixStand)\n";
         std::cout << "  p : return to Passive mode\n";
-        std::cout << "  w/s : move forward/backward\n";
-        std::cout << "  a/d : strafe left/right\n";
-        std::cout << "  q/e : turn left/right\n";
-        std::cout << "Release movement keys to stop.\n";
+        std::cout << "  w/up : set forward speed to " << param::sim_command_x << " m/s\n";
+        std::cout << "  +/= / - : adjust forward speed by the policy keyboard step\n";
+        std::cout << "  a/left/q : turn left\n";
+        std::cout << "  d/right/e : turn right\n";
+        std::cout << "  c : stop yaw turn\n";
+        std::cout << "  s/down/x/space : return to idle-hold command\n";
         return;
     }
 
@@ -72,6 +78,15 @@ int main(int argc, char** argv)
             param::sim_command_x,
             param::sim_command_y,
             param::sim_command_yaw
+        );
+    }
+    else if (param::sim_loopback_interactive)
+    {
+        param::config["FSM"]["start_state"] = "Parkour";
+        spdlog::info(
+            "Loopback interactive simulation enabled: start_state=Parkour, keyboard cruise speed={} m/s, idle command x={} m/s",
+            param::sim_command_x,
+            param::sim_keyboard_idle_command_x
         );
     }
     if (param::keyboard_control)

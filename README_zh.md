@@ -328,8 +328,8 @@ python scripts/run_g1_parkour_cpp_dds_smoke.py \
   --log-dir /tmp/g1_parkour_complex_live_depth
 ```
 
-loopback 仿真（`--sim-autostart-parkour`）下，controller 会默认把 50 Hz
-policy step 同步到 simulator lowstate tick，而不是只按本机 wall-clock
+loopback 仿真（`--sim-autostart-parkour` 或默认交互 `--network=lo` 模式）下，
+controller 会默认把 50 Hz policy step 同步到 simulator lowstate tick，而不是只按本机 wall-clock
 定时。这样 C++/DDS 的步态相位更接近 `scripts/play_parkour.py`；只有需要复现
 旧的 wall-clock-only 诊断行为时才加 `--no-policy-tick-sync`。
 
@@ -340,31 +340,38 @@ policy step 同步到 simulator lowstate tick，而不是只按本机 wall-clock
 `--sim-pd-kp-scale` / `--sim-pd-kd-scale`。深度发布周期默认保持 100 ms；20 ms
 实时深度发布会明显增加渲染/策略扰动，复杂地形测试中会更容易摔倒。
 
-如果要手动分两个终端运行，不能只执行裸命令；controller 需要显式进入
-Parkour 仿真自启动模式，并且必须使用 loopback 网络：
+如果要手动分两个终端交互运行，现在可以直接使用 loopback 默认配置。
+simulator 默认打开 MuJoCo 主窗口和 policy 深度调试窗口；controller 默认直接
+进入 Parkour，同时启用完整实时深度、键盘控制，以及一个很小的 idle-hold
+命令（`--sim-idle-command-x`，默认 `-0.15`），用来抵消 policy 在零命令下的
+前向漂移。不给按键时机器人会保持站立/原地踏步状态；按 `w` / `up` 后向前走：
 
 ```bash
 # 建议先清理旧的 DDS 仿真/控制进程，避免 controller 连到旧 simulator。
 pkill -f unitree_mujoco_parkour || true
 pkill -f g1_parkour_ctrl || true
 
-# 终端 1：启动 simulator。可视化模式会打开 MuJoCo 窗口和深度调试窗口。
-./simulate/build/unitree_mujoco_parkour --network lo
+# 终端 1：启动 simulator。可视化模式会同时打开 MuJoCo 和深度窗口。
+./simulate/build/unitree_mujoco_parkour
 
-# 终端 2：等待 simulator ready 后启动 controller。
-./deploy/robots/g1_parkour/build/g1_parkour_ctrl \
-  --network lo \
-  --sim-autostart-parkour \
-  --sim-command-x 0.25 \
-  --sim-command-y 0.0 \
-  --sim-command-yaw 0.0 \
-  --live-depth-blend 1.0
+# 终端 2：等待 simulator ready 后启动交互 controller。
+./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo
 ```
 
-无头诊断时 simulator 还要加 `--headless --headless-seconds <N>`；如果只想隔离
-控制链路而不依赖实时深度图，可给 controller 设置
-`G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5`。这正是 harness 里常用的 headless
-constant-depth 诊断路径。
+controller 终端里的键盘控制：
+
+- `w` / `up`：把前进巡航速度设为默认 `--sim-command-x`（`0.30 m/s`）。
+- `k`：如果你显式关闭默认交互模式并停在 `FixStand`，则用它进入 Parkour。
+- `+` / `=` 和 `-`：按 policy keyboard step 调整前进速度。
+- `a` / `left` / `q`：左转；`d` / `right` / `e`：右转；`c`：停止转向。
+- `s` / `down` / `x` / `space`：在 Parkour 中回到 idle-hold 命令；`p`：Passive。
+
+只有自动 smoke / route-following 验证需要 controller 立刻进入 Parkour 时，才使用
+`--sim-autostart-parkour`。如果需要旧的 joystick/FSM loopback 流程，可以传
+`--no-sim-loopback-interactive`。无头诊断时 simulator 还要加
+`--headless --headless-seconds <N>`；如果只想隔离控制链路而不依赖实时深度图，
+可给 controller 设置 `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5`。这正是 harness 里
+常用的 headless constant-depth 诊断路径。
 
 如果可视化窗口在 controller 启动后仍然无响应，先用
 `G1_PARKOUR_DEPTH_DEBUG_WINDOW=0 ./simulate/build/unitree_mujoco_parkour --network lo`

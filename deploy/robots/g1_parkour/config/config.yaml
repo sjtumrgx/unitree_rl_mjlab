@@ -34,7 +34,7 @@ FSM:
       Parkour: RT + X.on_pressed
     keyboard_transitions:
       Passive: p.on_pressed
-      Parkour: k.on_pressed
+      Parkour: k.on_pressed || w.on_pressed || up.on_pressed
     kp: [
       100,100,100,150,40,40,
       100,100,100,150,40,40,

@@ -124,6 +124,13 @@ private:
             return false;
         }
 
+        const auto or_pos = raw_condition.find("||");
+        if (or_pos != std::string::npos)
+        {
+            return keyboard_condition(raw_condition.substr(0, or_pos))
+                || keyboard_condition(raw_condition.substr(or_pos + 2));
+        }
+
         std::string condition = normalize_condition(raw_condition);
         bool require_on_pressed = false;
         bool require_on_released = false;

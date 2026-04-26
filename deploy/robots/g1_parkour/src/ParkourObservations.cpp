@@ -165,6 +165,23 @@ std::vector<float> parkour_route_velocity_commands(ManagerBasedRLEnv* env)
 
 std::vector<float> parkour_velocity_commands(ManagerBasedRLEnv* env, YAML::Node params)
 {
+    if (param::keyboard_control) {
+        auto obs = keyboard_velocity_command(env);
+        param::sim_observed_command_x.store(obs[0]);
+        param::sim_observed_command_y.store(obs[1]);
+        param::sim_observed_command_yaw.store(obs[2]);
+        static bool logged_keyboard_source = false;
+        if (!logged_keyboard_source) {
+            std::cout << "SIM_KEYBOARD_COMMANDS enabled cruise_speed=" << param::sim_command_x
+                      << " idle_command_x=" << (param::sim_loopback_interactive ? param::sim_keyboard_idle_command_x : 0.0f)
+                      << " start_command=["
+                      << (param::sim_loopback_interactive ? param::sim_keyboard_idle_command_x : 0.0f)
+                      << ",0,0]"
+                      << std::endl;
+            logged_keyboard_source = true;
+        }
+        return obs;
+    }
     if (param::sim_autostart_parkour && param::sim_route_follow) {
         return parkour_route_velocity_commands(env);
     }
