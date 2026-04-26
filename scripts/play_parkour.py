@@ -1175,6 +1175,8 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
   )
   walk_distance = _resolve_walk_distance(args, env)
   max_seconds = _resolve_max_seconds(args, env)
+  args.walk_distance = walk_distance
+  args.max_seconds = max_seconds
 
   summary: dict[str, Any] = {
     "mode": "validate-walk",
@@ -1405,8 +1407,10 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
       and depth_diag.get("size") == contract.depth_size
       and all(np.isfinite(float(depth_stats.get(key, 0.0))) for key in ("min", "max", "mean"))
     )
-    traversal_accepted = distance >= walk_distance
-    accepted = traversal_accepted or (args.depth_contract_only and depth_contract_met)
+    traversal_accepted = distance >= args.walk_distance
+    accepted = distance >= args.walk_distance
+    if args.depth_contract_only and depth_contract_met:
+      accepted = True
     summary.update(
       {
         "status": "ok" if accepted else "failed",
@@ -1422,7 +1426,7 @@ def run_validate_walk(args: argparse.Namespace) -> tuple[bool, dict[str, Any]]:
         "video": video_recorder.diagnostics(),
         "acceptance": {
           "distance_target_met": traversal_accepted,
-          "duration_target_met": elapsed >= max_seconds,
+          "duration_target_met": elapsed >= args.max_seconds,
           "depth_contract_met": depth_contract_met,
           "depth_contract_only": args.depth_contract_only,
           "no_uncontrolled_fall": True,

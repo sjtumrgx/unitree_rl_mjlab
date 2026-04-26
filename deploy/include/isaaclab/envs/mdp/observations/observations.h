@@ -3,7 +3,11 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+
+#include <eigen3/Eigen/Dense>
 
 #include "isaaclab/envs/manager_based_rl_env.h"
 #include "param.h"
@@ -12,6 +16,29 @@ namespace isaaclab
 {
 namespace mdp
 {
+namespace detail
+{
+
+inline float wrap_to_pi(float angle)
+{
+    while (angle > static_cast<float>(M_PI)) {
+        angle -= 2.0f * static_cast<float>(M_PI);
+    }
+    while (angle < -static_cast<float>(M_PI)) {
+        angle += 2.0f * static_cast<float>(M_PI);
+    }
+    return angle;
+}
+
+inline float yaw_from_quaternion(const Eigen::Quaternionf& q)
+{
+    return std::atan2(
+        2.0f * (q.w() * q.z() + q.x() * q.y()),
+        1.0f - 2.0f * (q.y() * q.y() + q.z() * q.z())
+    );
+}
+
+} // namespace detail
 
 inline std::vector<float> keyboard_velocity_command(ManagerBasedRLEnv* env)
 {
@@ -205,6 +232,56 @@ REGISTER_OBSERVATION(last_action)
 
 REGISTER_OBSERVATION(velocity_commands)
 {
+    if (param::sim_autostart_parkour)
+    {
+        float yaw_command = param::sim_command_yaw;
+        if (param::sim_heading_lock)
+        {
+            const float current_yaw = detail::yaw_from_quaternion(env->robot->data.root_quat_w);
+            const float yaw_error = detail::wrap_to_pi(param::sim_heading_target_yaw - current_yaw);
+            const float correction = std::clamp(
+                param::sim_heading_kp * yaw_error,
+                -std::abs(param::sim_heading_max_yaw),
+                std::abs(param::sim_heading_max_yaw)
+            );
+            yaw_command = std::clamp(
+                param::sim_command_yaw + correction,
+                -1.0f,
+                1.0f
+            );
+
+            static size_t heading_log_count = 0;
+            if (heading_log_count++ % 250 == 0)
+            {
+                std::cout << "SIM_HEADING_LOCK yaw=" << current_yaw
+                          << " target_yaw=" << param::sim_heading_target_yaw
+                          << " yaw_error=" << yaw_error
+                          << " yaw_command=" << yaw_command
+                          << " kp=" << param::sim_heading_kp
+                          << " max_yaw=" << param::sim_heading_max_yaw
+                          << std::endl;
+            }
+        }
+        std::vector<float> obs{
+            param::sim_command_x,
+            param::sim_command_y,
+            yaw_command,
+        };
+        static bool logged_sim_command = false;
+        if (!logged_sim_command)
+        {
+            std::cout << "NONZERO_COMMAND x=" << obs[0]
+                      << " y=" << obs[1]
+                      << " yaw=" << obs[2]
+                      << " source=sim-autostart"
+                      << " heading_lock=" << param::sim_heading_lock
+                      << " target_yaw=" << param::sim_heading_target_yaw
+                      << std::endl;
+            logged_sim_command = true;
+        }
+        return obs;
+    }
+
     if (param::keyboard_control)
     {
         return keyboard_velocity_command(env);

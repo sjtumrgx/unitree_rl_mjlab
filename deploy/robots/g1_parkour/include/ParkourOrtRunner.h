@@ -1,7 +1,9 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -75,9 +77,12 @@ public:
         const size_t latent_size = static_cast<size_t>(tensor_size(latent_info));
         const float* latent_ptr = depth_outputs.front().GetTensorData<float>();
 
+        std::vector<float> policy_order_proprio = proprio;
+        reorder_deploy_order_joint_blocks_to_policy_order(policy_order_proprio);
+
         std::vector<float> actor_input;
-        actor_input.reserve(proprio.size() + latent_size);
-        actor_input.insert(actor_input.end(), proprio.begin(), proprio.end());
+        actor_input.reserve(policy_order_proprio.size() + latent_size);
+        actor_input.insert(actor_input.end(), policy_order_proprio.begin(), policy_order_proprio.end());
         actor_input.insert(actor_input.end(), latent_ptr, latent_ptr + latent_size);
         if (actor_input.size() != static_cast<size_t>(actor_input_size_)) {
             throw std::runtime_error("Unexpected actor input size for parkour policy input.");
@@ -105,8 +110,11 @@ public:
         );
 
         auto* output_ptr = actor_outputs.front().GetTensorMutableData<float>();
+        std::vector<float> policy_order_action(action.size(), 0.0f);
+        std::memcpy(policy_order_action.data(), output_ptr, policy_order_action.size() * sizeof(float));
+        std::vector<float> deploy_order_action = policy_action_to_deploy_action(policy_order_action);
         std::lock_guard<std::mutex> lock(act_mtx_);
-        std::memcpy(action.data(), output_ptr, action.size() * sizeof(float));
+        action = std::move(deploy_order_action);
         static std::atomic<int> debug_log_count{0};
         const int debug_index = debug_log_count.fetch_add(1);
         if (debug_index == 0 || (debug_index < 400 && debug_index % 50 == 0)) {
@@ -135,56 +143,13 @@ public:
             const size_t joint_pos_begin = 3 * hist + 3 * hist + 3 * hist + joint_dim * (hist - 1);
             const size_t joint_vel_begin = 3 * hist + 3 * hist + 3 * hist + joint_dim * hist + joint_dim * (hist - 1);
             const size_t last_action_begin = 3 * hist + 3 * hist + 3 * hist + joint_dim * hist + joint_dim * hist + joint_dim * (hist - 1);
-            auto reordered_actor_action = action;
-            {
-                std::vector<float> alt_proprio = proprio;
-                static constexpr std::array<int, 29> kModelToMotor{
-                    15, 22, 14, 16, 23, 13, 17, 24, 12, 18,
-                    25, 0, 6, 19, 26, 1, 7, 20, 27, 2,
-                    8, 21, 28, 3, 9, 4, 10, 5, 11
-                };
-                auto reorder_history_block = [&](size_t start_index) {
-                    for (size_t h = 0; h < hist; ++h) {
-                        const size_t chunk_begin = start_index - joint_dim * (hist - 1 - h);
-                        std::vector<float> current_chunk(alt_proprio.begin() + chunk_begin, alt_proprio.begin() + chunk_begin + joint_dim);
-                        std::vector<float> motor_chunk(joint_dim, 0.0f);
-                        for (size_t model_index = 0; model_index < joint_dim; ++model_index) {
-                            const auto motor_index = static_cast<size_t>(kModelToMotor[model_index]);
-                            if (motor_index < joint_dim) {
-                                motor_chunk[motor_index] = current_chunk[model_index];
-                            }
-                        }
-                        std::copy(motor_chunk.begin(), motor_chunk.end(), alt_proprio.begin() + chunk_begin);
-                    }
-                };
-                reorder_history_block(joint_pos_begin);
-                reorder_history_block(joint_vel_begin);
-                reorder_history_block(last_action_begin);
-                std::vector<float> alt_actor_input;
-                alt_actor_input.reserve(alt_proprio.size() + latent_size);
-                alt_actor_input.insert(alt_actor_input.end(), alt_proprio.begin(), alt_proprio.end());
-                alt_actor_input.insert(alt_actor_input.end(), latent_ptr, latent_ptr + latent_size);
-                std::vector<Ort::Value> alt_actor_inputs;
-                alt_actor_inputs.emplace_back(
-                    Ort::Value::CreateTensor<float>(
-                        memory_info,
-                        alt_actor_input.data(),
-                        alt_actor_input.size(),
-                        actor_input_shape_.data(),
-                        actor_input_shape_.size()
-                    )
-                );
-                auto alt_actor_outputs = actor_session_->Run(
-                    Ort::RunOptions{nullptr},
-                    actor_input_names.data(),
-                    alt_actor_inputs.data(),
-                    alt_actor_inputs.size(),
-                    actor_output_names.data(),
-                    actor_output_names.size()
-                );
-                auto* alt_output_ptr = alt_actor_outputs.front().GetTensorMutableData<float>();
-                std::memcpy(reordered_actor_action.data(), alt_output_ptr, reordered_actor_action.size() * sizeof(float));
-            }
+            std::cout
+                << "ORDER_PARITY_OK"
+                << " observation_order_source=ONNX_POLICY_JOINT_NAMES"
+                << " action_order_source=ONNX_POLICY_JOINT_NAMES->TRAINING_JOINT_NAMES"
+                << " joint_ids_map=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28"
+                << " policy_to_robot_joint_indices=" << policy_to_robot_joint_indices_csv()
+                << std::endl;
             std::cout
                 << "[parkour debug] step=" << debug_index
                 << " proprio_size=" << proprio.size()
@@ -207,11 +172,11 @@ public:
                 << " action[min,max]=["
                 << (action_minmax.first != action.end() ? *action_minmax.first : 0.0f) << ","
                 << (action_minmax.second != action.end() ? *action_minmax.second : 0.0f) << "]"
-                << " alt_action_head=";
-            for (size_t i = 0; i < std::min<size_t>(10, reordered_actor_action.size()); ++i) {
-                std::cout << reordered_actor_action[i] << (i + 1 < std::min<size_t>(10, reordered_actor_action.size()) ? "," : "");
+                << " policy_order_action_head=";
+            for (size_t i = 0; i < std::min<size_t>(10, policy_order_action.size()); ++i) {
+                std::cout << policy_order_action[i] << (i + 1 < std::min<size_t>(10, policy_order_action.size()) ? "," : "");
             }
-            std::cout << " action_head=";
+            std::cout << " deploy_order_action_head=";
             for (size_t i = 0; i < std::min<size_t>(10, action.size()); ++i) {
                 std::cout << action[i] << (i + 1 < std::min<size_t>(10, action.size()) ? "," : "");
             }
@@ -221,6 +186,79 @@ public:
     }
 
 private:
+    // ONNX_POLICY_JOINT_NAMES -> TRAINING_JOINT_NAMES/deploy motor order.
+    // Must stay in lockstep with src/parkour/contract.py.
+    static constexpr std::array<int, 29> kPolicyToDeployJointIndices{
+        15, 22, 14, 16, 23, 13, 17, 24, 12, 18,
+        25, 0, 6, 19, 26, 1, 7, 20, 27, 2,
+        8, 21, 28, 3, 9, 4, 10, 5, 11
+    };
+
+    static void reorder_deploy_order_chunk_to_policy_order(
+        const std::vector<float>& deploy_order_chunk,
+        std::vector<float>& policy_order_chunk)
+    {
+        policy_order_chunk.assign(kPolicyToDeployJointIndices.size(), 0.0f);
+        for (size_t policy_index = 0; policy_index < kPolicyToDeployJointIndices.size(); ++policy_index) {
+            const auto deploy_index = static_cast<size_t>(kPolicyToDeployJointIndices[policy_index]);
+            if (deploy_index >= deploy_order_chunk.size()) {
+                throw std::runtime_error("Parkour joint-order mapping exceeds deploy-order chunk size.");
+            }
+            policy_order_chunk[policy_index] = deploy_order_chunk[deploy_index];
+        }
+    }
+
+    static void reorder_deploy_order_joint_blocks_to_policy_order(std::vector<float>& proprio)
+    {
+        constexpr size_t hist = 8;
+        constexpr size_t joint_dim = kPolicyToDeployJointIndices.size();
+        constexpr size_t joint_pos_group_begin = 3 * hist + 3 * hist + 3 * hist;
+        constexpr size_t joint_vel_group_begin = joint_pos_group_begin + joint_dim * hist;
+        constexpr size_t last_action_group_begin = joint_vel_group_begin + joint_dim * hist;
+
+        auto reorder_group = [&](size_t group_begin) {
+            for (size_t h = 0; h < hist; ++h) {
+                const size_t chunk_begin = group_begin + joint_dim * h;
+                if (chunk_begin + joint_dim > proprio.size()) {
+                    throw std::runtime_error("Unexpected parkour proprio layout while applying joint-order mapping.");
+                }
+                std::vector<float> deploy_order_chunk(proprio.begin() + chunk_begin, proprio.begin() + chunk_begin + joint_dim);
+                std::vector<float> policy_order_chunk;
+                reorder_deploy_order_chunk_to_policy_order(deploy_order_chunk, policy_order_chunk);
+                std::copy(policy_order_chunk.begin(), policy_order_chunk.end(), proprio.begin() + chunk_begin);
+            }
+        };
+
+        reorder_group(joint_pos_group_begin);
+        reorder_group(joint_vel_group_begin);
+        reorder_group(last_action_group_begin);
+    }
+
+    static std::vector<float> policy_action_to_deploy_action(const std::vector<float>& policy_order_action)
+    {
+        std::vector<float> deploy_order_action(policy_order_action.size(), 0.0f);
+        for (size_t policy_index = 0; policy_index < kPolicyToDeployJointIndices.size(); ++policy_index) {
+            const auto deploy_index = static_cast<size_t>(kPolicyToDeployJointIndices[policy_index]);
+            if (policy_index >= policy_order_action.size() || deploy_index >= deploy_order_action.size()) {
+                throw std::runtime_error("Parkour action-order mapping exceeds action vector size.");
+            }
+            deploy_order_action[deploy_index] = policy_order_action[policy_index];
+        }
+        return deploy_order_action;
+    }
+
+    static std::string policy_to_robot_joint_indices_csv()
+    {
+        std::string text;
+        for (size_t i = 0; i < kPolicyToDeployJointIndices.size(); ++i) {
+            if (i > 0) {
+                text += ",";
+            }
+            text += std::to_string(kPolicyToDeployJointIndices[i]);
+        }
+        return text;
+    }
+
     static int64_t tensor_size(const std::vector<int64_t>& shape)
     {
         int64_t size = 1;

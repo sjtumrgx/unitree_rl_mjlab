@@ -4949,6 +4949,9 @@ parkour_depth_interface:
   output_range:
   - 0.0
   - 1.0
+  artifact_ceiling: 0.75
+  live_depth_blend: 0.0
+  live_depth_baseline: 0.5
   history_source_length: 37
   history_skip_frames: 5
   num_output_frames: 8

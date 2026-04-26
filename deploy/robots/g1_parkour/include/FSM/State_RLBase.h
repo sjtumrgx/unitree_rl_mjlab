@@ -47,6 +47,12 @@ public:
 
     void enter()
     {
+        spdlog::info(
+            "ENTERED_PARKOUR state={} depth_provider_enabled={} policy_blend_duration_s={}",
+            getStateString(),
+            depth_provider_ && depth_provider_->enabled(),
+            policy_blend_duration_s_
+        );
         for (int i = 0; i < env->robot->data.joint_stiffness.size(); ++i)
         {
             lowcmd->msg_.motor_cmd()[i].kp() = env->robot->data.joint_stiffness[i];
@@ -92,7 +98,18 @@ public:
                         }
                     }
                     env->step();
-                    policy_blend_elapsed_s_.store(policy_blend_elapsed_s_.load() + env->step_dt);
+                    const float next_blend_elapsed = policy_blend_elapsed_s_.load() + env->step_dt;
+                    const float blend_alpha = policy_blend_duration_s_ > 0.0f
+                        ? std::clamp(next_blend_elapsed / policy_blend_duration_s_, 0.0f, 1.0f)
+                        : 1.0f;
+                    if (blend_alpha < 1.0f) {
+                        auto blended_raw_action = env->action_manager->action();
+                        for (auto& value : blended_raw_action) {
+                            value *= blend_alpha;
+                        }
+                        env->action_manager->process_action(blended_raw_action);
+                    }
+                    policy_blend_elapsed_s_.store(next_blend_elapsed);
                 }
                 std::this_thread::sleep_until(sleepTill);
                 sleepTill += dt;
@@ -122,7 +139,7 @@ private:
     bool reset_on_tick_rewound_legacy_unused_ = false;
     bool reset_on_tick_rewind_ = false;
     std::vector<float> policy_blend_start_action_;
-    float policy_blend_duration_s_ = 3.0f;
+    float policy_blend_duration_s_ = 1.0f;
     std::atomic<float> policy_blend_elapsed_s_{0.0f};
 };
 

@@ -19,7 +19,10 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
     const auto deploy_cfg = YAML::LoadFile(policy_dir / "params" / "deploy.yaml");
     env = std::make_unique<isaaclab::ManagerBasedRLEnv>(
         deploy_cfg,
-        std::make_shared<unitree::ParkourArticulation<LowState_t::SharedPtr>>(FSMState::lowstate)
+        std::make_shared<unitree::ParkourArticulation<LowState_t::SharedPtr>>(
+            FSMState::lowstate,
+            param::sim_autostart_parkour
+        )
     );
     depth_provider_ = std::make_unique<ParkourDepthProvider>(deploy_cfg);
     if (depth_provider_->enabled()) {
@@ -44,16 +47,6 @@ void State_RLBase::run()
     {
         std::lock_guard<std::mutex> env_lock(env_mutex_);
         action = env->action_manager->processed_actions();
-    }
-    const float blend_alpha = policy_blend_duration_s_ > 0.0f
-        ? std::clamp(policy_blend_elapsed_s_.load() / policy_blend_duration_s_, 0.0f, 1.0f)
-        : 1.0f;
-    if (!policy_blend_start_action_.empty() && policy_blend_start_action_.size() == action.size() && blend_alpha < 1.0f) {
-        std::vector<float> blended_action = action;
-        for (size_t i = 0; i < action.size(); ++i) {
-            blended_action[i] = (1.0f - blend_alpha) * policy_blend_start_action_[i] + blend_alpha * action[i];
-        }
-        action = std::move(blended_action);
     }
     static std::atomic<bool> logged_once{false};
     if (!logged_once.exchange(true)) {

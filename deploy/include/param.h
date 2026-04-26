@@ -46,6 +46,14 @@ inline std::filesystem::path config_dir;
 inline YAML::Node config;
 inline bool keyboard_control = false;
 inline std::shared_ptr<Keyboard> active_keyboard = nullptr;
+inline bool sim_autostart_parkour = false;
+inline float sim_command_x = 0.25f;
+inline float sim_command_y = 0.0f;
+inline float sim_command_yaw = 0.0f;
+inline bool sim_heading_lock = true;
+inline float sim_heading_target_yaw = 0.0f;
+inline float sim_heading_kp = 1.0f;
+inline float sim_heading_max_yaw = 0.8f;
 
 inline std::filesystem::path get_bin_path() {
     std::vector<char> path(1024);
@@ -134,12 +142,34 @@ inline po::variables_map helper(int argc, char** argv)
         ("log", "record log file")
         ("network,n", po::value<std::string>()->default_value(""), "dds network interface")
         ("keyboard,k", "enable keyboard control")
+        ("sim-autostart-parkour", po::bool_switch(&sim_autostart_parkour)->default_value(false),
+            "simulation-only: start directly in Parkour mode; requires --network=lo")
+        ("sim-command-x", po::value<float>(&sim_command_x)->default_value(0.25f),
+            "simulation-only forward velocity command used with --sim-autostart-parkour")
+        ("sim-command-y", po::value<float>(&sim_command_y)->default_value(0.0f),
+            "simulation-only lateral velocity command used with --sim-autostart-parkour")
+        ("sim-command-yaw", po::value<float>(&sim_command_yaw)->default_value(0.0f),
+            "simulation-only yaw velocity command used with --sim-autostart-parkour")
+        ("sim-heading-lock", po::bool_switch(&sim_heading_lock)->default_value(true),
+            "simulation-only: stabilize heading to --sim-heading-target-yaw while walking")
+        ("no-sim-heading-lock", po::bool_switch()->default_value(false),
+            "simulation-only: disable heading stabilization")
+        ("sim-heading-target-yaw", po::value<float>(&sim_heading_target_yaw)->default_value(0.0f),
+            "simulation-only heading target in radians used by --sim-heading-lock")
+        ("sim-heading-kp", po::value<float>(&sim_heading_kp)->default_value(1.0f),
+            "simulation-only heading proportional gain")
+        ("sim-heading-max-yaw", po::value<float>(&sim_heading_max_yaw)->default_value(0.8f),
+            "simulation-only absolute heading correction clamp")
         ;
 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
     keyboard_control = vm.count("keyboard") > 0;
+    if (vm["no-sim-heading-lock"].as<bool>())
+    {
+        sim_heading_lock = false;
+    }
 
     if (vm.count("help"))
     {

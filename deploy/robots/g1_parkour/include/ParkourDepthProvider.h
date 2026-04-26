@@ -35,6 +35,8 @@ private:
     using PointCloudSub = unitree::robot::SubscriptionBase<PointCloudMsg>;
 
     bool fill_frame_from_pointcloud(std::vector<float>& frame) const;
+    bool fill_frame_from_constant_depth(std::vector<float>& frame) const;
+    void seed_history_from_frame(const std::vector<float>& frame);
     void append_frame(std::vector<float> frame);
     std::vector<float> compose_history_stack() const;
     void apply_gaussian_blur(std::vector<float>& frame) const;
@@ -46,6 +48,8 @@ private:
     bool retain_last_valid_frame_ = true;
     bool organized_pointcloud_ = true;
     bool has_valid_frame_ = false;
+    bool history_seeded_from_valid_frame_ = false;
+    bool constant_depth_enabled_ = false;
     std::string sensor_name_ = "depth_image";
     std::string topic_name_;
     std::string pointcloud_mode_ = "z_depth";
@@ -69,6 +73,10 @@ private:
     float depth_max_ = 2.5f;
     float output_min_ = 0.0f;
     float output_max_ = 1.0f;
+    float artifact_ceiling_ = 1.0f;
+    float live_depth_blend_ = 1.0f;
+    float live_depth_baseline_ = 0.5f;
+    float constant_depth_value_ = 1.0f;
     std::shared_ptr<PointCloudSub> pointcloud_sub_;
     std::deque<std::vector<float>> history_frames_;
 };

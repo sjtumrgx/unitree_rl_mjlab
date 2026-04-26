@@ -245,6 +245,82 @@ MuJoCo native viewer 和深度图窗口需要图形显示环境（`DISPLAY` 或
 `WAYLAND_DISPLAY`）。如果只想做无头验证，请显式加
 `--viewer none --no-depth-viewer`。
 
+#### C++/DDS 两进程 smoke 与手动运行
+
+C++/DDS 平地验收 smoke 现在以 **200 m 稳定行走** 为目标，并保持 MuJoCo
+深度桥接开启。推荐先用 smoke harness，因为它会自动处理
+simulator/controller 的启动顺序、loopback 网络、Parkour 自动进入、固定速度
+命令、长距离进度 marker 和摔倒检测：
+
+```bash
+DISPLAY=:1 \
+python scripts/run_g1_parkour_cpp_dds_smoke.py \
+  --sim-bin simulate/build/unitree_mujoco_parkour \
+  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+  --network lo \
+  --sim-autostart-parkour \
+  --sim-command-x 0.25 \
+  --sim-command-y 0.0 \
+  --sim-command-yaw 0.0 \
+  --walk-distance 200.0 \
+  --timeout-seconds 700 \
+  --progress-log-interval 10.0 \
+  --hide-depth-debug-window \
+  --log-dir /tmp/g1_parkour_cpp_dds_200m
+```
+
+当前默认部署配置仍会启用 simulator 深度相机 / pointcloud bridge，但 policy
+输入采用保守深度基线（`live_depth_blend: 0.0`,
+`live_depth_baseline: 0.5`）作为平地 200 m 稳定验收路径。完整实时深度输入
+（`live_depth_blend: 1.0`）保留为调试/继续对齐模式，不作为默认 200 m 稳定
+设置。
+
+如果要手动分两个终端运行，不能只执行裸命令；controller 需要显式进入
+Parkour 仿真自启动模式，并且必须使用 loopback 网络：
+
+```bash
+# 建议先清理旧的 DDS 仿真/控制进程，避免 controller 连到旧 simulator。
+pkill -f unitree_mujoco_parkour || true
+pkill -f g1_parkour_ctrl || true
+
+# 终端 1：启动 simulator。可视化模式会打开 MuJoCo 窗口和深度调试窗口。
+./simulate/build/unitree_mujoco_parkour --network lo
+
+# 终端 2：等待 simulator ready 后启动 controller。
+./deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+  --network lo \
+  --sim-autostart-parkour \
+  --sim-command-x 0.25 \
+  --sim-command-y 0.0 \
+  --sim-command-yaw 0.0
+```
+
+无头诊断时 simulator 还要加 `--headless --headless-seconds <N>`；如果只想隔离
+控制链路而不依赖实时深度图，可给 controller 设置
+`G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5`。这正是 harness 里常用的 headless
+constant-depth 诊断路径。
+
+如果可视化窗口在 controller 启动后仍然无响应，先用
+`G1_PARKOUR_DEPTH_DEBUG_WINDOW=0 ./simulate/build/unitree_mujoco_parkour --network lo`
+隔离深度调试窗口；DDS 深度发布仍会启用，只是不显示额外 depth 窗口。
+如果这样仍然卡住，则完整关闭 simulator 侧 live depth bridge，并在 controller
+侧使用常量深度隔离主 MuJoCo viewer + DDS 控制链：
+
+```bash
+# 终端 1：只跑主 MuJoCo viewer，不启动后台 OpenGL depth bridge。
+G1_PARKOUR_DEPTH_BRIDGE=0 \
+  ./simulate/build/unitree_mujoco_parkour --network lo
+
+# 终端 2：使用常量深度，让 controller 不等待 simulator depth pointcloud。
+G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5 \
+  ./deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+    --network lo \
+    --sim-autostart-parkour \
+    --sim-command-x 0.25 \
+    --sim-command-y 0.0 \
+    --sim-command-yaw 0.0
+```
+
 ### 2. 动作模仿训练
 
 训练 Unitree G1 模仿参考动作序列。

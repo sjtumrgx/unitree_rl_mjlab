@@ -254,6 +254,87 @@ The native viewer and depth window require a graphical display
 (`DISPLAY` or `WAYLAND_DISPLAY`).  Use `--viewer none --no-depth-viewer` for
 headless validation.
 
+#### C++/DDS two-process smoke and manual launch
+
+The C++/DDS flat-ground acceptance smoke targets 200 m stable walking with the
+MuJoCo depth bridge enabled.  Prefer the smoke harness first because it manages
+simulator / controller startup order, loopback networking, Parkour autostart,
+the fixed velocity command, long-distance progress markers, and fall detection:
+
+```bash
+DISPLAY=:1 \
+python scripts/run_g1_parkour_cpp_dds_smoke.py \
+  --sim-bin simulate/build/unitree_mujoco_parkour \
+  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+  --network lo \
+  --sim-autostart-parkour \
+  --sim-command-x 0.25 \
+  --sim-command-y 0.0 \
+  --sim-command-yaw 0.0 \
+  --walk-distance 200.0 \
+  --timeout-seconds 700 \
+  --progress-log-interval 10.0 \
+  --hide-depth-debug-window \
+  --log-dir /tmp/g1_parkour_cpp_dds_200m
+```
+
+The default deploy config keeps the simulator depth camera/pointcloud bridge
+alive, but uses a conservative policy-depth baseline
+(`live_depth_blend: 0.0`, `live_depth_baseline: 0.5`) for the flat walking
+acceptance path.  Full live-depth policy input (`live_depth_blend: 1.0`) is a
+debug/tuning mode and is not the default 200 m stability setting.
+
+For manual two-terminal runs, do not use the bare commands alone; the controller
+must explicitly enter simulation Parkour autostart mode on loopback:
+
+```bash
+# First clear stale DDS simulator/controller processes so the controller cannot
+# attach to an old simulator.
+pkill -f unitree_mujoco_parkour || true
+pkill -f g1_parkour_ctrl || true
+
+# Terminal 1: start the simulator. Visual mode opens the MuJoCo window and
+# the depth debug window.
+./simulate/build/unitree_mujoco_parkour --network lo
+
+# Terminal 2: start the controller after the simulator is ready.
+./deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+  --network lo \
+  --sim-autostart-parkour \
+  --sim-command-x 0.25 \
+  --sim-command-y 0.0 \
+  --sim-command-yaw 0.0
+```
+
+For headless diagnostics, also pass `--headless --headless-seconds <N>` to the
+simulator.  To isolate the control stack from live depth rendering, set
+`G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` for the controller; this is the common
+headless constant-depth diagnostic path used by the harness.
+
+If the native viewer still becomes unresponsive after starting the controller,
+first isolate the extra depth debug window with
+`G1_PARKOUR_DEPTH_DEBUG_WINDOW=0 ./simulate/build/unitree_mujoco_parkour --network lo`;
+DDS depth publishing remains enabled, only the extra depth window is hidden.
+If that still freezes, fully disable the simulator-side live depth bridge and
+use constant depth in the controller to isolate the main MuJoCo viewer + DDS
+control loop:
+
+```bash
+# Terminal 1: main MuJoCo viewer only; no background OpenGL depth bridge.
+G1_PARKOUR_DEPTH_BRIDGE=0 \
+  ./simulate/build/unitree_mujoco_parkour --network lo
+
+# Terminal 2: constant depth, so the controller does not wait for simulator
+# depth pointclouds.
+G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5 \
+  ./deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+    --network lo \
+    --sim-autostart-parkour \
+    --sim-command-x 0.25 \
+    --sim-command-y 0.0 \
+    --sim-command-yaw 0.0
+```
+
 ### 1.4 G1 Get-Up Training
 
 The repo includes a single get-up task for Unitree G1:

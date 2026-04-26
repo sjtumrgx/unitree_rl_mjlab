@@ -1,4 +1,4 @@
-<mujoco model="scene_g1">
+<mujoco model="scene_g1_parkour_flat">
   <compiler angle="radian" meshdir="assets" />
   <option timestep="0.005" integrator="implicitfast" solver="Newton" iterations="10" ls_iterations="20" />
   <default>
@@ -387,16 +387,5 @@
   <worldbody>
     <light pos="1 0 3.5" dir="0 0 -1" directional="true" />
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" />
-    <body name="parkour_stairs" pos="1.8 0 0">
-      <geom name="parkour_stairs_step1" type="box" pos="0.35 0 0.06" size="0.35 0.8 0.06" rgba="0.55 0.55 0.6 1" />
-      <geom name="parkour_stairs_step2" type="box" pos="0.95 0 0.14" size="0.25 0.8 0.14" rgba="0.6 0.6 0.65 1" />
-      <geom name="parkour_stairs_step3" type="box" pos="1.45 0 0.24" size="0.25 0.8 0.24" rgba="0.65 0.65 0.7 1" />
-    </body>
-    <body name="parkour_gap" pos="4.3 0 0">
-      <geom name="parkour_gap_left" type="box" pos="-0.55 0 0.08" size="0.45 0.9 0.08" rgba="0.45 0.45 0.5 1" />
-      <geom name="parkour_gap_right" type="box" pos="0.55 0 0.08" size="0.45 0.9 0.08" rgba="0.45 0.45 0.5 1" />
-    </body>
-    <geom name="parkour_box" type="box" pos="6.3 0 0.22" size="0.35 0.9 0.22" rgba="0.7 0.55 0.35 1" />
-    <geom name="parkour_ramp_up" type="box" pos="7.8 0 0.12" size="0.7 0.9 0.12" euler="0 0.18 0" rgba="0.45 0.55 0.35 1" />
   </worldbody>
 </mujoco>

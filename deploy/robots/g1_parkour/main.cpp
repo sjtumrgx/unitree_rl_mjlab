@@ -28,6 +28,13 @@ void print_control_help()
 
     std::cout << "Press [L2 + Up] to enter FixStand mode.\n";
     std::cout << "And then press [R2 + X] to start parkour control.\n";
+    if (param::sim_autostart_parkour)
+    {
+        std::cout << "Simulation autostart enabled: entering Parkour on loopback with command ["
+                  << param::sim_command_x << ", "
+                  << param::sim_command_y << ", "
+                  << param::sim_command_yaw << "].\n";
+    }
 }
 
 }
@@ -51,6 +58,22 @@ void init_fsm_state()
 int main(int argc, char** argv)
 {
     auto vm = param::helper(argc, argv);
+    const std::string network = vm["network"].as<std::string>();
+    if (param::sim_autostart_parkour)
+    {
+        if (network != "lo")
+        {
+            spdlog::critical("--sim-autostart-parkour requires --network=lo for loopback-only simulation safety.");
+            return -1;
+        }
+        param::config["FSM"]["start_state"] = "Parkour";
+        spdlog::info(
+            "Simulation autostart enabled: start_state=Parkour command=[{}, {}, {}]",
+            param::sim_command_x,
+            param::sim_command_y,
+            param::sim_command_yaw
+        );
+    }
     if (param::keyboard_control)
     {
         if (!isatty(STDIN_FILENO))
@@ -65,7 +88,7 @@ int main(int argc, char** argv)
     std::cout << " --- Unitree Robotics --- \n";
     std::cout << "     G1-29dof Parkour Controller \n";
 
-    unitree::robot::ChannelFactory::Instance()->Init(0, vm["network"].as<std::string>());
+    unitree::robot::ChannelFactory::Instance()->Init(0, network);
     print_control_help();
 
     init_fsm_state();

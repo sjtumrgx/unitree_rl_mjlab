@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <numeric>
 
 #include <spdlog/spdlog.h>
 #include <unitree/idl/ros2/PointField_.hpp>
@@ -40,6 +42,14 @@ ParkourDepthProvider::ParkourDepthProvider(const YAML::Node& cfg)
     depth_max_ = depth_cfg["depth_range"][1].as<float>(depth_max_);
     output_min_ = depth_cfg["output_range"][0].as<float>(output_min_);
     output_max_ = depth_cfg["output_range"][1].as<float>(output_max_);
+    artifact_ceiling_ = depth_cfg["artifact_ceiling"].as<float>(output_max_);
+    artifact_ceiling_ = std::clamp(artifact_ceiling_, output_min_, output_max_);
+    live_depth_blend_ = std::clamp(depth_cfg["live_depth_blend"].as<float>(live_depth_blend_), 0.0f, 1.0f);
+    live_depth_baseline_ = std::clamp(
+        depth_cfg["live_depth_baseline"].as<float>(live_depth_baseline_),
+        output_min_,
+        output_max_
+    );
     gaussian_kernel_size_ = depth_cfg["gaussian_kernel_size"].as<int>(gaussian_kernel_size_);
     gaussian_sigma_ = depth_cfg["gaussian_sigma"].as<float>(gaussian_sigma_);
     if (const auto field_names = depth_cfg["pointcloud_field_names"]) {
@@ -51,6 +61,26 @@ ParkourDepthProvider::ParkourDepthProvider(const YAML::Node& cfg)
     if (topic_name_.empty()) {
         enabled_ = false;
         return;
+    }
+
+    if (const char* raw_constant_depth = std::getenv("G1_PARKOUR_DEBUG_CONSTANT_DEPTH")) {
+        char* parse_end = nullptr;
+        const float parsed_depth = std::strtof(raw_constant_depth, &parse_end);
+        if (parse_end != raw_constant_depth) {
+            constant_depth_enabled_ = true;
+            constant_depth_value_ = std::clamp(parsed_depth, output_min_, output_max_);
+            spdlog::warn(
+                "ParkourDepthProvider '{}' enabling constant-depth debug mode from G1_PARKOUR_DEBUG_CONSTANT_DEPTH={}.",
+                sensor_name_,
+                constant_depth_value_
+            );
+        } else {
+            spdlog::warn(
+                "ParkourDepthProvider '{}' ignored invalid G1_PARKOUR_DEBUG_CONSTANT_DEPTH='{}'.",
+                sensor_name_,
+                raw_constant_depth
+            );
+        }
     }
 
     pointcloud_sub_ = std::make_shared<PointCloudSub>(topic_name_);
@@ -65,12 +95,9 @@ void ParkourDepthProvider::initialize(isaaclab::Articulation* robot)
 
     warned_missing_feed_ = false;
     has_valid_frame_ = false;
+    history_seeded_from_valid_frame_ = false;
     history_frames_.clear();
-    const std::vector<float> zero_frame(static_cast<size_t>(output_width_ * output_height_), output_min_);
-    for (int i = 0; i < history_source_length_; ++i) {
-        history_frames_.push_back(zero_frame);
-    }
-    robot->data.named_observations[sensor_name_] = compose_history_stack();
+    robot->data.named_observations[sensor_name_] = std::vector<float>(static_cast<size_t>(expected_size_), output_min_);
 }
 
 void ParkourDepthProvider::reset(isaaclab::Articulation* robot)
@@ -86,11 +113,21 @@ void ParkourDepthProvider::update(isaaclab::Articulation* robot)
 
     std::vector<float> frame(static_cast<size_t>(output_width_ * output_height_), output_min_);
     bool has_frame = false;
-    if (pointcloud_sub_ && !pointcloud_sub_->isTimeout()) {
+    if (constant_depth_enabled_) {
+        has_frame = fill_frame_from_constant_depth(frame);
+    } else if (pointcloud_sub_ && !pointcloud_sub_->isTimeout()) {
         has_frame = fill_frame_from_pointcloud(frame);
     }
 
-    if (!has_frame) {
+    if (has_frame) {
+        warned_missing_feed_ = false;
+        if (!history_seeded_from_valid_frame_) {
+            seed_history_from_frame(frame);
+        } else {
+            append_frame(std::move(frame));
+        }
+        has_valid_frame_ = true;
+    } else {
         if (!warned_missing_feed_) {
             warned_missing_feed_ = true;
             spdlog::warn(
@@ -101,14 +138,12 @@ void ParkourDepthProvider::update(isaaclab::Articulation* robot)
             );
         }
         if (retain_last_valid_frame_ && has_valid_frame_ && !history_frames_.empty()) {
-            frame = history_frames_.back();
+            append_frame(history_frames_.back());
+        } else if (has_valid_frame_) {
+            append_frame(std::move(frame));
         }
-    } else {
-        warned_missing_feed_ = false;
-        has_valid_frame_ = true;
     }
 
-    append_frame(std::move(frame));
     robot->data.named_observations[sensor_name_] = compose_history_stack();
 }
 
@@ -161,8 +196,17 @@ bool ParkourDepthProvider::fill_frame_from_pointcloud(std::vector<float>& frame)
             const float normalized = depth_max_ > depth_min_
                 ? (value - depth_min_) / (depth_max_ - depth_min_)
                 : value;
-            frame[static_cast<size_t>(row * output_width_ + col)] =
-                normalized * (output_max_ - output_min_) + output_min_;
+            float output_value = normalized * (output_max_ - output_min_) + output_min_;
+            // The C++ OpenGL/DDS route can produce isolated z-far pixels at
+            // the top edge of the policy crop on flat ground, while the Python
+            // MuJoCo renderer parity path stays below ~0.71 for the same
+            // camera/crop.  Those artifact-white pixels strongly perturb the
+            // depth encoder and were the remaining cause of live-depth falls.
+            // Clamp only the configured normalized ceiling; constant-depth
+            // diagnostics and true range normalization remain unchanged.
+            output_value = std::min(output_value, artifact_ceiling_);
+            output_value = live_depth_baseline_ * (1.0f - live_depth_blend_) + output_value * live_depth_blend_;
+            frame[static_cast<size_t>(row * output_width_ + col)] = output_value;
         }
     }
 
@@ -172,14 +216,39 @@ bool ParkourDepthProvider::fill_frame_from_pointcloud(std::vector<float>& frame)
     return valid_points > 0;
 }
 
+bool ParkourDepthProvider::fill_frame_from_constant_depth(std::vector<float>& frame) const
+{
+    std::fill(frame.begin(), frame.end(), constant_depth_value_);
+    return true;
+}
+
+void ParkourDepthProvider::seed_history_from_frame(const std::vector<float>& frame)
+{
+    history_frames_.clear();
+    for (int i = 0; i < history_source_length_; ++i) {
+        history_frames_.push_back(frame);
+    }
+    history_seeded_from_valid_frame_ = true;
+    const auto [frame_min, frame_max] = std::minmax_element(frame.begin(), frame.end());
+    const float frame_mean = frame.empty()
+        ? 0.0f
+        : std::accumulate(frame.begin(), frame.end(), 0.0f) / static_cast<float>(frame.size());
+    spdlog::info(
+        "FIRST_VALID_DEPTH_STACK size={} sensor={} source_history={} frame[min,max,mean]=[{},{},{}]",
+        expected_size_,
+        sensor_name_,
+        history_source_length_,
+        frame_min != frame.end() ? *frame_min : 0.0f,
+        frame_max != frame.end() ? *frame_max : 0.0f,
+        frame_mean
+    );
+}
+
 void ParkourDepthProvider::append_frame(std::vector<float> frame)
 {
     history_frames_.push_back(std::move(frame));
     while (static_cast<int>(history_frames_.size()) > history_source_length_) {
         history_frames_.pop_front();
-    }
-    while (static_cast<int>(history_frames_.size()) < history_source_length_) {
-        history_frames_.push_front(std::vector<float>(static_cast<size_t>(output_width_ * output_height_), output_min_));
     }
 }
 
@@ -188,6 +257,7 @@ std::vector<float> ParkourDepthProvider::compose_history_stack() const
     std::vector<float> stacked;
     stacked.reserve(static_cast<size_t>(expected_size_));
     if (history_frames_.empty()) {
+        stacked.resize(static_cast<size_t>(expected_size_), output_min_);
         return stacked;
     }
 

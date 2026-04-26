@@ -24,6 +24,11 @@ inline struct SimulationConfig
 
     int print_scene_information;
     int wait_for_lowcmd_before_physics = 0;
+    int headless = 0;
+    float headless_seconds = 90.0f;
+    float walk_distance_marker = 5.0f;
+    float progress_log_interval = 1.0f;
+    int realtime_lockstep = 0;
 
     int enable_elastic_band;
     int band_attached_link = 0;
@@ -44,6 +49,7 @@ inline struct SimulationConfig
     int depth_debug_crop_left = 0;
     int depth_debug_crop_width = 64;
     int depth_debug_crop_height = 36;
+    int depth_publish_period_ms = 100;
 
     void load_from_yaml(const std::string &filename)
     {
@@ -61,6 +67,9 @@ inline struct SimulationConfig
             print_scene_information = cfg["print_scene_information"].as<int>();
             if (cfg["wait_for_lowcmd_before_physics"]) {
                 wait_for_lowcmd_before_physics = cfg["wait_for_lowcmd_before_physics"].as<int>();
+            }
+            if (cfg["realtime_lockstep"]) {
+                realtime_lockstep = cfg["realtime_lockstep"].as<int>();
             }
             enable_elastic_band = cfg["enable_elastic_band"].as<int>();
             if (cfg["initial_base_pos"]) {
@@ -114,6 +123,9 @@ inline struct SimulationConfig
             if (cfg["depth_debug_crop_height"]) {
                 depth_debug_crop_height = cfg["depth_debug_crop_height"].as<int>();
             }
+            if (cfg["depth_publish_period_ms"]) {
+                depth_publish_period_ms = cfg["depth_publish_period_ms"].as<int>();
+            }
         }
         catch(const std::exception& e)
         {
@@ -139,6 +151,11 @@ inline po::variables_map helper(int argc, char** argv)
         ("network,n", po::value<std::string>(&config.interface), "DDS network interface; -n eth0")
         ("robot,r", po::value<std::string>(&config.robot), "Robot type; -r go2")
         ("scene,s", po::value<std::filesystem::path>(&config.robot_scene), "Robot scene file; -s scene_terrain.xml")
+        ("headless", po::bool_switch()->default_value(false), "Run physics/DDS loop without MuJoCo viewer")
+        ("headless-seconds", po::value<float>(&config.headless_seconds)->default_value(config.headless_seconds), "Headless run timeout in seconds")
+        ("walk-distance-marker", po::value<float>(&config.walk_distance_marker)->default_value(config.walk_distance_marker), "Emit DISTANCE_X marker and stop headless run after this forward distance in meters")
+        ("progress-log-interval", po::value<float>(&config.progress_log_interval)->default_value(config.progress_log_interval), "Emit PARKOUR_PROGRESS every N simulation seconds")
+        ("realtime-lockstep", po::value<int>(&config.realtime_lockstep)->default_value(config.realtime_lockstep), "Run viewer physics at one MuJoCo step per wall-clock timestep instead of batching catch-up steps")
     ;
 
     po::variables_map vm;
@@ -149,6 +166,9 @@ inline po::variables_map helper(int argc, char** argv)
     {
         std::cout << desc << std::endl;
         exit(0);
+    }
+    if (vm["headless"].as<bool>()) {
+        config.headless = 1;
     }
 
     return vm;

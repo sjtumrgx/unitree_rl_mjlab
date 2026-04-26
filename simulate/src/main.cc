@@ -18,15 +18,20 @@
 #undef private
 
 #include <chrono>
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <atomic>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -102,6 +107,134 @@ namespace
     return "config.yaml";
   }
 
+  bool env_flag_is_false(const char* value)
+  {
+    if (!value) {
+      return false;
+    }
+    std::string normalized(value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    return normalized == "0" || normalized == "false" || normalized == "off" || normalized == "no";
+  }
+
+  struct ParkourProgressTracker
+  {
+    bool initialized = false;
+    double initial_root_x = 0.0;
+    double next_progress_time = 0.0;
+    bool distance_marker_logged = false;
+    bool fall_marker_logged = false;
+  };
+
+  double configured_walk_distance_marker()
+  {
+    return std::max(0.0f, param::config.walk_distance_marker);
+  }
+
+  double configured_progress_log_interval()
+  {
+    return std::max(0.05f, param::config.progress_log_interval);
+  }
+
+  std::string format_distance_marker(double distance)
+  {
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(1) << distance;
+    return os.str();
+  }
+
+  void quat_to_roll_pitch_yaw(const mjtNum* quat, double& roll, double& pitch, double& yaw)
+  {
+    const double w = quat[0];
+    const double x = quat[1];
+    const double y = quat[2];
+    const double z = quat[3];
+    roll = std::atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y));
+    const double sin_pitch = std::clamp(2.0 * (w * y - z * x), -1.0, 1.0);
+    pitch = std::asin(sin_pitch);
+    yaw = std::atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z));
+  }
+
+  double distance_x_from_tracker(ParkourProgressTracker& tracker, const mjData* data)
+  {
+    if (!tracker.initialized)
+    {
+      tracker.initial_root_x = data->qpos[0];
+      tracker.next_progress_time = data->time;
+      tracker.initialized = true;
+    }
+    return data->qpos[0] - tracker.initial_root_x;
+  }
+
+  void reset_progress_tracker(ParkourProgressTracker& tracker)
+  {
+    tracker = ParkourProgressTracker{};
+  }
+
+  void emit_progress_if_due(ParkourProgressTracker& tracker, const mjData* data, const char* source)
+  {
+    const double distance_x = distance_x_from_tracker(tracker, data);
+    if (data->time + 1e-9 < tracker.next_progress_time)
+    {
+      return;
+    }
+
+    double roll = 0.0;
+    double pitch = 0.0;
+    double yaw = 0.0;
+    quat_to_roll_pitch_yaw(&data->qpos[3], roll, pitch, yaw);
+    std::cout << "PARKOUR_PROGRESS source=" << source
+              << " sim_time=" << data->time
+              << " distance_x=" << distance_x
+              << " root_x=" << data->qpos[0]
+              << " base_height=" << data->qpos[2]
+              << " roll=" << roll
+              << " pitch=" << pitch
+              << " yaw=" << yaw
+              << " lowcmd_connected=" << param::lowcmd_connected.load()
+              << " lowcmd_active=" << param::lowcmd_has_active_control.load()
+              << std::endl;
+    tracker.next_progress_time += configured_progress_log_interval();
+  }
+
+  bool emit_distance_marker_if_reached(ParkourProgressTracker& tracker, const mjData* data)
+  {
+    const double target_distance = configured_walk_distance_marker();
+    const double distance_x = distance_x_from_tracker(tracker, data);
+    if (!tracker.distance_marker_logged && distance_x >= target_distance)
+    {
+      std::cout << "DISTANCE_X>=" << format_distance_marker(target_distance)
+                << " distance_x=" << distance_x
+                << " root_x=" << data->qpos[0]
+                << " sim_time=" << data->time << std::endl;
+      tracker.distance_marker_logged = true;
+      return true;
+    }
+    return tracker.distance_marker_logged;
+  }
+
+  bool emit_fall_marker_if_needed(ParkourProgressTracker& tracker, const mjData* data)
+  {
+    if (!tracker.fall_marker_logged && data->qpos[2] < 0.35)
+    {
+      double roll = 0.0;
+      double pitch = 0.0;
+      double yaw = 0.0;
+      quat_to_roll_pitch_yaw(&data->qpos[3], roll, pitch, yaw);
+      std::cout << "FALL_RESET_DETECTED base_height=" << data->qpos[2]
+                << " distance_x=" << distance_x_from_tracker(tracker, data)
+                << " roll=" << roll
+                << " pitch=" << pitch
+                << " yaw=" << yaw
+                << " sim_time=" << data->time << std::endl;
+      tracker.fall_marker_logged = true;
+      return true;
+    }
+    return tracker.fall_marker_logged;
+  }
+
   // constants
   const double syncMisalign = 0.1;       // maximum mis-alignment before re-sync (simulation seconds)
   const double simRefreshFraction = 0.7; // fraction of refresh available for simulation
@@ -110,6 +243,7 @@ namespace
   // model and data
   mjModel *m = nullptr;
   mjData *d = nullptr;
+  std::atomic<bool> mujoco_data_initialized{false};
   std::atomic<bool> unitree_channel_ready{false};
 
   // control noise variables
@@ -364,6 +498,18 @@ namespace
       d->qpos[5] = param::config.initial_base_quat[2];
       d->qpos[6] = param::config.initial_base_quat[3];
     }
+    if (param::config.initial_joint_pos.size() == static_cast<size_t>(m->nu)) {
+      // Parkour initial_joint_pos is interpreted in actuator/motor order, which
+      // matches lowcmd/lowstate sensors but differs from the XML joint order.
+      for (int actuator_id = 0; actuator_id < m->nu; ++actuator_id) {
+        const int joint_id = m->actuator_trnid[2 * actuator_id];
+        if (joint_id < 0 || m->jnt_type[joint_id] == mjJNT_FREE) {
+          continue;
+        }
+        d->qpos[m->jnt_qposadr[joint_id]] = param::config.initial_joint_pos[actuator_id];
+      }
+      return;
+    }
     size_t joint_index = 0;
     for (int joint_id = 0; joint_id < m->njnt && joint_index < param::config.initial_joint_pos.size(); ++joint_id)
     {
@@ -378,7 +524,9 @@ namespace
   {
     // cpu-sim syncronization point
     std::chrono::time_point<mj::Simulate::Clock> syncCPU;
+    std::chrono::time_point<mj::Simulate::Clock> nextLockstepCPU;
     mjtNum syncSim = 0;
+    ParkourProgressTracker progress_tracker;
 
     // ChannelFactory::Instance()->Init(0);
     // UnitreeDds ud(d);
@@ -397,6 +545,7 @@ namespace
           dnew = mj_makeData(mnew);
         if (dnew)
         {
+          mujoco_data_initialized.store(false);
           sim.Load(mnew, dnew, sim.dropfilename);
 
           mj_deleteData(d);
@@ -406,6 +555,8 @@ namespace
           d = dnew;
           apply_initial_joint_pose();
           mj_forward(m, d);
+          mujoco_data_initialized.store(true);
+          reset_progress_tracker(progress_tracker);
 
           // allocate ctrlnoise
           free(ctrlnoise);
@@ -428,6 +579,7 @@ namespace
           dnew = mj_makeData(mnew);
         if (dnew)
         {
+          mujoco_data_initialized.store(false);
           sim.Load(mnew, dnew, sim.filename);
 
           mj_deleteData(d);
@@ -437,6 +589,8 @@ namespace
           d = dnew;
           apply_initial_joint_pose();
           mj_forward(m, d);
+          mujoco_data_initialized.store(true);
+          reset_progress_tracker(progress_tracker);
 
           // allocate ctrlnoise
           free(ctrlnoise);
@@ -477,16 +631,13 @@ namespace
             {
               mj_forward(m, d);
               sim.speed_changed = true;
+              nextLockstepCPU = mj::Simulate::Clock::now();
               continue;
             }
             bool stepped = false;
 
             // record cpu time at start of iteration
             const auto startCPU = mj::Simulate::Clock::now();
-
-            // elapsed CPU and simulation time since last sync
-            const auto elapsedCPU = startCPU - syncCPU;
-            double elapsedSim = d->time - syncSim;
 
             // inject noise
             if (sim.ctrl_noise_std)
@@ -505,47 +656,23 @@ namespace
               }
             }
 
-            // requested slow-down factor
-            double slowdown = 100 / sim.percentRealTime[sim.real_time_index];
-
-            // misalignment condition: distance from target sim time is bigger than syncmisalign
-            bool misaligned =
-                mju_abs(Seconds(elapsedCPU).count() / slowdown - elapsedSim) > syncMisalign;
-
-            // out-of-sync (for any reason): reset sync times, step
-            if (elapsedSim < 0 || elapsedCPU.count() < 0 || syncCPU.time_since_epoch().count() == 0 ||
-                misaligned || sim.speed_changed)
+            if (param::config.realtime_lockstep == 1)
             {
-              // re-sync
-              syncCPU = startCPU;
-              syncSim = d->time;
-              sim.speed_changed = false;
-
-              // run single step, let next iteration deal with timing
-              mj_step(m, d);
-              stepped = true;
-            }
-
-            // in-sync: step until ahead of cpu
-            else
-            {
-              bool measured = false;
-              mjtNum prevSim = d->time;
-
-              double refreshTime = simRefreshFraction / sim.refresh_rate;
-
-              // step while sim lags behind cpu and within refreshTime
-              while (Seconds((d->time - syncSim) * slowdown) < mj::Simulate::Clock::now() - syncCPU &&
-                     mj::Simulate::Clock::now() - startCPU < Seconds(refreshTime))
+              const auto step_duration = std::chrono::duration_cast<mj::Simulate::Clock::duration>(
+                Seconds(std::max<mjtNum>(m->opt.timestep, 0.001))
+              );
+              if (
+                nextLockstepCPU.time_since_epoch().count() == 0 ||
+                sim.speed_changed ||
+                startCPU - nextLockstepCPU > Seconds(syncMisalign)
+              )
               {
-                // measure slowdown before first step
-                if (!measured && elapsedSim)
-                {
-                  sim.measured_slowdown =
-                      std::chrono::duration<double>(elapsedCPU).count() / elapsedSim;
-                  measured = true;
-                }
+                nextLockstepCPU = startCPU;
+                sim.speed_changed = false;
+              }
 
+              if (startCPU + std::chrono::microseconds(100) >= nextLockstepCPU)
+              {
                 // elastic band on base link
                 if (param::config.enable_elastic_band == 1)
                 {
@@ -565,11 +692,81 @@ namespace
                 // call mj_step
                 mj_step(m, d);
                 stepped = true;
+                nextLockstepCPU += step_duration;
+              }
+            }
+            else
+            {
+              // elapsed CPU and simulation time since last sync
+              const auto elapsedCPU = startCPU - syncCPU;
+              double elapsedSim = d->time - syncSim;
 
-                // break if reset
-                if (d->time < prevSim)
+              // requested slow-down factor
+              double slowdown = 100 / sim.percentRealTime[sim.real_time_index];
+
+              // misalignment condition: distance from target sim time is bigger than syncmisalign
+              bool misaligned =
+                  mju_abs(Seconds(elapsedCPU).count() / slowdown - elapsedSim) > syncMisalign;
+
+              // out-of-sync (for any reason): reset sync times, step
+              if (elapsedSim < 0 || elapsedCPU.count() < 0 || syncCPU.time_since_epoch().count() == 0 ||
+                  misaligned || sim.speed_changed)
+              {
+                // re-sync
+                syncCPU = startCPU;
+                syncSim = d->time;
+                sim.speed_changed = false;
+
+                // run single step, let next iteration deal with timing
+                mj_step(m, d);
+                stepped = true;
+              }
+
+              // in-sync: step until ahead of cpu
+              else
+              {
+                bool measured = false;
+                mjtNum prevSim = d->time;
+
+                double refreshTime = simRefreshFraction / sim.refresh_rate;
+
+                // step while sim lags behind cpu and within refreshTime
+                while (Seconds((d->time - syncSim) * slowdown) < mj::Simulate::Clock::now() - syncCPU &&
+                       mj::Simulate::Clock::now() - startCPU < Seconds(refreshTime))
                 {
-                  break;
+                  // measure slowdown before first step
+                  if (!measured && elapsedSim)
+                  {
+                    sim.measured_slowdown =
+                        std::chrono::duration<double>(elapsedCPU).count() / elapsedSim;
+                    measured = true;
+                  }
+
+                  // elastic band on base link
+                  if (param::config.enable_elastic_band == 1)
+                  {
+                    if (elastic_band.enable_)
+                    {
+                      std::vector<double> x = {d->qpos[0], d->qpos[1], d->qpos[2]};
+                      std::vector<double> dx = {d->qvel[0], d->qvel[1], d->qvel[2]};
+
+                      elastic_band.Advance(x, dx);
+
+                      d->xfrc_applied[param::config.band_attached_link] = elastic_band.f_[0];
+                      d->xfrc_applied[param::config.band_attached_link + 1] = elastic_band.f_[1];
+                      d->xfrc_applied[param::config.band_attached_link + 2] = elastic_band.f_[2];
+                    }
+                  }
+
+                  // call mj_step
+                  mj_step(m, d);
+                  stepped = true;
+
+                  // break if reset
+                  if (d->time < prevSim)
+                  {
+                    break;
+                  }
                 }
               }
             }
@@ -578,6 +775,9 @@ namespace
             if (stepped)
             {
               sim.AddToHistory();
+              emit_progress_if_due(progress_tracker, d, "viewer");
+              emit_distance_marker_if_reached(progress_tracker, d);
+              emit_fall_marker_if_needed(progress_tracker, d);
             }
           }
 
@@ -610,6 +810,7 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
       sim->Load(m, d, filename);
       apply_initial_joint_pose();
       mj_forward(m, d);
+      mujoco_data_initialized.store(true);
 
       // allocate ctrlnoise
       free(ctrlnoise);
@@ -637,7 +838,7 @@ void *UnitreeSdk2BridgeThread(void *arg)
   // Wait for mujoco data
   while (true)
   {
-    if (d)
+    if (m && d && mujoco_data_initialized.load())
     {
       std::cout << "Mujoco data is prepared" << std::endl;
       break;
@@ -667,6 +868,113 @@ void *UnitreeSdk2BridgeThread(void *arg)
   {
     sleep(1);
   }
+}
+
+mjModel* LoadHeadlessModel(const char* file)
+{
+  char loadError[kErrorLength] = "";
+  mjModel* model = nullptr;
+  const std::string filename = file ? file : "";
+  if (filename.size() > 4 && filename.substr(filename.size() - 4) == ".mjb")
+  {
+    model = mj_loadModel(filename.c_str(), nullptr);
+    if (!model)
+    {
+      std::snprintf(loadError, sizeof(loadError), "could not load binary model");
+    }
+  }
+  else
+  {
+    model = mj_loadXML(filename.c_str(), nullptr, loadError, kErrorLength);
+  }
+  if (!model)
+  {
+    std::cerr << loadError << std::endl;
+  }
+  else if (loadError[0])
+  {
+    std::cout << "Model compiled with warning: " << loadError << std::endl;
+  }
+  return model;
+}
+
+int RunHeadless()
+{
+  m = LoadHeadlessModel(param::config.robot_scene.c_str());
+  if (!m)
+  {
+    return 1;
+  }
+  d = mj_makeData(m);
+  if (!d)
+  {
+    mj_deleteModel(m);
+    m = nullptr;
+    return 1;
+  }
+  apply_initial_joint_pose();
+  mj_forward(m, d);
+  mujoco_data_initialized.store(true);
+
+  std::thread unitree_thread(UnitreeSdk2BridgeThread, nullptr);
+  unitree_thread.detach();
+
+  const auto wall_start = std::chrono::steady_clock::now();
+  ParkourProgressTracker progress_tracker;
+  bool distance_logged = false;
+  bool fall_logged = false;
+  std::cout << "HEADLESS_READY seconds=" << param::config.headless_seconds
+            << " walk_distance_marker=" << configured_walk_distance_marker()
+            << " progress_log_interval=" << configured_progress_log_interval()
+            << " wait_for_lowcmd=" << param::config.wait_for_lowcmd_before_physics
+            << " depth_bridge=disabled" << std::endl;
+
+  while (true)
+  {
+    const double elapsed_wall = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - wall_start
+    ).count();
+    if (elapsed_wall >= param::config.headless_seconds)
+    {
+      break;
+    }
+
+    if (
+      param::config.wait_for_lowcmd_before_physics == 1 &&
+      (!param::lowcmd_connected.load() || !param::lowcmd_has_active_control.load())
+    )
+    {
+      mj_forward(m, d);
+    }
+    else
+    {
+      mj_step(m, d);
+    }
+
+    emit_progress_if_due(progress_tracker, d, "headless");
+    if (!distance_logged && emit_distance_marker_if_reached(progress_tracker, d))
+    {
+      distance_logged = true;
+      break;
+    }
+    if (!fall_logged && emit_fall_marker_if_needed(progress_tracker, d))
+    {
+      fall_logged = true;
+      break;
+    }
+
+    std::this_thread::sleep_for(std::chrono::duration<double>(std::max<mjtNum>(m->opt.timestep, 0.001)));
+  }
+
+  if (!fall_logged)
+  {
+    std::cout << "NO_FALL_RESET" << std::endl;
+  }
+  mj_deleteData(d);
+  mj_deleteModel(m);
+  d = nullptr;
+  m = nullptr;
+  return distance_logged && !fall_logged ? 0 : 2;
 }
 //------------------------------------------ main --------------------------------------------------
 
@@ -739,8 +1047,13 @@ int main(int argc, char **argv)
   param::helper(argc, argv);
   param::lowcmd_connected.store(false);
   param::lowcmd_has_active_control.store(false);
+  mujoco_data_initialized.store(false);
   if(param::config.robot_scene.is_relative()) {
     param::config.robot_scene = proj_dir.parent_path() / param::config.robot_scene;
+  }
+  if (param::config.headless == 1)
+  {
+    return RunHeadless();
   }
 
   // simulate object encapsulates the UI
@@ -753,17 +1066,24 @@ int main(int argc, char **argv)
   // start physics thread
   std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str());
   std::unique_ptr<ParkourDepthBridge> depth_bridge;
-  if (param::config.enable_depth_camera == 1) {
-    while (!unitree_channel_ready.load()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
+  const bool depth_bridge_enabled = param::config.enable_depth_camera == 1
+    && !env_flag_is_false(std::getenv("G1_PARKOUR_DEPTH_BRIDGE"));
+  if (depth_bridge_enabled) {
     depth_bridge = std::make_unique<ParkourDepthBridge>(
       sim.get(),
       static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_,
       &m,
-      &d
+      &d,
+      &unitree_channel_ready
     );
-    depth_bridge->start();
+    const bool depth_bridge_started = depth_bridge->start();
+    std::cout << "ParkourDepthBridge start status: "
+              << (depth_bridge_started ? "started" : "failed")
+              << std::endl;
+  } else if (param::config.enable_depth_camera == 1) {
+    std::cout << "ParkourDepthBridge disabled by G1_PARKOUR_DEPTH_BRIDGE=0; "
+              << "use controller G1_PARKOUR_DEBUG_CONSTANT_DEPTH for control-only diagnostics."
+              << std::endl;
   }
   // start simulation UI loop (blocking call)
   glfwSetKeyCallback(static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_,user_key_cb);

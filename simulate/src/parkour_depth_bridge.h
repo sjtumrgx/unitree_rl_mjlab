@@ -20,7 +20,12 @@ class ParkourDepthBridge
 public:
   using PointCloudPublisher = unitree::robot::RealTimePublisher<sensor_msgs::msg::dds_::PointCloud2_>;
 
-  ParkourDepthBridge(mujoco::Simulate* sim, GLFWwindow* shared_window, mjModel** model_ptr, mjData** data_ptr);
+  ParkourDepthBridge(
+    mujoco::Simulate* sim,
+    GLFWwindow* shared_window,
+    mjModel** model_ptr,
+    mjData** data_ptr,
+    std::atomic<bool>* dds_ready);
   ~ParkourDepthBridge();
 
   bool start();
@@ -28,6 +33,7 @@ public:
 
 private:
   void run();
+  bool create_render_window(int width, int height);
   bool ensure_render_resources();
   void apply_ray_alignment_override(const mjModel* model, const mjData* data);
   void publish_pointcloud(const std::vector<float>& linear_depth, int width, int height, int camera_id);
@@ -38,6 +44,7 @@ private:
   GLFWwindow* shared_window_ = nullptr;
   mjModel** model_ptr_ = nullptr;
   mjData** data_ptr_ = nullptr;
+  std::atomic<bool>* dds_ready_ = nullptr;
   GLFWwindow* window_ = nullptr;
   std::unique_ptr<PointCloudPublisher> pointcloud_publisher_;
   std::thread thread_;
@@ -49,7 +56,10 @@ private:
   mjvOption option_{};
   mjvPerturb perturb_{};
   mjrContext context_{};
+  mjData* render_data_ = nullptr;
+  const mjModel* render_model_ = nullptr;
   bool scene_ready_ = false;
+  bool debug_window_visible_ = false;
   int camera_id_ = -1;
   int camera_body_id_ = -1;
 };

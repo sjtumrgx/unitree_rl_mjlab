@@ -4,7 +4,9 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <thread>
 
 #include <spdlog/spdlog.h>
@@ -123,8 +125,13 @@ ParkourDepthBridge::ParkourDepthBridge(
     mujoco::Simulate* sim,
     GLFWwindow* shared_window,
     mjModel** model_ptr,
-    mjData** data_ptr)
-    : sim_(sim), shared_window_(shared_window), model_ptr_(model_ptr), data_ptr_(data_ptr)
+    mjData** data_ptr,
+    std::atomic<bool>* dds_ready)
+    : sim_(sim),
+      shared_window_(shared_window),
+      model_ptr_(model_ptr),
+      data_ptr_(data_ptr),
+      dds_ready_(dds_ready)
 {
   mjv_defaultScene(&scene_);
   mjv_defaultCamera(&camera_);
@@ -147,13 +154,13 @@ bool ParkourDepthBridge::start()
 
   const int width = std::max(param::config.depth_camera_width * param::config.depth_window_scale, 1);
   const int height = std::max(param::config.depth_camera_height * param::config.depth_window_scale, 1);
-  window_ = glfwCreateWindow(width, height, "Parkour Depth", nullptr, shared_window_);
-  if (!window_) {
-    spdlog::warn("Failed to create parkour depth window; disabling depth bridge window output.");
+  if (!create_render_window(width, height)) {
+    spdlog::error(
+      "ParkourDepthBridge publisher is ready, but no GLFW render context could be created; depth frames cannot be rendered."
+    );
     return false;
   }
 
-  pointcloud_publisher_ = std::make_unique<PointCloudPublisher>(param::config.depth_pointcloud_topic);
   stop_requested_ = false;
   running_ = true;
   thread_ = std::thread(&ParkourDepthBridge::run, this);
@@ -168,12 +175,17 @@ void ParkourDepthBridge::stop()
   }
   running_ = false;
 
-  if (scene_ready_) {
+  if (scene_ready_ && window_) {
     glfwMakeContextCurrent(window_);
     mjr_freeContext(&context_);
     mjv_freeScene(&scene_);
     glfwMakeContextCurrent(nullptr);
     scene_ready_ = false;
+  }
+  if (render_data_) {
+    mj_deleteData(render_data_);
+    render_data_ = nullptr;
+    render_model_ = nullptr;
   }
   if (window_) {
     glfwDestroyWindow(window_);
@@ -184,8 +196,30 @@ void ParkourDepthBridge::stop()
 
 void ParkourDepthBridge::run()
 {
+  if (!window_) {
+    return;
+  }
   glfwMakeContextCurrent(window_);
   glfwSwapInterval(1);
+
+  while (!stop_requested_ && dds_ready_ && !dds_ready_->load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::max(param::config.depth_publish_period_ms, 1)));
+  }
+  if (stop_requested_) {
+    glfwMakeContextCurrent(nullptr);
+    return;
+  }
+  if (!pointcloud_publisher_) {
+    pointcloud_publisher_ = std::make_unique<PointCloudPublisher>(param::config.depth_pointcloud_topic);
+    spdlog::info(
+      "PUBLISHER_READY topic={} camera={} raw={}x{} max_distance={}",
+      param::config.depth_pointcloud_topic,
+      param::config.depth_camera_name,
+      param::config.depth_camera_width,
+      param::config.depth_camera_height,
+      param::config.depth_max_distance
+    );
+  }
 
   while (!stop_requested_) {
     if (!ensure_render_resources()) {
@@ -193,7 +227,7 @@ void ParkourDepthBridge::run()
       continue;
     }
 
-    if (glfwWindowShouldClose(window_)) {
+    if (debug_window_visible_ && glfwWindowShouldClose(window_)) {
       break;
     }
 
@@ -203,57 +237,115 @@ void ParkourDepthBridge::run()
 
     std::vector<float> linear_depth;
     linear_depth.reserve(static_cast<size_t>(param::config.depth_camera_width * param::config.depth_camera_height));
+    const mjModel* render_model = nullptr;
+    mjData* render_data = nullptr;
 
-    mjr_setBuffer(mjFB_OFFSCREEN, &context_);
     {
       const std::unique_lock<std::recursive_mutex> lock(sim_->mtx);
       mjModel* model = model_ptr_ ? *model_ptr_ : nullptr;
       mjData* data = data_ptr_ ? *data_ptr_ : nullptr;
-      if (!model || !data) {
+      if (!model || !data || !render_data_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         continue;
       }
-      mj_forward(model, data);
-      mjv_updateScene(model, data, &option_, &perturb_, &camera_, mjCAT_ALL, &scene_);
-      apply_ray_alignment_override(model, data);
-      mjr_render(viewport, &scene_, &context_);
+      // Copy the live MuJoCo state while holding the Simulate mutex, then
+      // release the UI/physics lock before doing OpenGL rendering.  Keeping the
+      // mutex across mjr_render/mjr_readPixels made the native viewer appear
+      // frozen once the DDS controller started physics.
+      mj_copyData(render_data_, model, data);
+      render_model = model;
+      render_data = render_data_;
+    }
 
-      std::vector<float> depth_buffer(static_cast<size_t>(raw_width * raw_height), 1.0f);
-      mjr_readPixels(nullptr, depth_buffer.data(), viewport, &context_);
-      const float znear = static_cast<float>(model->vis.map.znear * model->stat.extent);
-      const float zfar = static_cast<float>(model->vis.map.zfar * model->stat.extent);
-      linear_depth.resize(depth_buffer.size());
-      for (size_t i = 0; i < depth_buffer.size(); ++i) {
-        float value = std::clamp(
-          depth_buffer_to_meters(depth_buffer[i], znear, zfar),
-          0.0f,
-          param::config.depth_max_distance
-        );
-        if (value < param::config.depth_camera_min_distance) {
-          value = param::config.depth_max_distance;
-        }
-        linear_depth[i] = value;
+    mjr_setBuffer(mjFB_OFFSCREEN, &context_);
+    mj_forward(render_model, render_data);
+    mjv_updateScene(render_model, render_data, &option_, &perturb_, &camera_, mjCAT_ALL, &scene_);
+    apply_ray_alignment_override(render_model, render_data);
+    mjr_render(viewport, &scene_, &context_);
+
+    std::vector<float> depth_buffer(static_cast<size_t>(raw_width * raw_height), 1.0f);
+    mjr_readPixels(nullptr, depth_buffer.data(), viewport, &context_);
+    const float znear = static_cast<float>(render_model->vis.map.znear * render_model->stat.extent);
+    const float zfar = static_cast<float>(render_model->vis.map.zfar * render_model->stat.extent);
+    linear_depth.resize(depth_buffer.size());
+    for (size_t i = 0; i < depth_buffer.size(); ++i) {
+      float value = std::clamp(
+        depth_buffer_to_meters(depth_buffer[i], znear, zfar),
+        0.0f,
+        param::config.depth_max_distance
+      );
+      if (value < param::config.depth_camera_min_distance) {
+        value = param::config.depth_max_distance;
       }
+      linear_depth[i] = value;
     }
 
     mjr_setBuffer(mjFB_WINDOW, &context_);
     publish_pointcloud(linear_depth, raw_width, raw_height, camera_id_);
-    draw_depth_window(linear_depth, raw_width, raw_height);
-    glfwSwapBuffers(window_);
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (debug_window_visible_) {
+      draw_depth_window(linear_depth, raw_width, raw_height);
+      glfwSwapBuffers(window_);
+    }
+    // Respect the configured publish period.  The previous fixed 20 ms sleep
+    // forced the hidden GL renderer to run at ~50 Hz even when
+    // depth_publish_period_ms was set lower (for example 100 ms).  That extra
+    // render/copy load perturbs the asynchronous DDS controller enough to
+    // destabilize an otherwise constant-depth walk.
+    std::this_thread::sleep_for(
+      std::chrono::milliseconds(std::max(param::config.depth_publish_period_ms, 1))
+    );
   }
 
   glfwMakeContextCurrent(nullptr);
 }
 
+bool ParkourDepthBridge::create_render_window(int width, int height)
+{
+  const char* debug_window_env = std::getenv("G1_PARKOUR_DEPTH_DEBUG_WINDOW");
+  const bool want_visible_window = !(debug_window_env && std::string(debug_window_env) == "0");
+
+  if (want_visible_window) {
+    glfwDefaultWindowHints();
+    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+    window_ = glfwCreateWindow(width, height, "Parkour Depth", nullptr, shared_window_);
+    if (window_) {
+      debug_window_visible_ = true;
+      return true;
+    }
+    spdlog::warn("Failed to create visible parkour depth debug window; retrying with a hidden render context.");
+  }
+
+  glfwDefaultWindowHints();
+  glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  window_ = glfwCreateWindow(width, height, "Parkour Depth Render Context", nullptr, shared_window_);
+  glfwDefaultWindowHints();
+  if (!window_) {
+    debug_window_visible_ = false;
+    return false;
+  }
+  debug_window_visible_ = false;
+  spdlog::info("ParkourDepthBridge using a hidden render context; DDS depth publishing remains enabled.");
+  return true;
+}
+
 bool ParkourDepthBridge::ensure_render_resources()
 {
-  if (scene_ready_ && camera_id_ >= 0) {
+  const mjModel* model = model_ptr_ ? *model_ptr_ : nullptr;
+  if (scene_ready_ && camera_id_ >= 0 && render_data_ && render_model_ == model) {
     return true;
   }
-  mjModel* model = model_ptr_ ? *model_ptr_ : nullptr;
   if (!model) {
     return false;
+  }
+  if (scene_ready_) {
+    mjr_freeContext(&context_);
+    mjv_freeScene(&scene_);
+    scene_ready_ = false;
+  }
+  if (render_data_) {
+    mj_deleteData(render_data_);
+    render_data_ = nullptr;
+    render_model_ = nullptr;
   }
 
   camera_id_ = mj_name2id(model, mjOBJ_CAMERA, param::config.depth_camera_name.c_str());
@@ -265,6 +357,14 @@ bool ParkourDepthBridge::ensure_render_resources()
 
   mjv_makeScene(model, &scene_, 2000);
   mjr_makeContext(model, &context_, mjFONTSCALE_100);
+  render_data_ = mj_makeData(model);
+  if (!render_data_) {
+    spdlog::warn("Failed to allocate parkour depth render-data snapshot.");
+    mjr_freeContext(&context_);
+    mjv_freeScene(&scene_);
+    return false;
+  }
+  render_model_ = model;
   camera_.type = mjCAMERA_FIXED;
   camera_.fixedcamid = camera_id_;
   scene_ready_ = true;
@@ -336,7 +436,10 @@ void ParkourDepthBridge::publish_pointcloud(const std::vector<float>& linear_dep
     const int source_row = height - 1 - row;
     for (int col = 0; col < width; ++col) {
       const size_t source_index = static_cast<size_t>(source_row * width + col);
-      const float z = linear_depth[source_index];
+      float z = linear_depth[source_index];
+      if (!std::isfinite(z)) {
+        z = param::config.depth_max_distance;
+      }
       const float x = (static_cast<float>(col) - cx) * z / fx;
       const float y = (static_cast<float>(row) - cy) * z / fy;
       const size_t base = static_cast<size_t>(row * width + col) * kPointStep;
@@ -365,12 +468,21 @@ void ParkourDepthBridge::draw_depth_window(const std::vector<float>& linear_dept
   const int crop_width = std::clamp(param::config.depth_debug_crop_width, 1, width - crop_left);
   const int crop_height = std::clamp(param::config.depth_debug_crop_height, 1, height - crop_top);
   for (int display_row = 0; display_row < display_height; ++display_row) {
-    const int cropped_row = crop_top + std::min(crop_height - 1, display_row * crop_height / display_height);
-    const int source_row = height - 1 - std::min(height - 1, cropped_row);
+    // `mjr_readPixels` returns OpenGL framebuffer rows with the first row at
+    // the bottom.  The policy/debug crop is expressed in camera/top-origin
+    // coordinates, but `mjr_drawPixels` also consumes bottom-origin pixel rows.
+    // Therefore the DDS point cloud flips rows for top-origin policy data,
+    // while this debug window flips the *display row* so the visible image is
+    // not upside down.
+    const int top_origin_row = crop_top + std::min(
+      crop_height - 1,
+      (display_height - 1 - display_row) * crop_height / display_height
+    );
+    const int source_row = height - 1 - std::min(height - 1, top_origin_row);
     for (int display_col = 0; display_col < display_width; ++display_col) {
       const int col = crop_left + std::min(crop_width - 1, display_col * crop_width / display_width);
       const size_t source_index = static_cast<size_t>(source_row * width + col);
-      const float normalized = 1.0f - std::clamp(linear_depth[source_index] / max_distance, 0.0f, 1.0f);
+      const float normalized = std::clamp(linear_depth[source_index] / max_distance, 0.0f, 1.0f);
       const auto value = static_cast<unsigned char>(normalized * 255.0f);
       const size_t display_index = static_cast<size_t>((display_row * display_width + display_col) * 3);
       rgb[display_index + 0] = value;

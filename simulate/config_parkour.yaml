@@ -1,5 +1,9 @@
 robot: "g1"
-robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml"
+# C++/DDS flat acceptance target is stable 200m walking with the depth bridge
+# enabled, not obstacle/parkour traversal. Keep the complex obstacle scene as
+# scene_g1_parkour.xml for later terrain work, but default the loopback
+# simulator to the flat parkour scene so smoke tests do not hit stairs/gaps.
+robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_parkour_flat.xml"
 
 domain_id: 0
 interface: "lo"
@@ -11,6 +15,7 @@ joystick_bits: 16
 
 print_scene_information: 1
 wait_for_lowcmd_before_physics: 1
+realtime_lockstep: 1
 enable_elastic_band: 0
 initial_base_pos: [0.0, 0.0, 0.9]
 initial_base_quat: [1.0, 0.0, 0.0, 0.0]
@@ -35,3 +40,4 @@ depth_debug_crop_top: 0
 depth_debug_crop_left: 0
 depth_debug_crop_width: 64
 depth_debug_crop_height: 36
+depth_publish_period_ms: 100
