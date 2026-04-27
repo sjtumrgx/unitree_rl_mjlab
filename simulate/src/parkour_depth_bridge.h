@@ -25,6 +25,7 @@ public:
     GLFWwindow* shared_window,
     mjModel** model_ptr,
     mjData** data_ptr,
+    std::atomic<bool>* data_ready,
     std::atomic<bool>* dds_ready);
   ~ParkourDepthBridge();
 
@@ -36,6 +37,7 @@ private:
   bool create_render_window(int width, int height);
   bool ensure_render_resources();
   void apply_ray_alignment_override(const mjModel* model, const mjData* data);
+  void repair_policy_crop_bottom_artifact_band(std::vector<float>& linear_depth, int width, int height) const;
   void publish_pointcloud(const std::vector<float>& linear_depth, int width, int height, int camera_id);
   void draw_depth_window(const std::vector<float>& linear_depth, int width, int height);
   static float depth_buffer_to_meters(float depth_buffer_value, float znear, float zfar);
@@ -44,6 +46,7 @@ private:
   GLFWwindow* shared_window_ = nullptr;
   mjModel** model_ptr_ = nullptr;
   mjData** data_ptr_ = nullptr;
+  std::atomic<bool>* data_ready_ = nullptr;
   std::atomic<bool>* dds_ready_ = nullptr;
   GLFWwindow* window_ = nullptr;
   std::unique_ptr<PointCloudPublisher> pointcloud_publisher_;

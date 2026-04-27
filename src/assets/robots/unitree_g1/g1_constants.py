@@ -207,24 +207,25 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
 
   # Square-gap approximation: raised lips separated by a lower strip.  The
   # global floor remains intact, so this is safe for early debugging while the
-  # 12 cm lip-to-floor drop creates a stronger depth discontinuity and should
-  # elicit more obvious leg lift before the far platform.
+  # 28 cm lip-to-floor drop and 14 cm lower strip keep the surrogate visibly
+  # different from stepping across the global floor; debug runs now assert that
+  # feet do not contact the lower strip while traversing the gap.
   add_box(
     "parkour_complex_gap_near_platform",
-    pos=(6.80, 0.0, 0.06),
-    size=(0.35, stair_half_width, 0.06),
+    pos=(6.80, 0.0, 0.14),
+    size=(0.35, stair_half_width, 0.14),
     rgba=(0.42, 0.43, 0.48, 1.0),
   )
   add_box(
     "parkour_complex_gap_floor_marker",
-    pos=(7.345, 0.0, 0.001),
-    size=(0.195, 0.66, 0.001),
+    pos=(7.22, 0.0, 0.001),
+    size=(0.07, 0.66, 0.001),
     rgba=(0.05, 0.05, 0.06, 1.0),
   )
   add_box(
     "parkour_complex_gap_far_platform",
-    pos=(7.89, 0.0, 0.06),
-    size=(0.35, stair_half_width, 0.06),
+    pos=(7.64, 0.0, 0.14),
+    size=(0.35, stair_half_width, 0.14),
     rgba=(0.42, 0.43, 0.48, 1.0),
   )
 
@@ -278,20 +279,20 @@ def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
 
   add_box(
     "parkour_complex_second_gap_near_platform",
-    pos=(19.10, 0.0, 0.06),
-    size=(0.35, stair_half_width, 0.06),
+    pos=(19.10, 0.0, 0.14),
+    size=(0.35, stair_half_width, 0.14),
     rgba=(0.38, 0.40, 0.46, 1.0),
   )
   add_box(
     "parkour_complex_second_gap_floor_marker",
-    pos=(19.645, 0.0, 0.001),
-    size=(0.195, 0.66, 0.001),
+    pos=(19.52, 0.0, 0.001),
+    size=(0.07, 0.66, 0.001),
     rgba=(0.04, 0.04, 0.05, 1.0),
   )
   add_box(
     "parkour_complex_second_gap_far_platform",
-    pos=(20.19, 0.0, 0.06),
-    size=(0.35, stair_half_width, 0.06),
+    pos=(19.94, 0.0, 0.14),
+    size=(0.35, stair_half_width, 0.14),
     rgba=(0.38, 0.40, 0.46, 1.0),
   )
 

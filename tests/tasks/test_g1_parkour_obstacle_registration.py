@@ -91,11 +91,11 @@ def test_g1_parkour_complex_terrain_cfg_marks_instinctlab_reference() -> None:
     "step_run_m": 0.42,
     "max_height_m": 0.24,
   }
-  assert contract["gap"]["platform_height_m"] == 0.12
+  assert contract["gap"]["platform_height_m"] == 0.28
   assert contract["gap"]["floor_marker_top_m"] == 0.002
   assert contract["gap"]["keeps_global_floor"] is True
-  assert contract["gap"]["lower_strip_width_m"] <= 0.40
-  assert contract["gap"]["second_lower_strip_width_m"] <= 0.40
+  assert contract["gap"]["lower_strip_width_m"] == 0.14
+  assert contract["gap"]["second_lower_strip_width_m"] == 0.14
   assert "pyramid_stairs" in contract["instinctlab_reference"][
     "approximated_sub_terrains"
   ]
@@ -159,19 +159,19 @@ def test_g1_parkour_complex_terrain_spec_contains_expected_assets() -> None:
   }.issubset(geom_names)
 
 
-def test_g1_parkour_complex_terrain_gaps_are_no_more_than_40cm() -> None:
+def test_g1_parkour_complex_terrain_uses_short_lower_gap_strips() -> None:
   spec = get_g1_parkour_complex_terrain_debug_spec()
 
-  assert _gap_distance(
+  assert round(_gap_distance(
     spec,
     "parkour_complex_gap_near_platform",
     "parkour_complex_gap_far_platform",
-  ) <= 0.40
-  assert _gap_distance(
+  ), 2) == 0.14
+  assert round(_gap_distance(
     spec,
     "parkour_complex_second_gap_near_platform",
     "parkour_complex_second_gap_far_platform",
-  ) <= 0.40
+  ), 2) == 0.14
 
 
 def test_cxx_parkour_complex_scene_mirrors_python_play_terrain_assets() -> None:
@@ -204,7 +204,19 @@ def test_cxx_parkour_complex_scene_mirrors_python_play_terrain_assets() -> None:
   )
   assert (
     float(geoms["parkour_complex_gap_near_platform"].attrib["size"].split()[2])
-    == 0.06
+    == 0.14
+  )
+  assert (
+    float(geoms["parkour_complex_gap_far_platform"].attrib["size"].split()[2])
+    == 0.14
+  )
+  assert (
+    float(geoms["parkour_complex_second_gap_near_platform"].attrib["size"].split()[2])
+    == 0.14
+  )
+  assert (
+    float(geoms["parkour_complex_second_gap_far_platform"].attrib["size"].split()[2])
+    == 0.14
   )
   assert (
     float(geoms["parkour_complex_gap_floor_marker"].attrib["size"].split()[2])
@@ -235,19 +247,29 @@ def test_cxx_default_interactive_scene_uses_complex_policy_depth_assets() -> Non
   assert "depth_debug_artifact_ceiling: 0.75" in config_text
 
 
-def test_cxx_parkour_complex_scene_keeps_gap_spans_at_most_40cm() -> None:
+def test_cxx_parkour_complex_scene_uses_short_lower_gap_strips() -> None:
   geoms = _xml_geom_map(CXX_COMPLEX_SCENE)
 
-  assert _xml_gap_distance(
+  assert round(_xml_gap_distance(
     geoms,
     "parkour_complex_gap_near_platform",
     "parkour_complex_gap_far_platform",
-  ) <= 0.40
-  assert _xml_gap_distance(
+  ), 2) == 0.14
+  assert round(_xml_gap_distance(
     geoms,
     "parkour_complex_second_gap_near_platform",
     "parkour_complex_second_gap_far_platform",
-  ) <= 0.40
+  ), 2) == 0.14
+
+
+def test_cxx_simulator_emits_gap_floor_contact_markers_for_debugging() -> None:
+  text = SIM_MAIN.read_text()
+
+  assert "GAP_FLOOR_CONTACT_DETECTED" in text
+  assert "NO_GAP_FLOOR_CONTACT" in text
+  assert "parkour_complex_gap_floor_marker" in text
+  assert "parkour_complex_second_gap_floor_marker" in text
+  assert "foot_collision" in text
 
 
 def test_cpp_dds_smoke_harness_exposes_complex_terrain_scene_flag() -> None:

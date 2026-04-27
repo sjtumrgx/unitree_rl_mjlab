@@ -18,12 +18,26 @@ void print_control_help()
         std::cout << "Keyboard mode enabled. Keep this terminal focused.\n";
         if (param::sim_loopback_interactive)
         {
-            std::cout << "  Loopback default: starts in Parkour idle-hold; hold w/up to walk, release to stop.\n";
+            if (param::sim_route_follow)
+            {
+                std::cout << "  Loopback default: starts in Parkour idle-hold; hold w/up to follow the parkour terrain route, release to stop.\n";
+            }
+            else
+            {
+                std::cout << "  Loopback default: starts in Parkour idle-hold; hold w/up to walk, release to stop.\n";
+            }
         }
         std::cout << "  f : enter FixStand from Passive/FSM diagnostics\n";
         std::cout << "  k : enter Parkour control (when in FixStand)\n";
         std::cout << "  p : return to Passive mode\n";
-        std::cout << "  w/up : walk only while held at " << param::sim_command_x << " m/s\n";
+        if (param::sim_loopback_interactive && param::sim_route_follow)
+        {
+            std::cout << "  w/up : route-follow only while held at " << param::sim_command_x << " m/s\n";
+        }
+        else
+        {
+            std::cout << "  w/up : walk only while held at " << param::sim_command_x << " m/s\n";
+        }
         std::cout << "  +/= / - : adjust held-walk speed by the policy keyboard step\n";
         std::cout << "  a/left/q : turn left\n";
         std::cout << "  d/right/e : turn right\n";

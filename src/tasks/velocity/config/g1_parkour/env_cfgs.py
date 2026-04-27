@@ -232,10 +232,10 @@ def _unitree_g1_parkour_complex_terrain_env_cfg(
     "down_stairs": {"steps": 5, "step_run_m": 0.36, "max_height_m": 0.30},
     "second_stairs": {"steps": 4, "step_run_m": 0.42, "max_height_m": 0.24},
     "gap": {
-      "platform_height_m": 0.12,
+      "platform_height_m": 0.28,
       "floor_marker_top_m": 0.002,
-      "lower_strip_width_m": 0.39,
-      "second_lower_strip_width_m": 0.39,
+      "lower_strip_width_m": 0.14,
+      "second_lower_strip_width_m": 0.14,
       "keeps_global_floor": True,
     },
     "box_field": {

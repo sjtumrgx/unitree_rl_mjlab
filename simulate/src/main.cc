@@ -126,6 +126,8 @@ namespace
     double next_progress_time = 0.0;
     bool distance_marker_logged = false;
     bool fall_marker_logged = false;
+    bool gap_floor_contact_logged = false;
+    bool gap_floor_clear_logged = false;
   };
 
   double configured_walk_distance_marker()
@@ -213,6 +215,73 @@ namespace
       return true;
     }
     return tracker.distance_marker_logged;
+  }
+
+  std::string geom_name(const mjModel* model, int geom_id)
+  {
+    if (model == nullptr || geom_id < 0) {
+      return "";
+    }
+    const char* name = mj_id2name(model, mjOBJ_GEOM, geom_id);
+    return name == nullptr ? "" : std::string(name);
+  }
+
+  bool is_gap_floor_marker(const std::string& name)
+  {
+    return name == "parkour_complex_gap_floor_marker"
+      || name == "parkour_complex_second_gap_floor_marker";
+  }
+
+  bool is_foot_collision_geom(const std::string& name)
+  {
+    return name.find("foot_collision") != std::string::npos;
+  }
+
+  bool emit_gap_floor_contact_marker_if_needed(ParkourProgressTracker& tracker, const mjModel* model, const mjData* data)
+  {
+    if (tracker.gap_floor_contact_logged || model == nullptr || data == nullptr) {
+      return tracker.gap_floor_contact_logged;
+    }
+
+    for (int contact_index = 0; contact_index < data->ncon; ++contact_index)
+    {
+      const mjContact& contact = data->contact[contact_index];
+      const std::string geom1 = geom_name(model, contact.geom1);
+      const std::string geom2 = geom_name(model, contact.geom2);
+      const bool geom1_is_gap = is_gap_floor_marker(geom1);
+      const bool geom2_is_gap = is_gap_floor_marker(geom2);
+      const bool geom1_is_foot = is_foot_collision_geom(geom1);
+      const bool geom2_is_foot = is_foot_collision_geom(geom2);
+      if (!((geom1_is_gap && geom2_is_foot) || (geom2_is_gap && geom1_is_foot))) {
+        continue;
+      }
+
+      const std::string marker = geom1_is_gap ? geom1 : geom2;
+      const std::string foot = geom1_is_foot ? geom1 : geom2;
+      std::cout << "GAP_FLOOR_CONTACT_DETECTED marker=" << marker
+                << " foot=" << foot
+                << " contact_x=" << contact.pos[0]
+                << " contact_y=" << contact.pos[1]
+                << " contact_z=" << contact.pos[2]
+                << " distance_x=" << distance_x_from_tracker(tracker, data)
+                << " sim_time=" << data->time
+                << std::endl;
+      tracker.gap_floor_contact_logged = true;
+      return true;
+    }
+    return false;
+  }
+
+  bool emit_gap_floor_clear_marker_if_needed(ParkourProgressTracker& tracker, const mjData* data)
+  {
+    if (tracker.gap_floor_clear_logged || tracker.gap_floor_contact_logged || data == nullptr) {
+      return tracker.gap_floor_clear_logged;
+    }
+    std::cout << "NO_GAP_FLOOR_CONTACT distance_x=" << distance_x_from_tracker(tracker, data)
+              << " sim_time=" << data->time
+              << std::endl;
+    tracker.gap_floor_clear_logged = true;
+    return true;
   }
 
   bool emit_fall_marker_if_needed(ParkourProgressTracker& tracker, const mjData* data)
@@ -811,8 +880,12 @@ namespace
             if (stepped)
             {
               sim.AddToHistory();
+              emit_gap_floor_contact_marker_if_needed(progress_tracker, m, d);
               emit_progress_if_due(progress_tracker, d, "viewer");
-              emit_distance_marker_if_reached(progress_tracker, d);
+              if (emit_distance_marker_if_reached(progress_tracker, d))
+              {
+                emit_gap_floor_clear_marker_if_needed(progress_tracker, d);
+              }
               emit_fall_marker_if_needed(progress_tracker, d);
             }
           }
@@ -987,9 +1060,11 @@ int RunHeadless()
       mj_step(m, d);
     }
 
+    emit_gap_floor_contact_marker_if_needed(progress_tracker, m, d);
     emit_progress_if_due(progress_tracker, d, "headless");
     if (!distance_logged && emit_distance_marker_if_reached(progress_tracker, d))
     {
+      emit_gap_floor_clear_marker_if_needed(progress_tracker, d);
       distance_logged = true;
       break;
     }
@@ -1004,6 +1079,7 @@ int RunHeadless()
 
   if (!fall_logged)
   {
+    emit_gap_floor_clear_marker_if_needed(progress_tracker, d);
     std::cout << "NO_FALL_RESET" << std::endl;
   }
   mj_deleteData(d);
@@ -1110,6 +1186,7 @@ int main(int argc, char **argv)
       static_cast<mj::GlfwAdapter*>(sim->platform_ui.get())->window_,
       &m,
       &d,
+      &mujoco_data_initialized,
       &unitree_channel_ready
     );
     const bool depth_bridge_started = depth_bridge->start();

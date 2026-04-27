@@ -55,6 +55,7 @@ inline struct SimulationConfig
     int depth_debug_policy_display = 0;
     float depth_debug_artifact_floor = 0.0f;
     float depth_debug_artifact_ceiling = 1.0f;
+    int depth_policy_bottom_artifact_rows = 0;
     int depth_publish_period_ms = 100;
 
     void load_from_yaml(const std::string &filename)
@@ -146,6 +147,9 @@ inline struct SimulationConfig
             }
             if (cfg["depth_debug_artifact_ceiling"]) {
                 depth_debug_artifact_ceiling = cfg["depth_debug_artifact_ceiling"].as<float>();
+            }
+            if (cfg["depth_policy_bottom_artifact_rows"]) {
+                depth_policy_bottom_artifact_rows = cfg["depth_policy_bottom_artifact_rows"].as<int>();
             }
             if (cfg["depth_publish_period_ms"]) {
                 depth_publish_period_ms = cfg["depth_publish_period_ms"].as<int>();

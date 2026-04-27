@@ -40,7 +40,7 @@ depth_max_distance: 2.5
 # Preserve very near pixels as near/dark policy-depth observations.  Mapping
 # sub-10cm self/foreground pixels to far/white destabilizes full live depth.
 depth_camera_min_distance: 0.0
-depth_camera_ray_alignment: "yaw"
+depth_camera_ray_alignment: "base"
 # Default depth debug window shows the same 18x32 policy crop configured in
 # deploy.yaml crop_region=[18, 0, 16, 16], not the full raw 64x36 renderer
 # frame.  This avoids misleading raw-frame self/edge artifacts in the live
@@ -52,4 +52,9 @@ depth_debug_crop_height: 18
 depth_debug_policy_display: 1
 depth_debug_artifact_floor: 0.10
 depth_debug_artifact_ceiling: 0.75
+# The C++ OpenGL path exposes two near-plane/self-occlusion rows at the
+# bottom of the policy crop that scripts/play_parkour.py does not produce.
+# Extrapolate them from the nearest valid crop rows before DDS publish and
+# debug display so live policy input matches the Python MuJoCo depth path.
+depth_policy_bottom_artifact_rows: 2
 depth_publish_period_ms: 100

@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -75,7 +76,10 @@ size_t target_route_index(float x)
     return waypoints.size() - 1;
 }
 
-std::vector<float> parkour_route_velocity_commands(ManagerBasedRLEnv* env)
+std::vector<float> parkour_route_velocity_commands(
+    ManagerBasedRLEnv* env,
+    std::optional<float> speed_override = std::nullopt
+)
 {
     const auto pose = latest_route_pose_xy();
     if (!pose || env == nullptr || env->robot == nullptr) {
@@ -106,7 +110,7 @@ std::vector<float> parkour_route_velocity_commands(ManagerBasedRLEnv* env)
     }
 
     const float yaw = detail::yaw_from_quaternion(env->robot->data.root_quat_w);
-    const float speed = std::max(0.05f, param::sim_command_x);
+    const float speed = std::max(0.05f, speed_override.value_or(param::sim_command_x));
     const float delta_x = target_x - pos_x;
     const float delta_y = target_y - pos_y;
     const float distance = std::max(1.0e-6f, std::hypot(delta_x, delta_y));
@@ -163,24 +167,37 @@ std::vector<float> parkour_route_velocity_commands(ManagerBasedRLEnv* env)
     return obs;
 }
 
+bool keyboard_route_requested(const std::vector<float>& keyboard_obs)
+{
+    if (!param::sim_loopback_interactive || !param::sim_route_follow || keyboard_obs.empty()) {
+        return false;
+    }
+    const float idle_speed = param::sim_loopback_interactive ? param::sim_keyboard_idle_command_x : 0.0f;
+    return keyboard_obs[0] > idle_speed + 1.0e-4f;
+}
+
 std::vector<float> parkour_velocity_commands(ManagerBasedRLEnv* env, YAML::Node params)
 {
     if (param::keyboard_control) {
-        auto obs = keyboard_velocity_command(env);
-        param::sim_observed_command_x.store(obs[0]);
-        param::sim_observed_command_y.store(obs[1]);
-        param::sim_observed_command_yaw.store(obs[2]);
+        auto keyboard_obs = keyboard_velocity_command(env);
         static bool logged_keyboard_source = false;
         if (!logged_keyboard_source) {
+            const std::string start_command = param::sim_loopback_interactive && param::sim_route_follow
+                ? "terrain-route"
+                : "[" + std::to_string(param::sim_loopback_interactive ? param::sim_keyboard_idle_command_x : 0.0f) + ",0,0]";
             std::cout << "SIM_KEYBOARD_COMMANDS enabled cruise_speed=" << param::sim_command_x
                       << " idle_command_x=" << (param::sim_loopback_interactive ? param::sim_keyboard_idle_command_x : 0.0f)
-                      << " start_command=["
-                      << (param::sim_loopback_interactive ? param::sim_keyboard_idle_command_x : 0.0f)
-                      << ",0,0]"
+                      << " start_command=" << start_command
                       << std::endl;
             logged_keyboard_source = true;
         }
-        return obs;
+        if (keyboard_route_requested(keyboard_obs)) {
+            return parkour_route_velocity_commands(env, keyboard_obs[0]);
+        }
+        param::sim_observed_command_x.store(keyboard_obs[0]);
+        param::sim_observed_command_y.store(keyboard_obs[1]);
+        param::sim_observed_command_yaw.store(keyboard_obs[2]);
+        return keyboard_obs;
     }
     if (param::sim_autostart_parkour && param::sim_route_follow) {
         return parkour_route_velocity_commands(env);

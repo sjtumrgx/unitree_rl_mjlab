@@ -246,10 +246,10 @@ inline po::variables_map helper(int argc, char** argv)
     {
         sim_loopback_interactive = true;
         keyboard_control = true;
-        sim_route_follow = false;
         spdlog::warn(
             "--network=lo defaulting to interactive simulation mode: "
-            "start_state=Parkour with idle hold, live depth, keyboard velocity commands, cruise speed={} m/s. "
+            "start_state=Parkour with idle hold, live depth, keyboard-gated terrain route following, "
+            "cruise speed={} m/s. Pass --no-sim-route-follow for fixed keyboard velocity commands. "
             "Pass --no-sim-loopback-interactive for the legacy joystick/FSM flow.",
             sim_command_x
         );

@@ -30,6 +30,7 @@ REQUIRED_MARKERS = (
   "NONZERO_COMMAND",
   "ORDER_PARITY_OK",
   "DISTANCE_X",
+  "NO_GAP_FLOOR_CONTACT",
   "NO_FALL_RESET",
 )
 
@@ -56,6 +57,7 @@ class HarnessState:
   latest_progress: dict[str, float | str | bool] = field(default_factory=dict)
   depth_blend_config: dict[str, float | str | bool] = field(default_factory=dict)
   fall_reset_detected: bool = False
+  gap_floor_contact_detected: bool = False
   processes_exited: dict[str, int | None] = field(default_factory=dict)
   sim_ready: bool = False
 
@@ -75,6 +77,11 @@ class HarnessState:
       self.markers["NONZERO_COMMAND"] = True
     if "ORDER_PARITY_OK" in line:
       self.markers["ORDER_PARITY_OK"] = True
+    if "GAP_FLOOR_CONTACT_DETECTED" in line:
+      self.gap_floor_contact_detected = True
+      self.markers["NO_GAP_FLOOR_CONTACT"] = False
+    if "NO_GAP_FLOOR_CONTACT" in line and not self.gap_floor_contact_detected:
+      self.markers["NO_GAP_FLOOR_CONTACT"] = True
     if "FALL_RESET_DETECTED" in line or "nan" in line.lower() or "non-finite" in line.lower():
       self.fall_reset_detected = True
     distance_match = re.search(r"DISTANCE_X>=([0-9.+\-eE]+)\s+distance_x=([0-9.+\-eE]+)", line)
@@ -95,7 +102,9 @@ class HarnessState:
 
   def success(self) -> bool:
     self.markers["NO_FALL_RESET"] = not self.fall_reset_detected
-    return all(self.markers[marker] for marker in self.required_markers)
+    if self.gap_floor_contact_detected:
+      self.markers["NO_GAP_FLOOR_CONTACT"] = False
+    return all(self.markers[marker] for marker in self.required_markers) and not self.gap_floor_contact_detected
 
 
 def _reader_thread(proc: subprocess.Popen[str], spec: ProcessSpec, queue: Queue[tuple[str, str]], log_file) -> None:
@@ -471,6 +480,8 @@ def main(argv: Iterable[str] | None = None) -> int:
           state.processes_exited[spec.name] = rc
       if state.fall_reset_detected:
         break
+      if state.gap_floor_contact_detected:
+        break
       if state.success():
         break
 
@@ -492,6 +503,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         pass
 
   state.markers["NO_FALL_RESET"] = not state.fall_reset_detected
+  if state.gap_floor_contact_detected:
+    state.markers["NO_GAP_FLOOR_CONTACT"] = False
   summary = {
     "status": "ok" if state.success() else "failed",
     "markers": state.markers,
@@ -501,6 +514,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     "latest_progress": state.latest_progress,
     "depth_blend_config": state.depth_blend_config,
     "fall_reset_detected": state.fall_reset_detected,
+    "gap_floor_contact_detected": state.gap_floor_contact_detected,
     "processes_exited": state.processes_exited,
     "commands": {"sim": sim_spec.cmd, "ctrl": ctrl_spec.cmd},
     "logs": {"sim": str(sim_spec.log_path), "ctrl": str(ctrl_spec.log_path)},

@@ -126,11 +126,13 @@ ParkourDepthBridge::ParkourDepthBridge(
     GLFWwindow* shared_window,
     mjModel** model_ptr,
     mjData** data_ptr,
+    std::atomic<bool>* data_ready,
     std::atomic<bool>* dds_ready)
     : sim_(sim),
       shared_window_(shared_window),
       model_ptr_(model_ptr),
       data_ptr_(data_ptr),
+      data_ready_(data_ready),
       dds_ready_(dds_ready)
 {
   mjv_defaultScene(&scene_);
@@ -215,6 +217,11 @@ void ParkourDepthBridge::run()
       );
     }
 
+    if (data_ready_ && !data_ready_->load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      continue;
+    }
+
     if (!ensure_render_resources()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
       continue;
@@ -272,6 +279,7 @@ void ParkourDepthBridge::run()
       }
       linear_depth[i] = value;
     }
+    repair_policy_crop_bottom_artifact_band(linear_depth, raw_width, raw_height);
 
     mjr_setBuffer(mjFB_WINDOW, &context_);
     publish_pointcloud(linear_depth, raw_width, raw_height, camera_id_);
@@ -391,6 +399,58 @@ void ParkourDepthBridge::apply_ray_alignment_override(const mjModel* model, cons
     };
     write_gl_camera(scene_.camera[0], world_camera_position, yaw_only_rotation);
     write_gl_camera(scene_.camera[1], world_camera_position, yaw_only_rotation);
+  }
+}
+
+void ParkourDepthBridge::repair_policy_crop_bottom_artifact_band(
+  std::vector<float>& linear_depth,
+  int width,
+  int height) const
+{
+  const int artifact_rows = std::clamp(param::config.depth_policy_bottom_artifact_rows, 0, height);
+  if (artifact_rows <= 0 || width <= 0 || height <= 0) {
+    return;
+  }
+  const int crop_top = std::clamp(param::config.depth_debug_crop_top, 0, std::max(height - 1, 0));
+  const int crop_left = std::clamp(param::config.depth_debug_crop_left, 0, std::max(width - 1, 0));
+  const int crop_width = std::clamp(param::config.depth_debug_crop_width, 1, width - crop_left);
+  const int crop_height = std::clamp(param::config.depth_debug_crop_height, 1, height - crop_top);
+  const int repaired_rows = std::clamp(artifact_rows, 0, std::max(crop_height - 1, 0));
+  if (repaired_rows <= 0 || linear_depth.size() < static_cast<size_t>(width * height)) {
+    return;
+  }
+
+  // MuJoCo's C++ offscreen readback exposes a persistent near-plane/self edge
+  // at the bottom of the G1 policy crop.  The Python play_parkour renderer
+  // does not feed this black band to the policy.  Preserve the 18x32 contract
+  // by extending the local depth gradient from the nearest valid crop rows
+  // instead of changing crop dimensions or globally raising the artifact floor.
+  const int last_valid_top_row = crop_top + crop_height - repaired_rows - 1;
+  const int previous_valid_top_row = std::max(crop_top, last_valid_top_row - 1);
+  if (last_valid_top_row < crop_top || last_valid_top_row >= height) {
+    return;
+  }
+  const int last_valid_source_row = height - 1 - last_valid_top_row;
+  const int previous_valid_source_row = height - 1 - previous_valid_top_row;
+  for (int artifact_index = 0; artifact_index < repaired_rows; ++artifact_index) {
+    const int target_top_row = last_valid_top_row + 1 + artifact_index;
+    if (target_top_row < 0 || target_top_row >= height) {
+      continue;
+    }
+    const int target_source_row = height - 1 - target_top_row;
+    for (int col = crop_left; col < crop_left + crop_width; ++col) {
+      const size_t last_index = static_cast<size_t>(last_valid_source_row * width + col);
+      const size_t previous_index = static_cast<size_t>(previous_valid_source_row * width + col);
+      const size_t target_index = static_cast<size_t>(target_source_row * width + col);
+      const float last_depth = linear_depth[last_index];
+      const float previous_depth = linear_depth[previous_index];
+      const float delta = last_depth - previous_depth;
+      linear_depth[target_index] = std::clamp(
+        last_depth + delta * static_cast<float>(artifact_index + 1),
+        0.0f,
+        param::config.depth_max_distance
+      );
+    }
   }
 }
 
