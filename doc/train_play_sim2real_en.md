@@ -40,18 +40,39 @@ Before C++/DDS:
 
 ## 3. Simulator / C++ loopback
 
-1. Build simulator and controller.
-2. Start with loopback networking (`--network lo`).
-3. Keep stale DDS processes from previous runs out of the test by killing old
+1. Build the shared simulator once:
+
+   ```bash
+   cmake -S simulate -B simulate/build
+   cmake --build simulate/build -j4
+   ```
+
+2. Build the controller for the exact task you are validating.
+3. Start with loopback networking (`--network=lo`).
+4. Keep stale DDS processes from previous runs out of the test by killing old
    simulator/controller processes before launch.
-4. Start with low command speeds and conservative modes.
-5. If behavior diverges from Python play, compare:
+5. Start with low command speeds and conservative modes.
+6. If behavior diverges from Python play, compare:
    - joint order
    - action order
    - default pose
    - startup blend
    - command frame
    - depth/camera validity
+
+### Task-specific command matrix
+
+| Task | Controller build | Simulator terminal | Controller terminal | Control transition | Real-robot command shape |
+| --- | --- | --- | --- | --- | --- |
+| Velocity / base G1 | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | keyboard `f` → `v`; joystick `L2+Up` → `R2+A` | `./deploy/robots/g1/build/g1_ctrl --network=<robot_nic> --keyboard` |
+| AntiFall | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | keyboard `f` → `v`; joystick `L2+Up` → `R2+A` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=<robot_nic> --keyboard` |
+| GetUp | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | keyboard `f` → `g`; joystick `L2+Up` → `R2+Y` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=<robot_nic> --keyboard` |
+| Parkour | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>auto-start: `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback route: hold `w` / `up`; `p` returns Passive | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=<robot_nic> --keyboard` |
+
+Use `--headless --headless-seconds <N>` on the simulator for no-GUI loopback
+runs.  Parkour also supports `G1_PARKOUR_DEPTH_BRIDGE=0` on the simulator and
+`G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` or `--constant-depth <value>` on the
+controller for depth ablations.
 
 ## 4. Real robot gate
 

@@ -37,17 +37,37 @@
 
 ## 3. Simulator / C++ loopback
 
-1. 构建 simulator 和 controller。
-2. 本机仿真使用 loopback 网络（`--network lo`）。
-3. 启动前清理旧 simulator/controller 进程，避免 DDS 连到旧进程。
-4. 从低速度和保守模式开始。
-5. 如果 C++ 行为和 Python play 不一致，优先比较：
+1. 先构建共用 simulator：
+
+   ```bash
+   cmake -S simulate -B simulate/build
+   cmake --build simulate/build -j4
+   ```
+
+2. 为当前要验证的任务构建对应 controller。
+3. 本机仿真使用 loopback 网络（`--network=lo`）。
+4. 启动前清理旧 simulator/controller 进程，避免 DDS 连到旧进程。
+5. 从低速度和保守模式开始。
+6. 如果 C++ 行为和 Python play 不一致，优先比较：
    - joint order
    - action order
    - 默认姿态
    - startup blend
    - command frame
    - depth/camera validity
+
+### 各任务命令矩阵
+
+| 任务 | Controller 构建 | Simulator 终端 | Controller 终端 | 控制切换 | 真实机器人命令形态 |
+| --- | --- | --- | --- | --- | --- |
+| Velocity / 基础 G1 | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | 键盘 `f` → `v`；遥控器 `L2+Up` → `R2+A` | `./deploy/robots/g1/build/g1_ctrl --network=<robot_nic> --keyboard` |
+| AntiFall | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | 键盘 `f` → `v`；遥控器 `L2+Up` → `R2+A` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=<robot_nic> --keyboard` |
+| GetUp | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | 键盘 `f` → `g`；遥控器 `L2+Up` → `R2+Y` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=<robot_nic> --keyboard` |
+| Parkour | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>自动进入：`./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback 路线：按住 `w` / `up`；`p` 回 Passive | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=<robot_nic> --keyboard` |
+
+无 GUI loopback 可在 simulator 命令上加 `--headless --headless-seconds <N>`。
+Parkour 还支持在 simulator 侧设置 `G1_PARKOUR_DEPTH_BRIDGE=0`，在 controller 侧使用
+`G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` 或 `--constant-depth <value>` 做深度 ablation。
 
 ## 4. 真实机器人门槛
 

@@ -256,72 +256,56 @@ obstacle order or total course length, update the route waypoints separately in
 ## 3. Sim2Real
 
 Sim2Real means moving from Python/MJLab replay to the Unitree C++/DDS control
-stack, first in simulator and only then on hardware.
+stack, first in simulator and only then on hardware.  Treat every task as its
+own lane: the simulator is shared, but the controller binary, policy directory,
+keyboard transition, and safety gate differ by module.
 
-### 3.1 Build simulator and controller
+### 3.1 Common simulator build
 
-Build the Unitree MuJoCo simulator:
-
-```bash
-cd simulate
-cmake -B build -S .
-cmake --build build -j4
-cd ..
-```
-
-Build the G1 Parkour controller:
+Build the Unitree MuJoCo simulator once:
 
 ```bash
-cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build
-cmake --build deploy/robots/g1_parkour/build -j4
+cmake -S simulate -B simulate/build
+cmake --build simulate/build -j4
 ```
 
-Other robot controllers follow the same pattern under `deploy/robots/<robot>/`.
+The normal simulator binary reads `simulate/config.yaml`; the Parkour binary
+reads `simulate/config_parkour.yaml` and enables the depth bridge by default.
 
-### 3.2 Simulator loopback
+### 3.2 Task-specific loopback commands
 
-Start simulator and controller in two terminals:
+Use two terminals for loopback: start the simulator first, then start the matching
+controller with `--network=lo`.  For real hardware, keep the same controller but
+replace `lo` with the robot network interface after simulator validation passes.
 
-```bash
-# Terminal 1
-./simulate/build/unitree_mujoco_parkour --network lo
+| Task | Python gate before C++ | Controller build | Loopback simulator terminal | Loopback controller terminal | Enter/control | Main caveat |
+| --- | --- | --- | --- | --- | --- | --- |
+| Velocity / base G1 | `python scripts/play.py Unitree-G1-Flat --checkpoint_file <model.pt>` | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | keyboard: `f` → `v`; joystick: `L2+Up` → `R2+A` | The deployed artifact is read from `deploy/robots/g1/config/policy/velocity/v0`; verify joint order/action scale in `params/deploy.yaml`. |
+| AntiFall | `python scripts/play_antifall.py --task Unitree-G1-AntiFall-Stage4b --run-dir <stage_dir> --checkpoint <model.pt>` | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | keyboard: `f` → `v`; joystick: `L2+Up` → `R2+A` | Validate recovery with simulator pushes before hardware; do not use AntiFall to mask wrong action order, PD gains, or reset pose. |
+| GetUp | `python scripts/play_getup.py --terrain ground -- --checkpoint_file <model.pt>` | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | keyboard: `f` → `g`; joystick: `L2+Up` → `R2+Y` | Start with ground get-up.  Platform/wall/slope hardware tests need matched start geometry and extra physical support. |
+| Parkour | `python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer`<br>`python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20` | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>or auto-start: `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback keyboard route: hold `w` / `up`; `p` returns Passive | Live depth is part of the policy contract.  Constant depth is only an ablation, not terrain traversal proof. |
 
-# Terminal 2
-./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo
-```
-
-For automated Parkour route-following in simulator, pass
-`--sim-autostart-parkour` to the controller and set command/depth flags on the
-controller binary.  For headless simulator diagnostics, pass `--headless` and
-`--headless-seconds <N>` to the simulator.  To isolate the controller from live
-depth rendering, set `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` for the controller.
-To disable the simulator depth bridge, start the simulator with
-`G1_PARKOUR_DEPTH_BRIDGE=0`.
-
-Keyboard controls in loopback controller mode:
-
-- `w` / `up`: walk only while held.
-- `s` / `down` / `x` / `space`: stop translational command.
-- `a` / `left` / `q`: yaw left.
-- `d` / `right` / `e`: yaw right.
-- `c`: stop yaw.
-- `+` / `=` / `-`: adjust forward speed.
-- `p`: Passive.
+For headless simulator diagnostics, add `--headless --headless-seconds <N>` to
+the simulator command.  For Parkour depth ablations, set
+`G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` on the controller, or start the simulator
+with `G1_PARKOUR_DEPTH_BRIDGE=0` to disable simulator-side live depth publishing.
 
 ### 3.3 Real robot checklist
 
 Before hardware:
 
 1. Verify Python `play` behavior with the same checkpoint/artifact.
-2. Verify simulator loopback with conservative commands.
+2. Verify the task-specific simulator loopback row above with conservative
+   commands.
 3. Confirm joint names, action scale, default joint pose, and policy observation
    order match the deploy YAML.
 4. Confirm robot network interface and DDS domain do not collide with another
    simulator/controller process.
-5. Start with low speed and a safety operator ready to switch to Passive.
-6. Keep the robot suspended or supported for the first motor-enable test when
+5. Replace `--network=lo` with the robot NIC only after simulator validation.
+6. Start with low speed and a safety operator ready to switch to Passive.
+7. Keep the robot suspended or supported for the first motor-enable test when
    changing action order, PD gains, or default pose.
-7. Do not tune away instability by blindly increasing stiffness; first check
+8. Do not tune away instability by blindly increasing stiffness; first check
    command frame, action order, torque limits, depth validity, and reset pose.
 
 Common Parkour-specific caveats:

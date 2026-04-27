@@ -245,67 +245,50 @@ route waypoints。
 ## 3. Sim2Real
 
 Sim2Real 指从 Python/MJLab 回放进入 Unitree C++/DDS 控制链；先跑 simulator，再上
-真实机器人。
+真实机器人。不同任务要分开看：simulator 是共用的，但 controller 二进制、policy
+目录、键盘切换方式和安全门槛都不同。
 
-### 3.1 构建 simulator 和 controller
+### 3.1 通用 simulator 构建
 
-构建 Unitree MuJoCo simulator：
-
-```bash
-cd simulate
-cmake -B build -S .
-cmake --build build -j4
-cd ..
-```
-
-构建 G1 Parkour controller：
+先构建 Unitree MuJoCo simulator：
 
 ```bash
-cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build
-cmake --build deploy/robots/g1_parkour/build -j4
+cmake -S simulate -B simulate/build
+cmake --build simulate/build -j4
 ```
 
-其他机器人 controller 也按 `deploy/robots/<robot>/` 下的相同方式构建。
+普通 simulator 二进制读取 `simulate/config.yaml`；Parkour 二进制读取
+`simulate/config_parkour.yaml`，并默认启用 depth bridge。
 
-### 3.2 Simulator loopback
+### 3.2 各任务 loopback 命令
 
-两个终端分别启动 simulator 和 controller：
+本机 loopback 使用两个终端：先启动 simulator，再用 `--network=lo` 启动对应
+controller。真实机器人时，必须先通过 simulator 验证，再把同一个 controller 的
+`lo` 替换成机器人网卡名。
 
-```bash
-# 终端 1
-./simulate/build/unitree_mujoco_parkour --network lo
+| 任务 | 进入 C++ 前的 Python gate | Controller 构建 | Loopback simulator 终端 | Loopback controller 终端 | 进入/控制方式 | 主要注意事项 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Velocity / 基础 G1 | `python scripts/play.py Unitree-G1-Flat --checkpoint_file <model.pt>` | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | 键盘：`f` → `v`；遥控器：`L2+Up` → `R2+A` | 部署 artifact 来自 `deploy/robots/g1/config/policy/velocity/v0`；重点核对 `params/deploy.yaml` 里的 joint order/action scale。 |
+| AntiFall | `python scripts/play_antifall.py --task Unitree-G1-AntiFall-Stage4b --run-dir <stage_dir> --checkpoint <model.pt>` | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | 键盘：`f` → `v`；遥控器：`L2+Up` → `R2+A` | 先在 simulator 中验证恢复能力；不要用 AntiFall 掩盖 action order、PD gain 或 reset pose 错误。 |
+| GetUp | `python scripts/play_getup.py --terrain ground -- --checkpoint_file <model.pt>` | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | 键盘：`f` → `g`；遥控器：`L2+Up` → `R2+Y` | 硬件先从 ground get-up 开始；platform/wall/slope 需要匹配初始几何并加额外物理保护。 |
+| Parkour | `python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer`<br>`python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20` | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>自动进入：`./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback 键盘路线：按住 `w` / `up`；`p` 回 Passive | Live depth 是 policy contract 的一部分。常量深度只适合 ablation，不代表地形通过能力。 |
 
-# 终端 2
-./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo
-```
-
-Parkour 自动路线跟随仿真时，给 controller 传 `--sim-autostart-parkour`，并在
-controller 二进制上设置速度/深度参数。无头 simulator 诊断使用 `--headless` 和
-`--headless-seconds <N>`。如果要隔离实时深度渲染，controller 侧设置
-`G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5`；如果要关闭 simulator depth bridge，则用
-`G1_PARKOUR_DEPTH_BRIDGE=0` 启动 simulator。
-
-loopback controller 键盘控制：
-
-- `w` / `up`：按住才向前走。
-- `s` / `down` / `x` / `space`：停止平移命令。
-- `a` / `left` / `q`：左转。
-- `d` / `right` / `e`：右转。
-- `c`：停止 yaw。
-- `+` / `=` / `-`：调节前进速度。
-- `p`：Passive。
+无头 simulator 诊断时，给 simulator 命令加 `--headless --headless-seconds <N>`。
+Parkour 深度 ablation 可在 controller 侧设置 `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5`；
+如果要关闭 simulator 侧 live depth 发布，用 `G1_PARKOUR_DEPTH_BRIDGE=0` 启动 simulator。
 
 ### 3.3 真实机器人检查清单
 
 上硬件前：
 
 1. 用同一 checkpoint/artifact 通过 Python `play`。
-2. 用保守命令通过 simulator loopback。
+2. 用上表中对应任务的保守命令通过 simulator loopback。
 3. 确认 joint name、action scale、默认关节角和 policy observation order 与 deploy YAML 一致。
 4. 确认机器人网卡和 DDS domain 不会连到旧 simulator/controller 进程。
-5. 低速开始，并安排安全员随时切 Passive。
-6. 修改 action order、PD gain 或默认姿态后，首次电机使能应悬空或有支撑。
-7. 不要通过盲目增大刚度来掩盖不稳定；优先检查 command frame、action order、torque limit、depth validity 和 reset pose。
+5. 只有 simulator 验证通过后，才把 `--network=lo` 换成真实机器人网卡。
+6. 低速开始，并安排安全员随时切 Passive。
+7. 修改 action order、PD gain 或默认姿态后，首次电机使能应悬空或有支撑。
+8. 不要通过盲目增大刚度来掩盖不稳定；优先检查 command frame、action order、torque limit、depth validity 和 reset pose。
 
 Parkour 特别注意：
 
