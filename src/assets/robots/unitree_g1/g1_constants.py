@@ -13,6 +13,10 @@ from mjlab.utils.actuator import (
 )
 from mjlab.utils.os import update_assets
 from mjlab.utils.spec_config import CollisionCfg
+from src.parkour.scene_editor import (
+  ParkourSceneDocument,
+  add_scene_modules_to_mujoco_spec,
+)
 
 ##
 # MJCF and assets.
@@ -108,213 +112,14 @@ def _add_parkour_obstacle_debug_geoms(spec: mujoco.MjSpec) -> None:
   )
 
 
-PARKOUR_COMPLEX_TERRAIN_GEOM_NAMES = (
-  "parkour_complex_up_stair_01",
-  "parkour_complex_up_stair_02",
-  "parkour_complex_up_stair_03",
-  "parkour_complex_up_stair_04",
-  "parkour_complex_up_stair_05",
-  "parkour_complex_top_platform",
-  "parkour_complex_down_stair_01",
-  "parkour_complex_down_stair_02",
-  "parkour_complex_down_stair_03",
-  "parkour_complex_down_stair_04",
-  "parkour_complex_down_stair_05",
-  "parkour_complex_gap_near_platform",
-  "parkour_complex_gap_floor_marker",
-  "parkour_complex_gap_far_platform",
-  "parkour_complex_discrete_box_01",
-  "parkour_complex_discrete_box_02",
-  "parkour_complex_discrete_box_03",
-  "parkour_complex_discrete_box_04",
-  "parkour_complex_discrete_box_05",
-  "parkour_complex_discrete_box_06",
-  "parkour_complex_up_stair_b_01",
-  "parkour_complex_up_stair_b_02",
-  "parkour_complex_up_stair_b_03",
-  "parkour_complex_up_stair_b_04",
-  "parkour_complex_mid_platform_b",
-  "parkour_complex_down_stair_b_01",
-  "parkour_complex_down_stair_b_02",
-  "parkour_complex_down_stair_b_03",
-  "parkour_complex_down_stair_b_04",
-  "parkour_complex_second_gap_near_platform",
-  "parkour_complex_second_gap_floor_marker",
-  "parkour_complex_second_gap_far_platform",
-  "parkour_complex_mesh_box_01",
-  "parkour_complex_mesh_box_02",
-  "parkour_complex_mesh_box_03",
-  "parkour_complex_mesh_box_04",
-  "parkour_complex_mesh_box_05",
-  "parkour_complex_mesh_box_06",
-)
+PARKOUR_COMPLEX_TERRAIN_GEOM_NAMES = ParkourSceneDocument.from_path(
+  G1_PARKOUR_XML
+).module_names()
 
 
 def _add_parkour_complex_terrain_debug_geoms(spec: mujoco.MjSpec) -> None:
-  """Add deterministic MuJoCo approximations of InstinctLab parkour terrain.
-
-  InstinctLab's training terrain is procedurally generated from height-fields
-  (``pyramid_stairs``, ``pyramid_stairs_inv``, ``square_gaps``, ``boxes`` and
-  ``mesh_boxes``).  MJLab's debug path keeps this as explicit MJCF box geoms so
-  depth-camera alignment and locomotion regressions are reproducible without
-  importing IsaacLab terrain generators.
-  """
-
-  def add_box(
-    name: str,
-    *,
-    pos: tuple[float, float, float],
-    size: tuple[float, float, float],
-    rgba: tuple[float, float, float, float],
-  ) -> None:
-    spec.worldbody.add_geom(
-      name=name,
-      type=mujoco.mjtGeom.mjGEOM_BOX,
-      pos=list(pos),
-      size=list(size),
-      rgba=list(rgba),
-    )
-
-  stair_length = 0.36
-  stair_half_width = 0.72
-  up_start_x = 1.20
-  # Keep the InstinctLab stair pattern but increase the inter-step height to
-  # require more visible foot clearance.  This intentionally makes the
-  # complete-course asset harder than the earlier conservative 20 cm course.
-  for index, height in enumerate((0.06, 0.12, 0.18, 0.24, 0.30), start=1):
-    add_box(
-      f"parkour_complex_up_stair_{index:02d}",
-      pos=(up_start_x + (index - 1) * stair_length, 0.0, height / 2.0),
-      size=(stair_length / 2.0, stair_half_width, height / 2.0),
-      rgba=(0.58, 0.50, 0.42, 1.0),
-    )
-
-  add_box(
-    "parkour_complex_top_platform",
-    pos=(3.25, 0.0, 0.15),
-    size=(0.42, stair_half_width, 0.15),
-    rgba=(0.50, 0.52, 0.55, 1.0),
-  )
-
-  down_start_x = 4.20
-  for index, height in enumerate((0.30, 0.24, 0.18, 0.12, 0.06), start=1):
-    add_box(
-      f"parkour_complex_down_stair_{index:02d}",
-      pos=(down_start_x + (index - 1) * stair_length, 0.0, height / 2.0),
-      size=(stair_length / 2.0, stair_half_width, height / 2.0),
-      rgba=(0.52, 0.47, 0.40, 1.0),
-    )
-
-  # Square-gap approximation: raised lips separated by a lower strip.  The
-  # global floor remains intact, so this is safe for early debugging while the
-  # 28 cm lip-to-floor drop and 14 cm lower strip keep the surrogate visibly
-  # different from stepping across the global floor; debug runs now assert that
-  # feet do not contact the lower strip while traversing the gap.
-  add_box(
-    "parkour_complex_gap_near_platform",
-    pos=(6.80, 0.0, 0.14),
-    size=(0.35, stair_half_width, 0.14),
-    rgba=(0.42, 0.43, 0.48, 1.0),
-  )
-  add_box(
-    "parkour_complex_gap_floor_marker",
-    pos=(7.22, 0.0, 0.001),
-    size=(0.07, 0.66, 0.001),
-    rgba=(0.05, 0.05, 0.06, 1.0),
-  )
-  add_box(
-    "parkour_complex_gap_far_platform",
-    pos=(7.64, 0.0, 0.14),
-    size=(0.35, stair_half_width, 0.14),
-    rgba=(0.42, 0.43, 0.48, 1.0),
-  )
-
-  # Discrete boxes roughly mirror InstinctLab's ``boxes`` terrain.  The C++ DDS
-  # route currently has no y-waypoint follower, so keep boxes centered and wide
-  # enough that the forward command can step over them instead of steering around
-  # narrow off-axis blocks.
-  for index, (x, y, sx, sy, height) in enumerate(
-    (
-      (9.30, 0.00, 0.30, 0.72, 0.04),
-      (10.00, 0.00, 0.30, 0.72, 0.06),
-      (10.80, 0.00, 0.30, 0.72, 0.08),
-      (11.60, 0.00, 0.30, 0.72, 0.06),
-      (12.35, 0.00, 0.30, 0.72, 0.07),
-      (13.15, 0.00, 0.30, 0.72, 0.04),
-    ),
-    start=1,
-  ):
-    add_box(
-      f"parkour_complex_discrete_box_{index:02d}",
-      pos=(x, y, height / 2.0),
-      size=(sx, sy, height / 2.0),
-      rgba=(0.62, 0.42, 0.28, 1.0),
-    )
-
-  second_stair_length = 0.42
-  second_up_start_x = 14.40
-  for index, height in enumerate((0.06, 0.12, 0.18, 0.24), start=1):
-    add_box(
-      f"parkour_complex_up_stair_b_{index:02d}",
-      pos=(second_up_start_x + (index - 1) * second_stair_length, 0.0, height / 2.0),
-      size=(second_stair_length / 2.0, stair_half_width, height / 2.0),
-      rgba=(0.56, 0.48, 0.40, 1.0),
-    )
-
-  add_box(
-    "parkour_complex_mid_platform_b",
-    pos=(16.00, 0.0, 0.12),
-    size=(0.42, stair_half_width, 0.12),
-    rgba=(0.48, 0.50, 0.54, 1.0),
-  )
-
-  second_down_start_x = 16.70
-  for index, height in enumerate((0.24, 0.18, 0.12, 0.06), start=1):
-    add_box(
-      f"parkour_complex_down_stair_b_{index:02d}",
-      pos=(second_down_start_x + (index - 1) * second_stair_length, 0.0, height / 2.0),
-      size=(second_stair_length / 2.0, stair_half_width, height / 2.0),
-      rgba=(0.50, 0.44, 0.38, 1.0),
-    )
-
-  add_box(
-    "parkour_complex_second_gap_near_platform",
-    pos=(19.10, 0.0, 0.14),
-    size=(0.35, stair_half_width, 0.14),
-    rgba=(0.38, 0.40, 0.46, 1.0),
-  )
-  add_box(
-    "parkour_complex_second_gap_floor_marker",
-    pos=(19.52, 0.0, 0.001),
-    size=(0.07, 0.66, 0.001),
-    rgba=(0.04, 0.04, 0.05, 1.0),
-  )
-  add_box(
-    "parkour_complex_second_gap_far_platform",
-    pos=(19.94, 0.0, 0.14),
-    size=(0.35, stair_half_width, 0.14),
-    rgba=(0.38, 0.40, 0.46, 1.0),
-  )
-
-  # Mesh-box style stepping stones: smaller blocks close to the center line,
-  # inspired by InstinctLab's random multi-box terrain.
-  for index, (x, y, sx, sy, height) in enumerate(
-    (
-      (21.30, 0.00, 0.26, 0.62, 0.04),
-      (22.00, 0.00, 0.26, 0.62, 0.05),
-      (22.70, 0.00, 0.26, 0.62, 0.06),
-      (23.40, 0.00, 0.26, 0.62, 0.05),
-      (24.10, 0.00, 0.26, 0.62, 0.06),
-      (24.80, 0.00, 0.26, 0.62, 0.04),
-    ),
-    start=1,
-  ):
-    add_box(
-      f"parkour_complex_mesh_box_{index:02d}",
-      pos=(x, y, height / 2.0),
-      size=(sx, sy, height / 2.0),
-      rgba=(0.34, 0.46, 0.32, 1.0),
-    )
+  """Add editable deterministic parkour terrain geoms from the scene XML."""
+  add_scene_modules_to_mujoco_spec(spec, scene_path=G1_PARKOUR_XML)
 
 
 def get_g1_parkour_obstacle_debug_spec() -> mujoco.MjSpec:

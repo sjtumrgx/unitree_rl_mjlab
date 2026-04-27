@@ -21,7 +21,6 @@ CXX_COMPLEX_SCENE = (
   ROOT / "src" / "assets" / "robots" / "unitree_g1" / "xmls" / "scene_g1_parkour.xml"
 )
 CXX_SIM_CONFIG = ROOT / "simulate" / "config_parkour.yaml"
-CXX_SMOKE_HARNESS = ROOT / "scripts" / "run_g1_parkour_cpp_dds_smoke.py"
 CPP_DEPLOY_PARAM = ROOT / "deploy" / "include" / "param.h"
 CPP_OBSERVATIONS = (
   ROOT / "deploy" / "include" / "isaaclab" / "envs" / "mdp" / "observations" / "observations.h"
@@ -174,6 +173,19 @@ def test_g1_parkour_complex_terrain_uses_short_lower_gap_strips() -> None:
   ), 2) == 0.14
 
 
+def test_g1_parkour_middle_boxes_match_stair_footprint_with_varying_height() -> None:
+  spec = get_g1_parkour_complex_terrain_debug_spec()
+  geoms = {geom.name: geom for geom in spec.worldbody.geoms}
+  stair_size = tuple(float(value) for value in geoms["parkour_complex_up_stair_01"].size)
+  box_sizes = [
+    tuple(float(value) for value in geoms[f"parkour_complex_discrete_box_{index:02d}"].size)
+    for index in range(1, 7)
+  ]
+
+  assert {size[:2] for size in box_sizes} == {stair_size[:2]}
+  assert len({size[2] for size in box_sizes}) > 1
+
+
 def test_cxx_parkour_complex_scene_mirrors_python_play_terrain_assets() -> None:
   geoms = _xml_geom_map(CXX_COMPLEX_SCENE)
 
@@ -222,6 +234,21 @@ def test_cxx_parkour_complex_scene_mirrors_python_play_terrain_assets() -> None:
     float(geoms["parkour_complex_gap_floor_marker"].attrib["size"].split()[2])
     == 0.001
   )
+  stair_size = tuple(
+    float(value)
+    for value in geoms["parkour_complex_up_stair_01"].attrib["size"].split()
+  )
+  discrete_box_sizes = [
+    tuple(
+      float(value)
+      for value in geoms[f"parkour_complex_discrete_box_{index:02d}"].attrib[
+        "size"
+      ].split()
+    )
+    for index in range(1, 7)
+  ]
+  assert {size[:2] for size in discrete_box_sizes} == {stair_size[:2]}
+  assert len({size[2] for size in discrete_box_sizes}) > 1
 
 
 def test_cxx_default_interactive_scene_uses_complex_policy_depth_assets() -> None:
@@ -271,29 +298,10 @@ def test_cxx_simulator_emits_gap_floor_contact_markers_for_debugging() -> None:
   assert "parkour_complex_second_gap_floor_marker" in text
   assert "foot_collision" in text
 
-
-def test_cpp_dds_smoke_harness_exposes_complex_terrain_scene_flag() -> None:
-  text = CXX_SMOKE_HARNESS.read_text()
-
-  assert "FLAT_SCENE" in text
-  assert "args.sim_scene or FLAT_SCENE" in text
-  assert "COMPLEX_TERRAIN_SCENE" in text
-  assert "--complex-terrain-course" in text
-  assert "scene_g1_parkour.xml" in text
-  assert (
-    "--low-obstacle-course and --complex-terrain-course are mutually exclusive"
-    in text
-  )
-
-
 def test_cpp_dds_sim_autostart_defaults_to_live_depth_for_terrain() -> None:
-  harness = CXX_SMOKE_HARNESS.read_text()
   param = CPP_DEPLOY_PARAM.read_text()
   provider = CPP_DEPTH_PROVIDER.read_text()
 
-  assert "effective_live_depth_blend = 1.0" in harness
-  assert '"--live-depth-blend", str(max(0.0, min(1.0, effective_live_depth_blend)))' in harness
-  assert "--depth-artifact-floor" in harness
   assert "--sim-autostart-parkour defaulting to --live-depth-blend=1.0" in param
   assert "param::parkour_live_depth_blend_override" in provider
   assert "param::parkour_constant_depth_override" in provider

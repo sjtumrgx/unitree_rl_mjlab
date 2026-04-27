@@ -254,118 +254,12 @@ The native viewer and depth window require a graphical display
 (`DISPLAY` or `WAYLAND_DISPLAY`).  Use `--viewer none --no-depth-viewer` for
 headless validation.
 
-#### C++/DDS two-process smoke and manual launch
+#### C++/DDS manual launch
 
-The C++/DDS flat-ground acceptance smoke targets 200 m stable walking with the
-MuJoCo depth bridge enabled.  Prefer the smoke harness first because it manages
-simulator / controller startup order, loopback networking, Parkour autostart,
-the fixed velocity command, long-distance progress markers, and fall detection:
-
-```bash
-DISPLAY=:1 \
-python scripts/run_g1_parkour_cpp_dds_smoke.py \
-  --sim-bin simulate/build/unitree_mujoco_parkour \
-  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
-  --network lo \
-  --sim-autostart-parkour \
-  --sim-command-x 0.25 \
-  --sim-command-y 0.0 \
-  --sim-command-yaw 0.0 \
-  --walk-distance 200.0 \
-  --timeout-seconds 700 \
-  --progress-log-interval 10.0 \
-  --hide-depth-debug-window \
-  --log-dir /tmp/g1_parkour_cpp_dds_200m
-```
-
-The exported deploy config keeps a conservative policy-depth baseline
-(`live_depth_blend: 0.0`, `live_depth_baseline: 0.5`) for non-autostart
-diagnostics.  In loopback simulation, `--sim-autostart-parkour` now defaults the
-controller to full live depth (`--live-depth-blend 1.0`) so obstacle/terrain
-runs cannot silently feed constant depth to the policy.  Pass
-`--live-depth-blend 0.0` or `--constant-depth 0.5` only for explicit ablations.
-
-For the next low-obstacle / live-depth closed-loop bring-up, use the conservative
-low-obstacle scene and start with a partial live-depth blend before trying full
-depth.  This path requires a graphical display because the simulator depth
-bridge renders through MuJoCo/OpenGL:
-
-```bash
-DISPLAY=:1 \
-python scripts/run_g1_parkour_cpp_dds_smoke.py \
-  --sim-bin simulate/build/unitree_mujoco_parkour \
-  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
-  --network lo \
-  --sim-autostart-parkour \
-  --sim-command-x 0.25 \
-  --sim-command-y 0.0 \
-  --sim-command-yaw 0.0 \
-  --low-obstacle-course \
-  --walk-distance 5.5 \
-  --timeout-seconds 120 \
-  --hide-depth-debug-window \
-  --live-depth-blend 0.2 \
-  --log-dir /tmp/g1_parkour_low_obstacle_live_depth
-```
-
-The low-obstacle course is intentionally easier than the full complex parkour
-scene: three sparse centerline blocks/steps of 4 cm, 6 cm, and 8 cm.  If this
-closed-loop run is stable, raise `--live-depth-blend` gradually toward `1.0`.
-
-After the low-obstacle loop is stable, switch to the C++/DDS complex-terrain XML
-that mirrors `python scripts/play_parkour.py`: up/down stairs, two safe
-gap-surrogate strips capped at 0.40 m, discrete boxes, and mesh-box stepping
-stones.  In simulation autostart mode the controller now follows the fixed
-terrain waypoint route by default (`--no-sim-route-follow` disables this for
-ablations), so `--sim-command-x` is the route speed.  The checked complex-course
-acceptance target is full-course live-depth traversal at 0.30 m/s; 0.40 m/s is
-also a useful stress run on the current tuned MuJoCo PD bridge:
-
-```bash
-DISPLAY=:1 \
-python scripts/run_g1_parkour_cpp_dds_smoke.py \
-  --sim-bin simulate/build/unitree_mujoco_parkour \
-  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
-  --network lo \
-  --sim-autostart-parkour \
-  --sim-command-x 0.30 \
-  --sim-command-y 0.0 \
-  --sim-command-yaw 0.0 \
-  --complex-terrain-course \
-  --walk-distance 25.2 \
-  --timeout-seconds 170 \
-  --progress-log-interval 10.0 \
-  --hide-depth-debug-window \
-  --log-dir /tmp/g1_parkour_complex_live_depth
-```
-
-For loopback simulation (`--sim-autostart-parkour` or the default
-interactive `--network=lo` mode), the controller automatically synchronizes the
-50 Hz policy step to the simulator lowstate tick.
-This keeps the C++/DDS gait timing aligned with `scripts/play_parkour.py`.
-Use `--no-policy-tick-sync` only to reproduce the older wall-clock-only
-diagnostic behavior.
-
-The current simulator-side parkour PD bridge is intentionally slightly more
-damped than the raw Unitree gains (`lowcmd_kp_scale: 0.9`,
-`lowcmd_kd_scale: 1.1` in `simulate/config_parkour.yaml`).  Do not blindly raise
-Kp to "fix" choppy motion: the tested 1.2/1.1 ablation was less stable.  If you
-need to experiment, use the smoke harness `--sim-pd-kp-scale` /
-`--sim-pd-kd-scale` flags and keep `depth_publish_period_ms` at the default
-100 ms unless you are specifically testing depth-render load; 20 ms live-depth
-publishing was observed to destabilize the complex course.
-
-For manual two-terminal interactive runs, the loopback defaults are now safe to
-use directly.  The simulator opens the MuJoCo window and the policy depth debug
-window by default, and loads the deterministic complex terrain scene used by
-`scripts/play_parkour.py` (up/down stairs, safe gap surrogates, boxes, and
-mesh-box stepping stones).  The depth window defaults to the cropped 18x32
-policy-depth input view rather than the raw 64x36 renderer frame.  The
-controller starts directly in Parkour with full live depth, keyboard control,
-and a small idle-hold command
-(`--sim-idle-command-x`, default `-0.15`) that cancels the policy's
-zero-command forward drift.  With no key pressed the robot holds a
-standing/walking-in-place posture; hold `w` / `up` to walk forward and release it to stop walking:
+The repository no longer keeps the Python smoke harness under `scripts/`.  For
+C++/DDS validation, launch the simulator and controller directly so diagnostic
+commands stay close to the deployed binaries.  The simulator defaults to the
+deterministic complex parkour XML used by `scripts/play_parkour.py`:
 
 ```bash
 # First clear stale DDS simulator/controller processes so the controller cannot
@@ -374,11 +268,19 @@ pkill -f unitree_mujoco_parkour || true
 pkill -f g1_parkour_ctrl || true
 
 # Terminal 1: start the simulator. Visual mode opens both MuJoCo and depth.
-./simulate/build/unitree_mujoco_parkour
+./simulate/build/unitree_mujoco_parkour --network lo
 
 # Terminal 2: start the interactive controller after the simulator is ready.
 ./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo
 ```
+
+For automated route-following runs, pass `--sim-autostart-parkour` to the
+controller and set the desired command / depth flags on the controller binary
+directly.  For headless simulator diagnostics, pass `--headless` and
+`--headless-seconds <N>` to `unitree_mujoco_parkour`.  To isolate the control
+stack from live depth rendering, set `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` for
+the controller; to disable the simulator-side live depth bridge, start the
+simulator with `G1_PARKOUR_DEPTH_BRIDGE=0`.
 
 Keyboard controls in the controller terminal:
 
@@ -386,42 +288,10 @@ Keyboard controls in the controller terminal:
   `--sim-command-x` value (`0.30 m/s`).
 - `k`: enter Parkour from `FixStand` if you explicitly opted out of the default
   interactive mode.
-- `+` / `=` and `-`: adjust the held-`w` forward speed by the policy keyboard step; they do not start walking by themselves.
+- `+` / `=` and `-`: adjust the held-`w` forward speed by the policy keyboard step.
 - `a` / `left` / `q`: turn left; `d` / `right` / `e`: turn right; `c`: stop yaw.
 - Releasing movement keys, or pressing `s` / `down` / `x` / `space`, returns to
   the idle-hold command while staying in Parkour; `p`: Passive.
-
-Use `--sim-autostart-parkour` only for automated smoke / route-following runs
-where the controller should enter Parkour immediately.  Use
-`--no-sim-loopback-interactive` if you need the older joystick/FSM loopback flow.
-For headless diagnostics, also pass `--headless --headless-seconds <N>` to the
-simulator.  To isolate the control stack from live depth rendering, set
-`G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` for the controller; this is the common
-headless constant-depth diagnostic path used by the harness.
-
-If the native viewer still becomes unresponsive after starting the controller,
-first isolate the extra depth debug window with
-`G1_PARKOUR_DEPTH_DEBUG_WINDOW=0 ./simulate/build/unitree_mujoco_parkour --network lo`;
-DDS depth publishing remains enabled, only the extra depth window is hidden.
-If that still freezes, fully disable the simulator-side live depth bridge and
-use constant depth in the controller to isolate the main MuJoCo viewer + DDS
-control loop:
-
-```bash
-# Terminal 1: main MuJoCo viewer only; no background OpenGL depth bridge.
-G1_PARKOUR_DEPTH_BRIDGE=0 \
-  ./simulate/build/unitree_mujoco_parkour --network lo
-
-# Terminal 2: constant depth, so the controller does not wait for simulator
-# depth pointclouds.
-G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5 \
-  ./deploy/robots/g1_parkour/build/g1_parkour_ctrl \
-    --network lo \
-    --sim-autostart-parkour \
-    --sim-command-x 0.25 \
-    --sim-command-y 0.0 \
-    --sim-command-yaw 0.0
-```
 
 ### 1.4 G1 Get-Up Training
 

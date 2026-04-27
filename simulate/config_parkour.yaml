@@ -2,8 +2,8 @@ robot: "g1"
 # Default interactive parkour simulator shows the same deterministic complex
 # terrain family used by scripts/play_parkour.py: up/down stairs, safe gap
 # surrogates, centered boxes, and mesh-box stepping stones.
-# Automated flat 200m smoke tests pass scene_g1_parkour_flat.xml explicitly
-# through scripts/run_g1_parkour_cpp_dds_smoke.py.
+# Headless/manual validation can pass scene_g1_parkour_flat.xml explicitly
+# through the simulator --scene/robot_scene configuration path.
 robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml"
 
 domain_id: 0

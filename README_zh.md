@@ -245,109 +245,11 @@ MuJoCo native viewer 和深度图窗口需要图形显示环境（`DISPLAY` 或
 `WAYLAND_DISPLAY`）。如果只想做无头验证，请显式加
 `--viewer none --no-depth-viewer`。
 
-#### C++/DDS 两进程 smoke 与手动运行
+#### C++/DDS 手动运行
 
-C++/DDS 平地验收 smoke 现在以 **200 m 稳定行走** 为目标，并保持 MuJoCo
-深度桥接开启。推荐先用 smoke harness，因为它会自动处理
-simulator/controller 的启动顺序、loopback 网络、Parkour 自动进入、固定速度
-命令、长距离进度 marker 和摔倒检测：
-
-```bash
-DISPLAY=:1 \
-python scripts/run_g1_parkour_cpp_dds_smoke.py \
-  --sim-bin simulate/build/unitree_mujoco_parkour \
-  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
-  --network lo \
-  --sim-autostart-parkour \
-  --sim-command-x 0.25 \
-  --sim-command-y 0.0 \
-  --sim-command-yaw 0.0 \
-  --walk-distance 200.0 \
-  --timeout-seconds 700 \
-  --progress-log-interval 10.0 \
-  --hide-depth-debug-window \
-  --log-dir /tmp/g1_parkour_cpp_dds_200m
-```
-
-导出的 deploy 配置在非 autostart 诊断路径里仍保留保守深度基线
-（`live_depth_blend: 0.0`, `live_depth_baseline: 0.5`）。但 loopback 仿真下
-`--sim-autostart-parkour` 现在会默认把 controller 切到完整实时深度
-（等价于 `--live-depth-blend 1.0`），避免障碍/地形运行时 policy 实际吃到常量
-深度。只有做 ablation 时才显式传 `--live-depth-blend 0.0` 或
-`--constant-depth 0.5`。
-
-下一步低障碍 / 实时深度闭环 bring-up 建议使用保守低障碍场景，并先用部分
-实时深度混合，再逐步加到完整实时深度。这个路径需要图形显示，因为 simulator
-depth bridge 依赖 MuJoCo/OpenGL 渲染：
-
-```bash
-DISPLAY=:1 \
-python scripts/run_g1_parkour_cpp_dds_smoke.py \
-  --sim-bin simulate/build/unitree_mujoco_parkour \
-  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
-  --network lo \
-  --sim-autostart-parkour \
-  --sim-command-x 0.25 \
-  --sim-command-y 0.0 \
-  --sim-command-yaw 0.0 \
-  --low-obstacle-course \
-  --walk-distance 5.5 \
-  --timeout-seconds 120 \
-  --hide-depth-debug-window \
-  --live-depth-blend 0.2 \
-  --log-dir /tmp/g1_parkour_low_obstacle_live_depth
-```
-
-低障碍场景刻意比完整复杂 parkour 场景简单：沿中心线放置 4 cm、6 cm、8 cm
-三个稀疏方块/台阶。如果该闭环稳定，再逐步把 `--live-depth-blend` 提到
-`1.0`。
-
-当低障碍闭环稳定后，可以切到和 `python scripts/play_parkour.py` 对齐的
-C++/DDS 复杂地形 XML。该场景包含上/下楼梯、两个最大 0.40 m 的安全 gap
-近似、方块障碍和 mesh-box stepping stones；仿真 autostart 模式下 controller
-现在默认追踪固定地形 waypoint 路线（需要 ablation 时可用
-`--no-sim-route-follow` 关闭），所以 `--sim-command-x` 表示路线行走速度。
-当前复杂地形验收目标是完整实时深度闭环 0.30 m/s 跑完整 25.2 m；0.40 m/s
-也可作为当前 MuJoCo PD 调参后的压力测试：
-
-```bash
-DISPLAY=:1 \
-python scripts/run_g1_parkour_cpp_dds_smoke.py \
-  --sim-bin simulate/build/unitree_mujoco_parkour \
-  --ctrl-bin deploy/robots/g1_parkour/build/g1_parkour_ctrl \
-  --network lo \
-  --sim-autostart-parkour \
-  --sim-command-x 0.30 \
-  --sim-command-y 0.0 \
-  --sim-command-yaw 0.0 \
-  --complex-terrain-course \
-  --walk-distance 25.2 \
-  --timeout-seconds 170 \
-  --progress-log-interval 10.0 \
-  --hide-depth-debug-window \
-  --log-dir /tmp/g1_parkour_complex_live_depth
-```
-
-loopback 仿真（`--sim-autostart-parkour` 或默认交互 `--network=lo` 模式）下，
-controller 会默认把 50 Hz policy step 同步到 simulator lowstate tick，而不是只按本机 wall-clock
-定时。这样 C++/DDS 的步态相位更接近 `scripts/play_parkour.py`；只有需要复现
-旧的 wall-clock-only 诊断行为时才加 `--no-policy-tick-sync`。
-
-当前 parkour simulator 侧 PD bridge 没有简单“提高 Kp”处理卡顿，而是采用稍低
-刚度、更高阻尼的 MuJoCo 仿真默认值（`simulate/config_parkour.yaml` 中
-`lowcmd_kp_scale: 0.9`, `lowcmd_kd_scale: 1.1`）。不要盲目提高 Kp：已验证
-`1.2/1.1` 会降低复杂地形稳定性。需要做 ablation 时用 smoke harness 的
-`--sim-pd-kp-scale` / `--sim-pd-kd-scale`。深度发布周期默认保持 100 ms；20 ms
-实时深度发布会明显增加渲染/策略扰动，复杂地形测试中会更容易摔倒。
-
-如果要手动分两个终端交互运行，现在可以直接使用 loopback 默认配置。
-simulator 默认打开 MuJoCo 主窗口和 policy 深度调试窗口，并加载和
-`scripts/play_parkour.py` 对齐的确定性复杂地形（上/下楼梯、安全 gap 近似、
-方块和 mesh-box stepping stones）。深度窗口默认展示裁剪后的 18x32 policy-depth
-输入视图，而不是原始 64x36 renderer 画面；controller 默认直接进入 Parkour，同时
-启用完整实时深度、键盘控制，以及一个很小的 idle-hold
-命令（`--sim-idle-command-x`，默认 `-0.15`），用来抵消 policy 在零命令下的
-前向漂移。不给按键时机器人会保持站立/原地踏步状态；按住 `w` / `up` 时向前走，松开后停止前进：
+仓库不再在 `scripts/` 下保留 Python smoke harness。C++/DDS 验证请直接启动
+simulator 和 controller，让诊断命令贴近实际部署二进制。simulator 默认加载和
+`scripts/play_parkour.py` 对齐的确定性复杂 parkour XML：
 
 ```bash
 # 建议先清理旧的 DDS 仿真/控制进程，避免 controller 连到旧 simulator。
@@ -355,47 +257,27 @@ pkill -f unitree_mujoco_parkour || true
 pkill -f g1_parkour_ctrl || true
 
 # 终端 1：启动 simulator。可视化模式会同时打开 MuJoCo 和深度窗口。
-./simulate/build/unitree_mujoco_parkour
+./simulate/build/unitree_mujoco_parkour --network lo
 
 # 终端 2：等待 simulator ready 后启动交互 controller。
 ./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo
 ```
 
+需要自动路线跟随时，直接给 controller 二进制传
+`--sim-autostart-parkour`，并按需设置速度/深度相关参数。无头诊断时给
+`unitree_mujoco_parkour` 传 `--headless --headless-seconds <N>`。如果只想隔离
+控制链路而不依赖实时深度图，可给 controller 设置
+`G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5`；如果要关闭 simulator 侧实时深度桥接，
+用 `G1_PARKOUR_DEPTH_BRIDGE=0` 启动 simulator。
+
 controller 终端里的键盘控制：
 
 - `w` / `up`：只有按住时才按默认 `--sim-command-x`（`0.30 m/s`）向前走。
 - `k`：如果你显式关闭默认交互模式并停在 `FixStand`，则用它进入 Parkour。
-- `+` / `=` 和 `-`：按 policy keyboard step 调整按住 `w` 时的前进速度；它们本身不会触发前进。
+- `+` / `=` 和 `-`：按 policy keyboard step 调整按住 `w` 时的前进速度。
 - `a` / `left` / `q`：左转；`d` / `right` / `e`：右转；`c`：停止转向。
-- 松开移动键，或按 `s` / `down` / `x` / `space`：在 Parkour 中回到 idle-hold 命令；`p`：Passive。
-
-只有自动 smoke / route-following 验证需要 controller 立刻进入 Parkour 时，才使用
-`--sim-autostart-parkour`。如果需要旧的 joystick/FSM loopback 流程，可以传
-`--no-sim-loopback-interactive`。无头诊断时 simulator 还要加
-`--headless --headless-seconds <N>`；如果只想隔离控制链路而不依赖实时深度图，
-可给 controller 设置 `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5`。这正是 harness 里
-常用的 headless constant-depth 诊断路径。
-
-如果可视化窗口在 controller 启动后仍然无响应，先用
-`G1_PARKOUR_DEPTH_DEBUG_WINDOW=0 ./simulate/build/unitree_mujoco_parkour --network lo`
-隔离深度调试窗口；DDS 深度发布仍会启用，只是不显示额外 depth 窗口。
-如果这样仍然卡住，则完整关闭 simulator 侧 live depth bridge，并在 controller
-侧使用常量深度隔离主 MuJoCo viewer + DDS 控制链：
-
-```bash
-# 终端 1：只跑主 MuJoCo viewer，不启动后台 OpenGL depth bridge。
-G1_PARKOUR_DEPTH_BRIDGE=0 \
-  ./simulate/build/unitree_mujoco_parkour --network lo
-
-# 终端 2：使用常量深度，让 controller 不等待 simulator depth pointcloud。
-G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5 \
-  ./deploy/robots/g1_parkour/build/g1_parkour_ctrl \
-    --network lo \
-    --sim-autostart-parkour \
-    --sim-command-x 0.25 \
-    --sim-command-y 0.0 \
-    --sim-command-yaw 0.0
-```
+- 松开移动键，或按 `s` / `down` / `x` / `space`：在 Parkour 中回到 idle-hold
+  命令；`p`：Passive。
 
 ### 2. 动作模仿训练
 
