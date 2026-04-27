@@ -1,95 +1,111 @@
-# Unitree G1 Parkour Deploy Notes
+# G1 Parkour: Train → Play → Sim2Real Notes
 
-This document tracks the dedicated **G1 parkour deploy/runtime lane** added for the
-InstinctLab depth-conditioned parkour model.
+G1 Parkour is an added depth-conditioned module for an exported InstinctLab-style
+policy.  The current lane focuses on replay, terrain editing, deploy contract
+validation, and Unitree C++/DDS simulation/runtime integration.
 
-## Runtime ownership
+## Artifact contract
 
-The parkour deploy/runtime artifacts now live under:
+Default policy bundle:
 
-- `deploy/robots/g1_parkour/`
-- `deploy/robots/g1_parkour/config/policy/parkour/v0/`
+```text
+deploy/robots/g1_parkour/config/policy/parkour/v0/
+```
 
-The staged bundle contains:
+Important files:
 
 - `exported/actor.onnx`
 - `exported/0-depth_encoder.onnx`
 - `params/deploy.yaml`
-- `params/env.yaml`
-- `params/agent.yaml`
 - `parkour_artifacts.json`
 
-## Deploy contract summary
+The deploy YAML is the contract between Python and C++:
 
-- dedicated FSM mode: `Parkour`
-- proprio history length: `8`
-- depth stack: `8 x 18 x 32`
-- raw simulator depth resolution: `64 x 36`
-- crop region: `[18, 0, 16, 16]`
-- source history length: `37`
-- frame skip: `5`
-- DDS pointcloud topic: `rt/parkour_depth/points`
+- training/deploy joint order
+- action size and action scale
+- depth camera name
+- depth crop size and offset
+- normalized depth range
+- depth history shape
 
-The deploy runtime uses a two-stage ONNX flow:
+Do not update ONNX files without updating the matching deploy YAML and manifest.
 
-1. `0-depth_encoder.onnx`
-2. `actor.onnx`
+## Play
 
-## Build
+Default visual replay:
 
-Controller:
+```bash
+python scripts/play_parkour.py
+```
+
+Contract-only check:
+
+```bash
+python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer
+```
+
+Short headless walk validation:
+
+```bash
+python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20
+```
+
+`terrain-route` mode reads `g1_parkour_route_waypoints` from
+`src/tasks/velocity/config/g1_parkour/env_cfgs.py` and generates commands that
+follow the terrain sequence.  If the terrain layout changes, update these
+waypoints.
+
+## Terrain editing
+
+The editable terrain source of truth is:
+
+```text
+src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml
+```
+
+Open the browser editor:
+
+```bash
+python scripts/edit_parkour_scene.py --open-browser
+```
+
+The editor shows full dimensions.  MuJoCo XML stores box half-extents, so a full
+`0.36 m` length is stored as `size="0.18 ..."`.  The Python MJLab debug spec reads
+modules from the same XML, so saved XML changes affect both standalone simulator
+scene loading and `scripts/play_parkour.py` after restart.
+
+## Sim2Real / C++ runtime
+
+Build:
 
 ```bash
 cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build
 cmake --build deploy/robots/g1_parkour/build -j4
 ```
 
-Simulator:
+Loopback simulator run:
 
 ```bash
-cmake -S simulate -B simulate/build
-cmake --build simulate/build -j4
+./simulate/build/unitree_mujoco_parkour --network lo
+./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo
 ```
 
-## Run
+Useful diagnostics:
 
-Start the parkour simulator:
+- `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` on the controller isolates locomotion
+  from live depth.
+- `G1_PARKOUR_DEPTH_BRIDGE=0` on the simulator disables simulator-side live depth
+  publishing.
+- `--sim-autostart-parkour` starts directly in Parkour for automated simulator
+  checks.
+- `--no-sim-route-follow` disables route following for command ablations.
 
-```bash
-simulate/build/unitree_mujoco_parkour --network=lo
-```
+## Common failure modes
 
-Start the parkour controller in a second terminal:
-
-```bash
-deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --keyboard
-```
-
-Keyboard transitions:
-
-- `f` -> `FixStand`
-- `k` -> `Parkour`
-- `p` -> `Passive`
-- `w/s/a/d/q/e` -> command velocity while in parkour mode
-
-Gamepad transitions:
-
-- `L2 + Up` -> `FixStand`
-- `R2 + X` -> `Parkour`
-- `L2 + B` -> `Passive`
-
-## Simulator notes
-
-`unitree_mujoco_parkour` now:
-
-- loads `simulate/config_parkour.yaml`
-- uses `scene_g1_parkour.xml`
-- publishes organized PointCloud2 from the torso-mounted `parkour_depth_camera`
-- shows an extra grayscale depth window for camera debugging
-
-## Current limitation
-
-The new lane is validated for the local MuJoCo + DDS simulator path.
-
-The full real-robot depth integration path still needs a dedicated hardware bring-up pass
-if this controller is moved from simulator DDS pointclouds to a live onboard depth source.
+| Symptom | First checks |
+| --- | --- |
+| Walks on constant depth but fails terrain | Depth crop/range/history, camera pose, live-depth validity. |
+| Python play works but C++ loopback fails | Joint order, action order, startup blend, default pose, PD bridge mode. |
+| Robot drifts with zero command | Idle command and command-frame conventions. |
+| Terrain edit looks right but route fails | Update `g1_parkour_route_waypoints`. |
+| Viewer/depth window freezes | Hide depth debug window, use EGL/headless mode, or disable depth bridge. |

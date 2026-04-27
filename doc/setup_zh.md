@@ -1,76 +1,89 @@
-# 安装配置文档
+# 环境配置
 
-## 系统要求
+本仓库基于 Unitree RL MJLab，并额外增加 Parkour、AntiFall、GetUp 模块。建议 Train
+→ Play → Sim2Real 全流程使用同一个 Python 环境，以保证 Python 回放和 C++ 部署读取
+同一套 policy contract。
 
-- **操作系统**：推荐使用 Ubuntu 22.04
-- **显卡**：Nvidia 显卡  
-- **驱动版本**：建议使用 550 或更高版本  
+## 1. 主机要求
 
----
+推荐配置：
 
-## 1. 创建虚拟环境
+- Ubuntu 22.04
+- Python 3.11
+- 大规模训练建议使用 NVIDIA GPU
+- 使用 CUDA/MuJoCo 渲染时建议 NVIDIA driver 550+
+- MuJoCo native viewer 和深度渲染需要可用 OpenGL/EGL 环境
 
-建议在虚拟环境中运行训练或部署程序，推荐使用 Conda 创建虚拟环境。如果您的系统中已经安装了 Conda，可以跳过步骤 1.1。
+无显示服务器可以通过 `--viewer none`、`--no-depth-viewer` 或 `MUJOCO_GL=egl` 运行
+多数验证命令。
 
-### 1.1 下载并安装 MiniConda
-
-MiniConda 是 Conda 的轻量级发行版，适用于创建和管理虚拟环境。使用以下命令下载并安装：
-
-```bash
-mkdir -p ~/miniconda3
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
-bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
-rm ~/miniconda3/miniconda.sh
-```
-
-安装完成后，初始化 Conda：
+## 2. Python 环境
 
 ```bash
-~/miniconda3/bin/conda init --all
-source ~/.bashrc
-```
-
-### 1.2 创建新环境
-
-使用以下命令创建虚拟环境：
-
-```bash
-conda create -n unitree_rl_mjlab python=3.11
-```
-
-### 1.3 激活虚拟环境
-
-```bash
+conda create -n unitree_rl_mjlab python=3.11 -y
 conda activate unitree_rl_mjlab
-```
 
----
-
-## 2. 安装
-
-### 2.1 下载
-
-通过 Git 克隆仓库：
-
-```bash
-git clone https://github.com/unitreerobotics/unitree_rl_mjlab.git
-```
-
-### 2.2 安装依赖
-
-```bash
-sudo apt install -y libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
-```
-
-我们将其余所需依赖放入 setup.py 文件中，
-进入 unitree_rl_mjlab 项目根目录并安装：
-
-```bash
+git clone https://github.com/sjtumrgx/unitree_rl_mjlab.git
 cd unitree_rl_mjlab
 pip install -e .
 ```
 
-## 总结
+核心 Python 依赖固定在 `setup.py`：
 
-按照上述步骤完成后，您已经准备好在虚拟环境中运行相关程序。若遇到问题，请参考各组件的官方文档或检查依赖安装是否正确。
+- `mjlab==1.2.0`
+- `mujoco-warp==3.5.0`
 
+如果使用 Viser 或 Matplotlib 等额外可视化窗口，请在同一环境中安装缺失的可选依赖。
+
+## 3. C++/DDS 系统依赖
+
+```bash
+sudo apt update
+sudo apt install -y \
+  build-essential cmake git \
+  libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
+```
+
+这些依赖用于 Unitree MuJoCo simulator 和 C++ deploy controller。
+
+## 4. 构建 simulator 和 deploy controller
+
+Simulator：
+
+```bash
+cd simulate
+cmake -B build -S .
+cmake --build build -j4
+cd ..
+```
+
+G1 Parkour controller：
+
+```bash
+cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build
+cmake --build deploy/robots/g1_parkour/build -j4
+```
+
+其他 deploy controller 也按 `deploy/robots/<robot>/` 下的相同方式构建。
+
+## 5. 显示与渲染注意事项
+
+- MuJoCo native viewer 需要 `DISPLAY` 或 `WAYLAND_DISPLAY`。
+- 无头服务器上，Python play 优先使用 `--viewer none --no-depth-viewer`。
+- 离屏 MuJoCo 渲染可在导入 MuJoCo 前设置 `MUJOCO_GL=egl`。
+- Parkour 深度诊断依赖躯干上的 `parkour_depth_camera`；如果深度窗口能打开但策略行为异常，优先检查 deploy YAML 的 crop/range/history，而不是直接调 controller gain。
+
+## 6. 快速检查命令
+
+```bash
+# Python import / task registration 检查。
+python scripts/list_envs.py | grep Unitree-G1
+
+# Parkour contract 检查。
+python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer
+
+# Parkour 无头短回放验证。
+python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20
+```
+
+建议在 C++/DDS 或真实机器人测试前先跑这些检查。

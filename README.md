@@ -1,502 +1,350 @@
-# Unitree RL Mjlab
+# Unitree RL MJLab: Train → Play → Sim2Real
 
+This repository is based on **Unitree RL MJLab / mjlab** and keeps the original
+MuJoCo-centered training and deployment workflow.  On top of the base Unitree
+locomotion examples, this fork adds dedicated **G1 Parkour**, **G1 AntiFall**,
+and **G1 GetUp** modules, plus simulator/deployment glue for running exported
+policies in Unitree-style C++/DDS control loops.
 
-## ✳️ Overview
-Unitree RL Mjlab is a reinforcement learning project built upon the
-[mjlab](https://github.com/mujocolab/mjlab.git), using MuJoCo as its 
-physics simulation backend, currently supporting Unitree Go2, A2, As2, G1, R1, H1_2 and H2.
+The intended workflow is:
 
-Mjlab combines [Isaac Lab](https://github.com/isaac-sim/IsaacLab)'s proven API
-with best-in-class [MuJoCo](https://github.com/google-deepmind/mujoco_warp)
-physics to provide lightweight, modular abstractions for RL robotics research
-and sim-to-real deployment.
+```text
+1. Train      -> learn or adapt a policy in MJLab/MuJoCo
+2. Play       -> replay and inspect the policy in Python/MuJoCo
+3. Sim2Real   -> validate through Unitree simulator/C++ controller before robot use
+```
 
-<div align="center">
+## Repository layout
 
-| <div align="center">  MuJoCo </div>                                                                                                                                           | <div align="center"> Physical </div>                                                                                                                                               |
-|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| <div style="width:250px; height:150px; overflow:hidden;"><img src="doc/gif/g1-velocity.gif" style="width:100%; height:100%; object-fit:cover; object-position:center;"></div> | <div style="width:250px; height:150px; overflow:hidden;"><img src="doc/gif/g1-velocity-real.gif" style="width:100%; height:100%; object-fit:cover; object-position:center;"></div> |
+| Path | Purpose |
+| --- | --- |
+| `src/tasks/velocity/config/` | MJLab task registration and environment configuration. |
+| `src/tasks/velocity/mdp/` | Reward, reset, event, and observation helper logic. |
+| `src/parkour/` | Parkour ONNX/deploy contracts, observation adapter, depth utilities, scene editor core. |
+| `scripts/train.py` | Generic training entrypoint. |
+| `scripts/play.py` | Generic Python policy replay / visualization entrypoint. |
+| `scripts/play_parkour.py` | Depth-conditioned G1 Parkour replay and diagnostics. |
+| `scripts/play_antifall.py` | G1 AntiFall replay with native MuJoCo drag perturbations. |
+| `scripts/train_getup.py`, `scripts/play_getup.py` | GetUp convenience wrappers with terrain selection. |
+| `scripts/edit_parkour_scene.py` | Browser-based Viser editor for parkour terrain boxes. |
+| `deploy/robots/g1_parkour/` | C++/DDS G1 Parkour controller and policy runtime. |
+| `simulate/` | Unitree MuJoCo simulator integration and configuration. |
+| `doc/` | Human-facing documentation for setup, modules, and sim2real notes. |
 
-</div>
+## Environment setup
 
+Recommended host:
 
-## 📦 Installation and Configuration
+- Ubuntu 22.04
+- NVIDIA GPU for high-throughput training
+- NVIDIA driver 550+ when using CUDA/MuJoCo rendering
+- Python 3.11
 
-Please refer to [setup.md](doc/setup_en.md) for installation and configuration steps.
+Create and activate an environment:
 
+```bash
+conda create -n unitree_rl_mjlab python=3.11 -y
+conda activate unitree_rl_mjlab
+```
 
-## 🔁 Process Overview
+Install system packages used by the C++ simulator/deploy side:
 
-The basic workflow for using reinforcement learning to achieve motion control is:
+```bash
+sudo apt update
+sudo apt install -y \
+  build-essential cmake git \
+  libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
+```
 
-`Train` → `Play` → `Sim2Real`
+Install the Python package:
 
-- **Train**: The agent interacts with the MuJoCo simulation and optimizes policies through reward maximization.
-- **Play**: Replay trained policies to verify expected behavior.
-- **Sim2Real**: Deploy trained policies to physical Unitree robots for real-world execution.
+```bash
+git clone https://github.com/sjtumrgx/unitree_rl_mjlab.git
+cd unitree_rl_mjlab
+pip install -e .
+```
 
+`setup.py` pins the core MJLab dependencies (`mjlab==1.2.0`,
+`mujoco-warp==3.5.0`).  If native viewers or depth windows fail to open on a
+headless machine, run with `--viewer none --no-depth-viewer`, or set the proper
+`DISPLAY` / `WAYLAND_DISPLAY` / `MUJOCO_GL` variables for your display stack.
 
-## 🛠️ Usage Guide
+## 1. Train
 
-### 1. Velocity Tracking Training
+### 1.1 Base velocity policies
 
-Run the following command to train a velocity tracking policy:
+Use the generic training script and pass the task id as the first argument:
 
 ```bash
 python scripts/train.py Unitree-G1-Flat --env.scene.num-envs=4096
 ```
 
-Multi-GPU Training: Scale to multiple GPUs using --gpu-ids:
+Common flat velocity tasks include:
+
+- `Unitree-Go2-Flat`
+- `Unitree-G1-Flat`
+- `Unitree-G1-23Dof-Flat`
+- `Unitree-H1_2-Flat`
+- `Unitree-A2-Flat`
+- `Unitree-R1-Flat`
+
+Useful runtime flags:
 
 ```bash
+# Select GPUs.
+python scripts/train.py Unitree-G1-Flat --device cuda:0 --rl_device cuda:0
+
+# Override environment or runner values through dotted config keys.
 python scripts/train.py Unitree-G1-Flat \
-  --gpu-ids "[0,1]" \
-  --env.scene.num-envs=4096
+  --env.scene.num-envs=2048 \
+  --runner.max_iterations=3000
 ```
 
-- The first argument (e.g., Mjlab-Velocity-Flat-Unitree-G1) specifies the training task.
-Available velocity tracking tasks:
-  - Unitree-Go2-Flat
-  - Unitree-G1-Flat
-  - Unitree-G1-23Dof-Flat
-  - Unitree-H1_2-Flat
-  - Unitree-A2-Flat
-  - Unitree-R1-Flat
+Training logs are written under `logs/rsl_rl/<experiment>/<run>/`.
 
-> [!NOTE]
-> For more details, refer to the mjlab documentation:
-> [mjlab documentation](https://mujocolab.github.io/mjlab/index.html).
+### 1.2 G1 AntiFall
 
-### 1.1 G1 Anti-Fall Training
+AntiFall adds a staged disturbance-recovery curriculum for G1.  It preserves the
+blind/proprioceptive actor contract, but trains progressively harder recovery
+behavior:
 
-The repo now includes a staged **Unitree G1 anti-fall** task family. It keeps the
-deployable actor observation contract proprioceptive-only while adding
-disturbance-aware critic context, recovery rewards, and benchmark helpers.
+| Task | Use |
+| --- | --- |
+| `Unitree-G1-AntiFall-Stage0` | Flat standing/walking seed. |
+| `Unitree-G1-AntiFall-Stage1` | Flat push/kick recovery. |
+| `Unitree-G1-AntiFall-Stage2` | Harder recovery with near-failure reset starts. |
+| `Unitree-G1-AntiFall-Stage3` | Walking-biased push/kick recovery. |
+| `Unitree-G1-AntiFall-Stage4a` | Off-center/lateral disturbance recovery. |
+| `Unitree-G1-AntiFall-Stage4b` | Hardest mixed standing/walking disturbance task. |
+| `Unitree-G1-AntiFall-Curriculum` | Recommended automatic curriculum entrypoint. |
+| `Unitree-G1-AntiFall-Benchmark` | Deterministic evaluation configuration. |
 
-Available anti-fall tasks:
-
-- `Unitree-G1-AntiFall-Stage0` — flat standing / walking seed (no external disturbance)
-- `Unitree-G1-AntiFall-Stage1` — flat push / kick recovery
-- `Unitree-G1-AntiFall-Stage2` — harder flat recovery + near-failure reset starts
-- `Unitree-G1-AntiFall-Stage3` — walking-biased flat push / kick recovery
-- `Unitree-G1-AntiFall-Stage4a` — off-center / lateral push-kick recovery
-- `Unitree-G1-AntiFall-Stage4b` — hardest mixed standing / walking push-kick recovery
-- `Unitree-G1-AntiFall-Benchmark` — deterministic benchmark configuration
-- `Unitree-G1-AntiFall-Curriculum` — single-entry curriculum task while keeping the stage tasks available for manual debugging / ablations
-
-Recommended curriculum order:
-
-`Stage0 → Stage1 → Stage2 → Stage3 → Stage4a → Stage4b`
-
-Recommended production training command:
+Recommended training entrypoint:
 
 ```bash
 python scripts/train.py Unitree-G1-AntiFall-Curriculum \
-  --gpu-ids "[0]" \
   --env.scene.num-envs=4096 \
-  --agent.max-iterations=10000 \
-  --agent.save-interval=100
+  --runner.max_iterations=5000
 ```
 
-Parameter guide:
-
-- Positional task argument: the training task ID.
-  - Use `Unitree-G1-AntiFall-Curriculum` for the new automatic curriculum entrypoint.
-  - Use `Unitree-G1-AntiFall-Stage0` ~ `Unitree-G1-AntiFall-Stage4b` only when you intentionally want a manual single-stage run.
-- `--gpu-ids`: GPU selection passed to the training launcher, for example `--gpu-ids "[0]"` for one GPU or `--gpu-ids "[0,1]"` for two GPUs. The legacy spaced form (`--gpu-ids 0 1`) still works.
-- `--env.scene.num-envs`: number of parallel environments. Increase it for throughput if your GPU / CPU memory budget allows.
-- `--agent.max-iterations`: maximum training iterations.
-  - For `Unitree-G1-AntiFall-Curriculum`, this is the **per-stage** iteration budget.
-  - For a manual single-stage task, this is the total iteration budget for that run.
-- `--agent.save-interval`: checkpoint interval. Training writes `model_*.pt` at this cadence and also exports `policy.onnx`.
-
-Default curriculum behavior:
-- The curriculum advances in one top-level process following the fixed stage order above.
-- Stage0 promotes on the stable controllable-locomotion gate.
-- Stage1 ~ Stage4b promote on recovery-rate / recovery-latency gates.
-- If a stage does not meet its gate before `--agent.max-iterations`, the curriculum advances at the per-stage limit.
-- the curriculum now keeps a flat push-kick ladder all the way through `Stage4b`, so late-stage promotions do not depend on rough/slip/trip-specific critic changes.
-
-Training outputs are written to:
+For curriculum runs, `runner.max_iterations` is the per-stage budget.  Stage
+checkpoints are written below:
 
 ```text
-logs/rsl_rl/g1_antifall/<date_time>_<stage>/...
-logs/rsl_rl/g1_antifall_curriculum/<date_time>_curriculum/...
+logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/<stage>/model_*.pt
 ```
 
-> **Migration note:** older checkpoints / manifests created before the push-kick reset may still load,
-> but they represent the previous rough/slip/trip-oriented late-stage semantics rather than the
-> current mainline ladder.
+The top-level exported ONNX/policy artifacts are for deployment; use stage
+checkpoints for Python replay.
 
-### 1.2 Replaying a trained G1 anti-fall policy
+### 1.3 G1 GetUp
 
-After `Unitree-G1-AntiFall-Curriculum` finishes, **replay from a stage checkpoint**,
-not from the top-level
-`logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/model_*.pt`.
-
-Why:
-
-- `stages/<index>_<stage>/model_*.pt` contains the actual playable policy weights;
-- the top-level `model_*.pt` mainly stores curriculum progress metadata;
-- the top-level `policy.onnx` is the deployment export, not the input to
-  `scripts/play_antifall.py`.
-
-First locate the latest curriculum run:
+GetUp ports HoST-style terrain variants into an MJLab task:
 
 ```bash
-LATEST_RUN=$(ls -dt logs/rsl_rl/g1_antifall_curriculum/*_curriculum | head -n1)
-ls "$LATEST_RUN/stages"
+python scripts/train_getup.py --terrain ground -- --env.scene.num-envs=4096
+python scripts/train_getup.py --terrain platform -- --env.scene.num-envs=4096
+python scripts/train_getup.py --terrain wall -- --env.scene.num-envs=4096
+python scripts/train_getup.py --terrain slope -- --env.scene.num-envs=4096
 ```
 
-If the curriculum completed, replay the final `Stage4b` policy:
+Equivalent generic form:
 
 ```bash
-CKPT=$(ls -t "$LATEST_RUN"/stages/05_stage4b/model_*.pt | head -n1)
+python scripts/train.py Unitree-G1-GetUp --getup-terrain=platform
+```
 
+The terrain flag controls reset poses, terrain distribution, assist-force
+settings, and RL run naming.  Keep the selected terrain in the run name when
+comparing checkpoints.
+
+### 1.4 G1 Parkour artifacts
+
+The current Parkour lane is primarily a **play/deploy lane** for an exported
+InstinctLab-style depth-conditioned policy.  Policy bundle defaults live under:
+
+```text
+deploy/robots/g1_parkour/config/policy/parkour/v0/
+```
+
+If you promote a new trained artifact bundle, keep `actor.onnx`,
+`0-depth_encoder.onnx`, `params/deploy.yaml`, and `parkour_artifacts.json`
+together.  The deploy YAML defines joint order, action scale, depth crop, depth
+range, and camera contract used by both Python and C++ runtimes.
+
+## 2. Play
+
+Play is where most transfer bugs should be found before C++/DDS or real robot
+runs.  Always verify joint order, action order, command convention, reset pose,
+and viewer/depth diagnostics here first.
+
+### 2.1 Generic play
+
+```bash
+python scripts/play.py Unitree-G1-Flat \
+  --checkpoint_file logs/rsl_rl/g1_velocity/<run>/model_*.pt
+```
+
+Use `--viewer native` when you need MuJoCo mouse/keyboard interaction.  Use
+`--viewer none` for headless validation.
+
+### 2.2 AntiFall play
+
+Replay a curriculum stage checkpoint rather than the top-level exported ONNX:
+
+```bash
 python scripts/play_antifall.py \
   --task Unitree-G1-AntiFall-Stage4b \
-  --checkpoint-file "$CKPT"
+  --run-dir logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b \
+  --checkpoint model_*.pt
 ```
 
-If training stopped earlier, use the matching stage directory and task ID:
+The native MuJoCo viewer supports drag perturbations.  Drag the robot body to
+apply interactive pushes/kicks; use this to check recovery behavior before any
+hardware run.
 
-| Stage directory | Task ID for play |
-| --- | --- |
-| `stages/00_stage0` | `Unitree-G1-AntiFall-Stage0` |
-| `stages/01_stage1` | `Unitree-G1-AntiFall-Stage1` |
-| `stages/02_stage2` | `Unitree-G1-AntiFall-Stage2` |
-| `stages/03_stage3` | `Unitree-G1-AntiFall-Stage3` |
-| `stages/04_stage4a` | `Unitree-G1-AntiFall-Stage4a` |
-| `stages/05_stage4b` | `Unitree-G1-AntiFall-Stage4b` |
-
-Useful optional flags:
-
-- `--num-envs 1` to view a single robot;
-- `--device cpu` or `--device cuda:0` to select the inference device;
-- `--video` to start recording immediately and keep recording until you close play;
-- `scripts/play_antifall.py` always uses the MuJoCo native viewer, so it
-  requires a graphical display (`DISPLAY` or `WAYLAND_DISPLAY`).
-- `scripts/play_antifall.py` now defaults to native **mouse drag perturbation**:
-  click / drag the robot in the MuJoCo viewer to simulate hand-push / foot-kick style disturbances.
-- The native viewer prints the **current push limit in Newtons** at startup,
-  clamps continuous drag to a training-aligned impulse budget, and supports
-  both `Enter` and `Backspace` for reset.
-- Videos are written next to the checkpoint under `videos/play/`
-  (for example `stages/05_stage4b/videos/play/rl-video-step-0.mp4`), and
-  closing play with `Ctrl+C` still flushes the recording to disk.
-- Anti-fall play allocates extra contact headroom in play mode to avoid
-  repeated `broadphase overflow` warnings during aggressive drag perturbations.
-
-If you prefer the generic play entrypoint, you can also run:
+### 2.3 GetUp play
 
 ```bash
-python scripts/play.py Unitree-G1-AntiFall-Stage4b \
-  --checkpoint_file="$CKPT" \
-  --num_envs=1
+python scripts/play_getup.py --terrain slope -- \
+  --checkpoint_file logs/rsl_rl/g1_getup/<run>/model_*.pt
 ```
 
-`scripts/play.py` defaults to `--viewer=auto`: it prefers the native viewer when
-a graphical display is available and falls back to the viser viewer otherwise.
+The play terrain should match the terrain used for training unless you are
+intentionally testing terrain transfer.
 
-For implementation details, stage semantics, and current caveats, see
-[`doc/g1_antifall.md`](doc/g1_antifall.md).
+### 2.4 Parkour play and terrain editing
 
-### 1.3 G1 Parkour Play
-
-The repo includes a dedicated exported-policy play entrypoint for the
-depth-conditioned G1 parkour model:
-
-- default task: `Unitree-G1-Parkour`
-- default terrain: the longer InstinctLab-inspired MuJoCo terrain sequence
-  (up stairs, down stairs, square-gap surrogates, box fields, and mesh-box
-  stepping stones; gap spans are capped at 0.40 m)
-- default visualization: native MuJoCo viewer plus the live **policy depth**
-  camera window
-- default command source: `terrain-route`, which steers the velocity command
-  along the task's terrain waypoints instead of blindly walking in a fixed
-  world direction.  Use `--terrain-route-speed` to explicitly set the route
-  walking speed.
-- default stopping behavior: runs long enough to reach the route endpoint
-  instead of stopping after the old short debug duration.
-- optional video: `--video` records 1080p MP4 by default next to the exported
-  model files; use `--video-dir` to choose another output directory.
-
-Run the default visual play mode:
+Default Parkour replay:
 
 ```bash
 python scripts/play_parkour.py
 ```
 
-Useful overrides:
+Headless validation:
 
 ```bash
-# Headless / CI smoke validation.
 python scripts/play_parkour.py --validate-walk \
   --viewer none \
   --no-depth-viewer \
   --max-steps 20
-
-# Disable route following and use fixed velocity commands.
-python scripts/play_parkour.py \
-  --command-mode fixed \
-  --command-x 0.25 \
-  --command-y 0.0 \
-  --command-yaw 0.0
-
-# Route following with an explicit walking speed and video output directory.
-python scripts/play_parkour.py \
-  --terrain-route-speed 0.35 \
-  --video \
-  --video-dir /tmp/parkour-videos
 ```
 
-The native viewer and depth window require a graphical display
-(`DISPLAY` or `WAYLAND_DISPLAY`).  Use `--viewer none --no-depth-viewer` for
-headless validation.
+The default command mode is `terrain-route`: the script reads
+`g1_parkour_route_waypoints` from the task config and generates velocity commands
+that follow the deterministic terrain sequence.  Use `--command-mode fixed` only
+when you intentionally want a fixed body command ablation.
 
-#### C++/DDS manual launch
+The parkour terrain source of truth is now:
 
-The repository no longer keeps the Python smoke harness under `scripts/`.  For
-C++/DDS validation, launch the simulator and controller directly so diagnostic
-commands stay close to the deployed binaries.  The simulator defaults to the
-deterministic complex parkour XML used by `scripts/play_parkour.py`:
+```text
+src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml
+```
+
+Open the visual terrain editor:
 
 ```bash
-# First clear stale DDS simulator/controller processes so the controller cannot
-# attach to an old simulator.
-pkill -f unitree_mujoco_parkour || true
-pkill -f g1_parkour_ctrl || true
-
-# Terminal 1: start the simulator. Visual mode opens both MuJoCo and depth.
-./simulate/build/unitree_mujoco_parkour --network lo
-
-# Terminal 2: start the interactive controller after the simulator is ready.
-./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo
+python scripts/edit_parkour_scene.py --open-browser
 ```
 
-For automated route-following runs, pass `--sim-autostart-parkour` to the
-controller and set the desired command / depth flags on the controller binary
-directly.  For headless simulator diagnostics, pass `--headless` and
-`--headless-seconds <N>` to `unitree_mujoco_parkour`.  To isolate the control
-stack from live depth rendering, set `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` for
-the controller; to disable the simulator-side live depth bridge, start the
-simulator with `G1_PARKOUR_DEPTH_BRIDGE=0`.
+The editor exposes each terrain box module with intuitive **full** length/width
+/height values.  MuJoCo XML stores box `size` as half-extents, so a displayed
+`0.36 x 1.44 x 0.04 m` box is written as `size="0.18 0.72 0.02"`.  If you change
+obstacle order or total course length, update the route waypoints separately in
+`src/tasks/velocity/config/g1_parkour/env_cfgs.py`.
 
-Keyboard controls in the controller terminal:
+## 3. Sim2Real
 
-- `w` / `up`: walk only while the key is held, using the default
-  `--sim-command-x` value (`0.30 m/s`).
-- `k`: enter Parkour from `FixStand` if you explicitly opted out of the default
-  interactive mode.
-- `+` / `=` and `-`: adjust the held-`w` forward speed by the policy keyboard step.
-- `a` / `left` / `q`: turn left; `d` / `right` / `e`: turn right; `c`: stop yaw.
-- Releasing movement keys, or pressing `s` / `down` / `x` / `space`, returns to
-  the idle-hold command while staying in Parkour; `p`: Passive.
+Sim2Real means moving from Python/MJLab replay to the Unitree C++/DDS control
+stack, first in simulator and only then on hardware.
 
-### 1.4 G1 Get-Up Training
+### 3.1 Build simulator and controller
 
-The repo includes a single get-up task for Unitree G1:
-
-- `Unitree-G1-GetUp` — public mjlab task id
-- terrain variants: `ground`, `platform`, `wall`, `slope`
-
-The terrain is selected with `--getup-terrain` on the generic scripts or with the
-thin get-up wrappers. The prone variant is intentionally out of scope for this
-first pass.
-
-Train the default ground variant on GPU 0:
-
-```bash
-python scripts/train.py Unitree-G1-GetUp \
-  --gpu-ids "[0]" \
-  --getup-terrain=ground \
-  --env.scene.num-envs=4096
-```
-
-Train another terrain variant on GPU 1:
-
-```bash
-python scripts/train_getup.py --terrain platform -- \
-  --gpu-ids "[1]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=5000
-```
-
-For multi-GPU training, pass a list such as `--gpu-ids "[0,1]"`.
-
-Replay a trained checkpoint:
-
-```bash
-python scripts/play_getup.py --terrain slope -- \
-  --checkpoint-file path/to/model.pt
-```
-
-### 2. Motion Imitation Training
-
-Train a Unitree G1 to mimic reference motion sequences.
-
-<div style="margin-left: 20px;">
-
-#### 2.1 Prepare Motion Files
-
-Prepare csv motion files in mjlab/motions/g1/ and convert them to npz format:
-
-```bash
-python scripts/csv_to_npz.py \
---input-file src/assets/motions/g1/dance1_subject2.csv \
---output-name dance1_subject2.npz \
---input-fps 30 \
---output-fps 50 \
---robot g1 # g1 or g1_23dof
-```
-
-**npz files will be stored at:**：`src/motions/g1/...`
-
-#### 2.2 Training
-
-After generating the NPZ file, launch imitation training:
-
-```bash
-python scripts/train.py Unitree-G1-Tracking-No-State-Estimation --motion_file=src/assets/motions/g1/dance1_subject2.npz --env.scene.num-envs=4096
-```
-
-Available tasks:
-  - Unitree-G1-Tracking-No-State-Estimation
-  - Unitree-G1-23Dof-Tracking-No-State-Estimation
-
-</div>
-
-> [!NOTE]
-> For detailed motion imitation instructions, refer to the BeyondMimic documentation:
-> [BeyondMimic documentation](https://github.com/HybridRobotics/whole_body_tracking/blob/main/README.md#motion-preprocessing--registry-setup).
-
-#### ⚙️  Parameter Description
-- `--env.scene`: simulation scene configuration (e.g., num_envs, dt, ground type, gravity, disturbances)
-- `--env.observations`: observation space configuration (e.g., joint state, IMU, commands, etc.)
-- `--env.rewards`: reward terms used for policy optimization
-- `--env.commands`: task commands (e.g., velocity, pose, or motion targets)
-- `--env.terminations`: termination conditions for each episode
-- `--agent.seed`: random seed for reproducibility
-- `--agent.resume`: resume from the last saved checkpoint when enabled
-- `--agent.policy`: policy network architecture configuration
-- `--agent.algorithm`: reinforcement learning algorithm configuration (PPO, hyperparameters, etc.)
-
-**Training results are stored at**：`logs/rsl_rl/<robot>_(velocity | tracking)/<date_time>/model_<iteration>.pt`
-
-### 3. Simulation Validation
-
-To visualize policy behavior in MuJoCo:
-
-Velocity tracking:
-```bash
-python scripts/play.py Unitree-G1-Flat --checkpoint_file=logs/rsl_rl/g1_velocity/2026-xx-xx_xx-xx-xx/model_xx.pt
-```
-
-Motion imitation:
-```bash
-python scripts/play.py Unitree-G1-Tracking-No-State-Estimation --motion_file=src/assets/motions/g1/dance1_subject2.npz --checkpoint_file=logs/rsl_rl/g1_tracking/2026-xx-xx_xx-xx-xx/model_xx.pt
-```
-
-**Note**：
-
-- During training, policy.onnx and policy.onnx.data are also exported for deployment onto physical robots.
-
-**Visualization**：
-
-| Go2                              | G1                             | H1_2                               | G1_mimic                          |
-|----------------------------------|--------------------------------|------------------------------------|-----------------------------------|
-| ![go2](doc/gif/go2-velocity.gif) | ![g1](doc/gif/g1-velocity.gif) | ![h1_2](doc/gif/h1_2-velocity.gif) | ![g1_mimic](doc/gif/g1-mimic.gif) |
-
-### 4. Real Deployment
-
-Before deployment, install the required communication tools:
-- [cyclonedds](https://github.com/eclipse-cyclonedds/cyclonedds.git)
-- [unitree_sdk2](https://github.com/unitreerobotics/unitree_sdk2.git)
-
-<div style="margin-left: 20px;">
-
-#### 4.1 Power On the Robot
-Start the robot in suspended state and wait until it enters `zero-torque` mode.
-
-#### 4.2 Enable Debug Mode
-While in `zero-torque` mode, press `L2 + R2` on the controller. The robot will enter `debug mode` with joint damping enabled.
-
-#### 4.3 Connect to the Robot
-Connect your PC to the robot via Ethernet. Configure the network as:
-- Address：`192.168.123.222`
-- Netmask：`255.255.255.0`
-
-Use `ifconfig` to determine the Ethernet device name for deployment.
-
-#### 4.4 Compilation
-
-Example: Unitree G1 velocity control.
-Place `policy.onnx` and `policy.onnx.data` into: `deploy/robots/g1/config/policy/velocity/v0/exported`.
-Then compile:
-
-```bash
-cd deploy/robots/g1
-mkdir build && cd build
-cmake .. && make
-```
-
-#### 4.5 Deployment
-
-## 4.5.1 Simulation Deployment
-
-Before deploying on the real robot, it is recommended to perform simulation deployment using [unitree_mujoco](https://github.com/unitreerobotics/unitree_mujoco)
-to prevent abnormal behaviors on the physical robot. This framework has already integrated it.
-
-Build unitree_mujoco：
+Build the Unitree MuJoCo simulator:
 
 ```bash
 cd simulate
-mkdir build && cd build
-cmake .. && make -j8
+cmake -B build -S .
+cmake --build build -j4
+cd ..
 ```
 
-Launch the simulator (note that a gamepad must be connected):
+Build the G1 Parkour controller:
 
 ```bash
-./simulate/build/unitree_mujoco
+cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build
+cmake --build deploy/robots/g1_parkour/build -j4
 ```
 
-You can select the corresponding robot in `simulate/config`
+Other robot controllers follow the same pattern under `deploy/robots/<robot>/`.
 
-Launch the simulation control program:
+### 3.2 Simulator loopback
+
+Start simulator and controller in two terminals:
 
 ```bash
-cd deploy/robots/g1/build
-./g1_ctrl --network=lo
+# Terminal 1
+./simulate/build/unitree_mujoco_parkour --network lo
+
+# Terminal 2
+./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo
 ```
 
-## 4.5.2 Real-Robot Deployment
+For automated Parkour route-following in simulator, pass
+`--sim-autostart-parkour` to the controller and set command/depth flags on the
+controller binary.  For headless simulator diagnostics, pass `--headless` and
+`--headless-seconds <N>` to the simulator.  To isolate the controller from live
+depth rendering, set `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` for the controller.
+To disable the simulator depth bridge, start the simulator with
+`G1_PARKOUR_DEPTH_BRIDGE=0`.
 
-Launch the control program on the real robot:
+Keyboard controls in loopback controller mode:
 
-```bash
-cd deploy/robots/g1/build
-./g1_ctrl --network=enp5s0
-```
+- `w` / `up`: walk only while held.
+- `s` / `down` / `x` / `space`: stop translational command.
+- `a` / `left` / `q`: yaw left.
+- `d` / `right` / `e`: yaw right.
+- `c`: stop yaw.
+- `+` / `=` / `-`: adjust forward speed.
+- `p`: Passive.
 
-**Arguments**：
-- `network`: The network interface used to connect to the robot. Use `lo` for simulation deployment, and `enp5s0` for the real robot(You can check it using the `ifconfig` command) 
+### 3.3 Real robot checklist
 
-</div>
+Before hardware:
 
-**Deployment Results**：
+1. Verify Python `play` behavior with the same checkpoint/artifact.
+2. Verify simulator loopback with conservative commands.
+3. Confirm joint names, action scale, default joint pose, and policy observation
+   order match the deploy YAML.
+4. Confirm robot network interface and DDS domain do not collide with another
+   simulator/controller process.
+5. Start with low speed and a safety operator ready to switch to Passive.
+6. Keep the robot suspended or supported for the first motor-enable test when
+   changing action order, PD gains, or default pose.
+7. Do not tune away instability by blindly increasing stiffness; first check
+   command frame, action order, torque limits, depth validity, and reset pose.
 
-| Go2                                                    | G1                                                    | H1_2           | G1_mimic                                           |
-|--------------------------------------------------------|-------------------------------------------------------|----------------|----------------------------------------------------|
-| <img src="doc/gif/go2-velocity-real.gif" width="300"/> | <img src="doc/gif/g1-velocity-real.gif" width="300"/> | <img src="doc/gif/h1_2-velocity-real.gif" width="300"/> | <img src="doc/gif/g1-mimic-real.gif" width="300"/> |
+Common Parkour-specific caveats:
 
+- Depth input is part of the policy contract.  Constant depth is useful for
+  ablation, but it is not a terrain traversal validation.
+- The torso-mounted `parkour_depth_camera` crop/range/history must match
+  `deploy.yaml`.
+- The Python route follower and C++ loopback commands can differ if route
+  waypoints are changed without updating both sides.
+- `scene_g1_parkour.xml` edits affect Python play because the MJLab debug spec
+  reads terrain modules from that XML.
 
-## 🎉  Acknowledgements
+## Additional documentation
 
-This project would not be possible without the contributions of the following repositories:
+- `doc/setup_en.md` / `doc/setup_zh.md` — environment setup.
+- `doc/train_play_sim2real_en.md` / `doc/train_play_sim2real_zh.md` — end-to-end workflow checklist.
+- `doc/g1_antifall.md` — AntiFall train/play/sim2real notes.
+- `doc/g1_parkour.md` — Parkour artifact, depth, terrain, and deploy notes.
+- `doc/g1_getup.md` — GetUp terrain migration and usage notes.
 
-- [mjlab](https://github.com/mujocolab/mjlab.git): training and execution framework
-- [whole_body_tracking](https://github.com/HybridRobotics/whole_body_tracking.git): versatile humanoid motion tracking framework
-- [rsl_rl](https://github.com/leggedrobotics/rsl_rl.git): reinforcement learning algorithm implementation
-- [mujoco_warp](https://github.com/google-deepmind/mujoco_warp.git): GPU-accelerated rendering and simulation interface
-- [mujoco](https://github.com/google-deepmind/mujoco.git): high-fidelity rigid-body physics engine
+## Acknowledgements
+
+This work builds on Unitree RL MJLab, MJLab, MuJoCo, MuJoCo Warp, RSL-RL,
+Unitree SDK2, and Unitree MuJoCo.  This fork adds the G1 Parkour, AntiFall, and
+GetUp workflows and related deployment utilities.
