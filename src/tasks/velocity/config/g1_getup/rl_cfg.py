@@ -13,7 +13,7 @@ def unitree_g1_getup_ppo_runner_cfg(terrain: str = "ground") -> RslRlOnPolicyRun
       obs_normalization=True,
       distribution_cfg={
         "class_name": "GaussianDistribution",
-        "init_std": 1.0,
+        "init_std": 0.8,
         "std_type": "scalar",
       },
     ),
@@ -38,6 +38,11 @@ def unitree_g1_getup_ppo_runner_cfg(terrain: str = "ground") -> RslRlOnPolicyRun
     ),
     experiment_name="g1_getup",
     run_name=terrain,
+    # HoST clips env actions before storing them in observations and before
+    # applying relative joint targets.  Without this bound, learned Gaussian
+    # means can explode, feeding huge raw actions into `last_action` and
+    # `action_rate_l2` until the actor observation becomes non-finite.
+    clip_actions=100.0,
     save_interval=100,
     num_steps_per_env=24,
     max_iterations=10001,

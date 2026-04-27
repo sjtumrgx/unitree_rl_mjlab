@@ -18,6 +18,7 @@ from src.tasks.velocity.mdp.getup.rewards import (
   getup_posture_reward,
 )
 from src.tasks.velocity.mdp.getup.terminations import stalled_getup_progress
+from src.tasks.velocity.config.g1_getup.rl_cfg import unitree_g1_getup_ppo_runner_cfg
 
 
 class _Scene(dict):
@@ -227,6 +228,13 @@ def test_stalled_getup_progress_requires_height_and_upright_progress() -> None:
     )
 
   assert terminated.tolist() == [True, False]
+
+
+def test_getup_runner_clips_actions_like_host_runtime() -> None:
+  cfg = unitree_g1_getup_ppo_runner_cfg(terrain="platform")
+
+  assert cfg.clip_actions == 100.0
+  assert cfg.actor.distribution_cfg["init_std"] == 0.8
 
 
 def test_prone_variant_is_not_exposed() -> None:
