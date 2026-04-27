@@ -10,7 +10,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from src.tasks.velocity.mdp.anti_fall.events import disturbance_window_mask
 from src.tasks.velocity.mdp.terminations import illegal_contact
 
-from .metrics import _upright_alignment
+from .metrics import _relative_body_height, _upright_alignment
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -28,7 +28,14 @@ def _getup_progress(
 ) -> torch.Tensor:
   asset: Entity = env.scene[asset_cfg.name]
   facing_up = torch.clamp(_upright_alignment(asset.data.projected_gravity_b), min=0.0, max=1.0)
-  return facing_up
+  body_heights = asset.data.body_link_pos_w[:, asset_cfg.body_ids, 2]
+  torso_height = _relative_body_height(env, body_heights).amax(dim=1)
+  height_progress = torch.clamp(
+    (torso_height - min_height) / max(target_height - min_height, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  return height_progress * facing_up
 
 
 class stalled_getup_progress:

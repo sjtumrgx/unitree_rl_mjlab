@@ -23,7 +23,8 @@ from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 
 import src.tasks.velocity.mdp as mdp
 
-from src.tasks.velocity.config.g1.env_cfgs import unitree_g1_rough_env_cfg
+from src.tasks.velocity.config.g1_23dof.env_cfgs import unitree_g1_23dof_rough_env_cfg
+from src.tasks.velocity.mdp.getup.actions import HostRelativeJointPositionActionCfg
 from src.tasks.velocity.config.g1_antifall.env_cfgs import (
   _apply_antifall_actor_contract,
   _apply_antifall_helpers,
@@ -31,6 +32,7 @@ from src.tasks.velocity.config.g1_antifall.env_cfgs import (
 
 
 GETUP_TERRAIN_VARIANTS = ("ground", "platform", "wall", "slope")
+GETUP_TRAIN_NUM_ENVS = 4096
 HOST_SOURCE_TASKS = {
   "ground": "g1_ground",
   "platform": "g1_platform",
@@ -39,10 +41,54 @@ HOST_SOURCE_TASKS = {
 }
 
 HOST_TERRAIN_PARITY = {
-  "ground": {"num_rows": 1, "num_cols": 20, "terrain_proportions": (1, 0.0, 0, 0, 0), "max_init_terrain_level": 5, "target_base_height_phase1": 0.45, "target_base_height_phase2": 0.45, "target_base_height_phase3": 0.65, "pull_force_n": 100},
-  "platform": {"num_rows": 8, "num_cols": 8, "terrain_proportions": (0, 0.0, 1, 0, 0), "max_init_terrain_level": 3, "target_base_height_phase1": 0.45, "target_base_height_phase2": 0.45, "target_base_height_phase3": 0.65, "pull_force_n": 100},
-  "wall": {"num_rows": 4, "num_cols": 5, "terrain_proportions": (1, 0.0, 0, 0, 0), "max_init_terrain_level": 3, "target_base_height_phase1": 0.45, "target_base_height_phase2": 0.45, "target_base_height_phase3": 0.65, "pull_force_n": 100},
-  "slope": {"num_rows": 4, "num_cols": 8, "terrain_proportions": (1, 0, 0, 0, 0), "max_init_terrain_level": 3, "target_base_height_phase1": 0.4, "target_base_height_phase2": 0.4, "target_base_height_phase3": 0.6, "pull_force_n": 100},
+  "ground": {
+    "num_rows": 1,
+    "num_cols": 20,
+    "terrain_proportions": (1, 0.0, 0, 0, 0),
+    "mjlab_terrain_names": ("flat",),
+    "curriculum": True,
+    "max_init_terrain_level": 5,
+    "target_base_height_phase1": 0.45,
+    "target_base_height_phase2": 0.45,
+    "target_base_height_phase3": 0.65,
+    "pull_force_n": 100,
+  },
+  "platform": {
+    "num_rows": 8,
+    "num_cols": 8,
+    "terrain_proportions": (0, 0.0, 1, 0, 0),
+    "mjlab_terrain_names": ("pyramid_stairs",),
+    "curriculum": False,
+    "max_init_terrain_level": 3,
+    "target_base_height_phase1": 0.45,
+    "target_base_height_phase2": 0.45,
+    "target_base_height_phase3": 0.65,
+    "pull_force_n": 100,
+  },
+  "wall": {
+    "num_rows": 4,
+    "num_cols": 5,
+    "terrain_proportions": (1, 0.0, 0, 0, 0),
+    "mjlab_terrain_names": ("hf_pyramid_slope",),
+    "curriculum": False,
+    "max_init_terrain_level": 3,
+    "target_base_height_phase1": 0.45,
+    "target_base_height_phase2": 0.45,
+    "target_base_height_phase3": 0.65,
+    "pull_force_n": 100,
+  },
+  "slope": {
+    "num_rows": 4,
+    "num_cols": 8,
+    "terrain_proportions": (1, 0, 0, 0, 0),
+    "mjlab_terrain_names": ("hf_pyramid_slope",),
+    "curriculum": False,
+    "max_init_terrain_level": 3,
+    "target_base_height_phase1": 0.4,
+    "target_base_height_phase2": 0.4,
+    "target_base_height_phase3": 0.6,
+    "pull_force_n": 100,
+  },
 }
 
 _GETUP_HARD_POSE_RANGE = {
@@ -90,6 +136,16 @@ def _set_train_getup_terrain_mix(cfg: ManagerBasedRlEnvCfg) -> None:
   terrain.terrain_generator = replace(terrain_generator, sub_terrains=sub_terrains)
 
 
+def _host_variant_sub_terrains(terrain_variant: str) -> dict:
+  parity = HOST_TERRAIN_PARITY[terrain_variant]
+  terrain_names = parity["mjlab_terrain_names"]
+  proportion = 1.0 / len(terrain_names)
+  return {
+    name: replace(ROUGH_TERRAINS_CFG.sub_terrains[name], proportion=proportion)
+    for name in terrain_names
+  }
+
+
 def _apply_host_terrain_variant(cfg: ManagerBasedRlEnvCfg, terrain_variant: str) -> None:
   if terrain_variant not in GETUP_TERRAIN_VARIANTS:
     raise ValueError(
@@ -101,13 +157,17 @@ def _apply_host_terrain_variant(cfg: ManagerBasedRlEnvCfg, terrain_variant: str)
   cfg.getup_terrain = terrain_variant  # type: ignore[attr-defined]
   cfg.host_source_task = HOST_SOURCE_TASKS[terrain_variant]  # type: ignore[attr-defined]
   cfg.host_parity = parity  # type: ignore[attr-defined]
-  if cfg.scene.terrain is not None and cfg.scene.terrain.terrain_generator is not None:
+  if cfg.scene.terrain is not None:
+    cfg.scene.terrain.max_init_terrain_level = parity["max_init_terrain_level"]
     generator = cfg.scene.terrain.terrain_generator
-    cfg.scene.terrain.terrain_generator = replace(
-      generator,
-      num_rows=parity["num_rows"],
-      num_cols=parity["num_cols"],
-    )
+    if generator is not None:
+      cfg.scene.terrain.terrain_generator = replace(
+        generator,
+        num_rows=parity["num_rows"],
+        num_cols=parity["num_cols"],
+        curriculum=parity["curriculum"],
+        sub_terrains=_host_variant_sub_terrains(terrain_variant),
+      )
 
 
 def _set_benchmark_holdout_terrain_mix(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -226,31 +286,9 @@ def _add_support_body_contact_sensor(cfg: ManagerBasedRlEnvCfg) -> None:
 
 
 
-def _add_head_contact_guard(cfg: ManagerBasedRlEnvCfg) -> None:
-  head_contact_cfg = ContactSensorCfg(
-    name="head_ground_contact",
-    primary=ContactMatch(
-      mode="geom",
-      entity="robot",
-      pattern=("head_collision",),
-    ),
-    secondary=ContactMatch(mode="body", pattern="terrain"),
-    fields=("found", "force"),
-    reduce="maxforce",
-    num_slots=1,
-    history_length=4,
-  )
-  cfg.scene.sensors = (cfg.scene.sensors or ()) + (head_contact_cfg,)
+def _add_getup_stall_guard(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.terminations.pop("fell_over", None)
-  cfg.terminations["head_contact"] = TerminationTermCfg(
-    func=mdp.tolerant_illegal_contact,
-    params={
-      "sensor_name": head_contact_cfg.name,
-      "force_threshold": 5.0,
-      "bad_contact_time_threshold_s": 0.5,
-      "grace_period_s": 1.2,
-    },
-  )
+  cfg.terminations.pop("head_contact", None)
   cfg.terminations["stalled_getup"] = TerminationTermCfg(
     func=mdp.stalled_getup_progress,
     params={
@@ -261,15 +299,22 @@ def _add_head_contact_guard(cfg: ManagerBasedRlEnvCfg) -> None:
   )
 
 def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:
-  cfg = unitree_g1_rough_env_cfg(play=play)
+  cfg = unitree_g1_23dof_rough_env_cfg(play=play)
+  if not play:
+    cfg.scene.num_envs = GETUP_TRAIN_NUM_ENVS
   _apply_antifall_actor_contract(cfg)
+  cfg.actions["joint_pos"] = HostRelativeJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=1.0,
+  )
   _apply_zero_command_profile(cfg)
   _set_train_getup_terrain_mix(cfg)
   _apply_host_terrain_variant(cfg, terrain)
   cfg.curriculum.pop("command_vel", None)
   _add_support_depth_camera(cfg)
   _add_support_body_contact_sensor(cfg)
-  _add_head_contact_guard(cfg)
+  _add_getup_stall_guard(cfg)
   cfg.episode_length_s = 20.0
   cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 128)
   cfg.events.pop("push_robot", None)

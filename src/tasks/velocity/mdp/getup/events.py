@@ -209,6 +209,11 @@ class apply_getup_assist_force:
       env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
     asset = env.scene[asset_cfg.name]
     torso_height = asset.data.body_link_pos_w[env_ids][:, asset_cfg.body_ids, 2].amax(dim=1)
+    env_origins = getattr(env.scene, "env_origins", None)
+    if env_origins is None and isinstance(getattr(env, "scene", None), dict):
+      env_origins = env.scene.get("env_origins")
+    if env_origins is not None:
+      torso_height = torso_height - env_origins[env_ids, 2]
     alignment = _upright_alignment(asset.data.projected_gravity_b[env_ids])
     active = (torso_height < activation_height) & (alignment >= alignment_threshold)
     num_envs = env_ids.numel()

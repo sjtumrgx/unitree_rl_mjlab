@@ -51,7 +51,7 @@ def getup_posture_reward(
   projected_gravity_b = asset.data.projected_gravity_b
   tilt = torch.linalg.norm(projected_gravity_b[:, :2], dim=1)
   upright_alignment = torch.clamp(_upright_alignment(projected_gravity_b), min=0.0, max=1.0)
-  torso_height = asset.data.body_link_pos_w[:, asset_cfg.body_ids, 2].amax(dim=1)
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
   tilt_term = torch.exp(-torch.square(tilt) / max(tilt_std**2, 1e-6))
   height_term = torch.exp(-torch.square(torso_height - torso_height_target) / max(torso_height_std**2, 1e-6))
   return tilt_term * height_term * upright_alignment
@@ -66,7 +66,7 @@ def getup_height_progress_reward(
   asset: Entity = env.scene[asset_cfg.name]
   projected_gravity_b = asset.data.projected_gravity_b
   upright_alignment = torch.clamp(_upright_alignment(projected_gravity_b), min=0.0, max=1.0)
-  torso_height = asset.data.body_link_pos_w[:, asset_cfg.body_ids, 2].amax(dim=1)
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
   progress = torch.clamp(
     (torso_height - min_height) / max(target_height - min_height, 1e-6),
     min=0.0,
