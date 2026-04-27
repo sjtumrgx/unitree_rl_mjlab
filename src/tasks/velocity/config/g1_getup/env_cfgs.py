@@ -298,6 +298,24 @@ def _add_getup_stall_guard(cfg: ManagerBasedRlEnvCfg) -> None:
     },
   )
 
+
+def _apply_getup_nan_safety(cfg: ManagerBasedRlEnvCfg) -> None:
+  for group_name in ("actor", "critic"):
+    cfg.observations[group_name].nan_policy = "sanitize"
+    cfg.observations[group_name].nan_check_per_term = True
+
+  cfg.terminations["unstable_state"] = TerminationTermCfg(
+    func=mdp.unstable_getup_state,
+    params={
+      "max_root_lin_vel": 20.0,
+      "max_root_ang_vel": 40.0,
+      "max_joint_vel": 120.0,
+      "max_joint_acc": 20_000.0,
+      "asset_cfg": SceneEntityCfg("robot"),
+    },
+  )
+
+
 def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_23dof_rough_env_cfg(play=play)
   if not play:
@@ -315,6 +333,7 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
   _add_support_depth_camera(cfg)
   _add_support_body_contact_sensor(cfg)
   _add_getup_stall_guard(cfg)
+  _apply_getup_nan_safety(cfg)
   cfg.episode_length_s = 20.0
   cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 128)
   cfg.events.pop("push_robot", None)
@@ -341,6 +360,20 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
     hard_pose_range=_GETUP_HARD_POSE_RANGE,
     hard_velocity_range=_GETUP_HARD_VELOCITY_RANGE,
   )
+  cfg.rewards["body_ang_vel"].func = mdp.bounded_body_angular_velocity_penalty
+  cfg.rewards["body_ang_vel"].params.update(
+    {
+      "max_penalty": 400.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    }
+  )
+  cfg.rewards["angular_momentum"].func = mdp.bounded_angular_momentum_penalty
+  cfg.rewards["angular_momentum"].params["max_penalty"] = 1000.0
+  cfg.rewards["joint_acc_l2"].func = mdp.bounded_joint_acc_l2
+  cfg.rewards["joint_acc_l2"].params = {
+    "max_penalty": 1_000_000.0,
+    "asset_cfg": SceneEntityCfg("robot"),
+  }
   cfg.rewards["getup_posture_reward"] = RewardTermCfg(
     func=mdp.getup_posture_reward,
     weight=1.5,
@@ -413,10 +446,11 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
     },
   )
   cfg.rewards["action_rate_l2"] = RewardTermCfg(
-    func=mdp.action_rate_after_lift,
+    func=mdp.bounded_action_rate_after_lift,
     weight=-0.05,
     params={
       "activation_height": 0.25,
+      "max_penalty": 250.0,
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
@@ -426,6 +460,7 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
     params={
       "feet_sensor_name": "feet_ground_contact",
       "body_sensor_name": "support_body_contact",
+      "max_penalty": 10.0,
       "asset_cfg": SceneEntityCfg("robot"),
     },
   )

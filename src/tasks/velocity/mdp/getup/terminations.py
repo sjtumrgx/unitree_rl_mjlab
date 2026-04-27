@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 
 _TORSO_ASSET_CFG = SceneEntityCfg("robot", body_names=("torso_link",))
+_ROBOT_ASSET_CFG = SceneEntityCfg("robot")
 
 
 def _getup_progress(
@@ -36,6 +37,47 @@ def _getup_progress(
     max=1.0,
   )
   return height_progress * facing_up
+
+
+def unstable_getup_state(
+  env: ManagerBasedRlEnv,
+  max_root_lin_vel: float = 20.0,
+  max_root_ang_vel: float = 40.0,
+  max_joint_vel: float = 120.0,
+  max_joint_acc: float = 20_000.0,
+  asset_cfg: SceneEntityCfg = _ROBOT_ASSET_CFG,
+) -> torch.Tensor:
+  """Terminate worlds whose finite dynamics have already become unrecoverable.
+
+  The get-up task intentionally allows fallen poses, so orientation/contact
+  termination is disabled.  Without a replacement dynamics guard, rare contact
+  explosions can stay finite for one step, produce enormous unbounded penalties,
+  and destabilize PPO before ``nan_detection`` sees a non-finite MuJoCo state.
+  """
+
+  asset: Entity = env.scene[asset_cfg.name]
+  tensors = (
+    asset.data.root_link_lin_vel_b,
+    asset.data.root_link_ang_vel_b,
+    asset.data.joint_vel[:, asset_cfg.joint_ids],
+    asset.data.joint_acc[:, asset_cfg.joint_ids],
+  )
+  nonfinite = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+  for value in tensors:
+    nonfinite |= ~torch.isfinite(value).all(dim=1)
+
+  root_lin_vel = torch.linalg.norm(asset.data.root_link_lin_vel_b, dim=1)
+  root_ang_vel = torch.linalg.norm(asset.data.root_link_ang_vel_b, dim=1)
+  joint_vel = torch.amax(torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
+  joint_acc = torch.amax(torch.abs(asset.data.joint_acc[:, asset_cfg.joint_ids]), dim=1)
+
+  too_large = (
+    (root_lin_vel > max_root_lin_vel)
+    | (root_ang_vel > max_root_ang_vel)
+    | (joint_vel > max_joint_vel)
+    | (joint_acc > max_joint_acc)
+  )
+  return nonfinite | too_large
 
 
 class stalled_getup_progress:

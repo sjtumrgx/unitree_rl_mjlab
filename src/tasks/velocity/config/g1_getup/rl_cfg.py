@@ -13,7 +13,7 @@ def unitree_g1_getup_ppo_runner_cfg(terrain: str = "ground") -> RslRlOnPolicyRun
       obs_normalization=True,
       distribution_cfg={
         "class_name": "GaussianDistribution",
-        "init_std": 0.8,
+        "init_std": 0.5,
         "std_type": "scalar",
       },
     ),
@@ -26,7 +26,7 @@ def unitree_g1_getup_ppo_runner_cfg(terrain: str = "ground") -> RslRlOnPolicyRun
       value_loss_coef=1.0,
       use_clipped_value_loss=True,
       clip_param=0.2,
-      entropy_coef=0.01,
+      entropy_coef=0.001,
       num_learning_epochs=5,
       num_mini_batches=4,
       learning_rate=1.0e-3,
@@ -38,11 +38,12 @@ def unitree_g1_getup_ppo_runner_cfg(terrain: str = "ground") -> RslRlOnPolicyRun
     ),
     experiment_name="g1_getup",
     run_name=terrain,
-    # HoST clips env actions before storing them in observations and before
-    # applying relative joint targets.  Without this bound, learned Gaussian
-    # means can explode, feeding huge raw actions into `last_action` and
-    # `action_rate_l2` until the actor observation becomes non-finite.
-    clip_actions=100.0,
+    # Get-up actions are deltas from the current joint pose.  HoST exposed a
+    # broad outer clip, but MJLab PPO entropy can raise std enough that rare
+    # samples request multi-radian pose jumps and inject contact explosions.
+    # Keep exploration inside a physically recoverable range before action
+    # history, action-rate rewards, and target writes see the sample.
+    clip_actions=5.0,
     save_interval=100,
     num_steps_per_env=24,
     max_iterations=10001,

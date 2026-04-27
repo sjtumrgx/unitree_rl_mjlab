@@ -12,6 +12,8 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.envs import mdp as base_envs_mdp
 
 from ..rewards import (
+  angular_momentum_penalty as _base_angular_momentum_penalty,
+  body_angular_velocity_penalty as _base_body_angular_velocity_penalty,
   stand_still as _base_stand_still,
   track_angular_velocity as _base_track_angular_velocity,
   track_linear_velocity as _base_track_linear_velocity,
@@ -24,6 +26,45 @@ if TYPE_CHECKING:
 
 _TORSO_ASSET_CFG = SceneEntityCfg("robot", body_names=("torso_link",))
 _JOINT_ASSET_CFG = SceneEntityCfg("robot")
+
+
+def _bounded_nonnegative_penalty(
+  value: torch.Tensor,
+  *,
+  max_penalty: float,
+) -> torch.Tensor:
+  """Clamp positive penalty signals before they dominate PPO returns."""
+
+  max_value = float(max_penalty)
+  finite = torch.nan_to_num(value, nan=max_value, posinf=max_value, neginf=max_value)
+  return torch.clamp(finite, min=0.0, max=max_value)
+
+
+def bounded_body_angular_velocity_penalty(
+  env: ManagerBasedRlEnv,
+  max_penalty: float = 400.0,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  penalty = _base_body_angular_velocity_penalty(env, asset_cfg=asset_cfg)
+  return _bounded_nonnegative_penalty(penalty, max_penalty=max_penalty)
+
+
+def bounded_angular_momentum_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  max_penalty: float = 1000.0,
+) -> torch.Tensor:
+  penalty = _base_angular_momentum_penalty(env, sensor_name=sensor_name)
+  return _bounded_nonnegative_penalty(penalty, max_penalty=max_penalty)
+
+
+def bounded_joint_acc_l2(
+  env: ManagerBasedRlEnv,
+  max_penalty: float = 1_000_000.0,
+  asset_cfg: SceneEntityCfg = _JOINT_ASSET_CFG,
+) -> torch.Tensor:
+  penalty = base_envs_mdp.joint_acc_l2(env, asset_cfg=asset_cfg)
+  return _bounded_nonnegative_penalty(penalty, max_penalty=max_penalty)
 
 
 def _torso_height(
@@ -272,6 +313,19 @@ def action_rate_after_lift(
   return penalty * active
 
 
+def bounded_action_rate_after_lift(
+  env: ManagerBasedRlEnv,
+  activation_height: float = 0.25,
+  max_penalty: float = 250.0,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
+  active = (torso_height >= activation_height).float()
+  penalty = envs_mdp.action_rate_l2(env)
+  penalty = _bounded_nonnegative_penalty(penalty, max_penalty=max_penalty)
+  return penalty * active
+
+
 def track_linear_velocity_after_lift(
   env: ManagerBasedRlEnv,
   std: float,
@@ -416,6 +470,7 @@ def joint_pos_limits_after_support(
   min_feet_contact_count: float = 1.0,
   max_body_support_count: float = 2.0,
   alignment_threshold: float = 0.0,
+  max_penalty: float = 10.0,
   asset_cfg: SceneEntityCfg = _JOINT_ASSET_CFG,
 ) -> torch.Tensor:
   feet_sensor = env.scene[feet_sensor_name]
@@ -435,7 +490,9 @@ def joint_pos_limits_after_support(
     & (body_support_count <= max_body_support_count)
     & (alignment >= alignment_threshold)
   )
-  return base_envs_mdp.joint_pos_limits(env, asset_cfg=asset_cfg) * active.float()
+  penalty = base_envs_mdp.joint_pos_limits(env, asset_cfg=asset_cfg)
+  penalty = _bounded_nonnegative_penalty(penalty, max_penalty=max_penalty)
+  return penalty * active.float()
 
 
 def self_collision_cost_after_support(
