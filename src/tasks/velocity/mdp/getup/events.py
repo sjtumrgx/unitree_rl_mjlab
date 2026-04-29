@@ -103,7 +103,6 @@ _DEFAULT_JOINT_PRESET_TARGETS: dict[str, dict[str, float]] = {
     "right_hip_roll_joint": -0.15,
     "right_knee_joint": 1.1,
     "right_ankle_pitch_joint": -0.45,
-    "waist_roll_joint": 0.35,
     "left_shoulder_pitch_joint": 0.55,
     "left_shoulder_roll_joint": 0.45,
     "left_elbow_joint": 1.05,
@@ -120,7 +119,6 @@ _DEFAULT_JOINT_PRESET_TARGETS: dict[str, dict[str, float]] = {
     "right_hip_roll_joint": -0.45,
     "right_knee_joint": 1.6,
     "right_ankle_pitch_joint": -0.7,
-    "waist_roll_joint": -0.35,
     "left_shoulder_pitch_joint": 0.2,
     "left_shoulder_roll_joint": 0.1,
     "left_elbow_joint": 0.9,
@@ -135,7 +133,6 @@ _DEFAULT_JOINT_PRESET_TARGETS: dict[str, dict[str, float]] = {
     "right_hip_pitch_joint": -1.3,
     "right_knee_joint": 2.15,
     "right_ankle_pitch_joint": -1.0,
-    "waist_pitch_joint": 0.35,
     "left_shoulder_pitch_joint": 0.4,
     "left_elbow_joint": 1.0,
     "right_shoulder_pitch_joint": 0.4,
@@ -188,6 +185,149 @@ def _mark_recovery_reset(
   state["disturbance_count"][env_ids] = 1
 
 
+def get_host_getup_curriculum_state(
+  env: ManagerBasedRlEnv,
+  *,
+  initial_force_n: float = 100.0,
+  initial_action_scale: float = 1.0,
+) -> dict[str, torch.Tensor]:
+  """Return HoST-style per-env force/action-scale curriculum buffers."""
+
+  state = getattr(env, "_host_getup_curriculum_state", None)
+  if (
+    not isinstance(state, dict)
+    or state.get("force_n", torch.empty(0, device=env.device)).shape[0] != env.num_envs
+  ):
+    state = {
+      "force_n": torch.full((env.num_envs,), float(initial_force_n), device=env.device),
+      "action_rescale": torch.full((env.num_envs,), float(initial_action_scale), device=env.device),
+      "max_torso_height": torch.zeros(env.num_envs, dtype=torch.float32, device=env.device),
+    }
+    setattr(env, "_host_getup_curriculum_state", state)
+  return state
+
+
+def _relative_torso_height(
+  env: ManagerBasedRlEnv,
+  asset,
+  body_ids,
+  env_ids: torch.Tensor,
+) -> torch.Tensor:
+  torso_height = asset.data.body_link_pos_w[env_ids][:, body_ids, 2].amax(dim=1)
+  env_origins = getattr(env.scene, "env_origins", None)
+  if env_origins is None and isinstance(getattr(env, "scene", None), dict):
+    env_origins = env.scene.get("env_origins")
+  if env_origins is not None:
+    torso_height = torso_height - env_origins[env_ids, 2]
+  return torso_height
+
+
+class apply_host_getup_assist_force:
+  """HoST-style vertical pull with force/action-scale curriculum.
+
+  HoST does not apply the pulling force during the initial unactuated window and
+  gates it by torso orientation (`projected_gravity[:, 2] < -0.8`).  When an
+  episode reaches the head-height curriculum threshold, both assist force and
+  action rescale decay.  MJLab has a scalar reward path, so this event owns the
+  shared curriculum buffers consumed by the action term and metrics.
+  """
+
+  def __init__(self, cfg, env: ManagerBasedRlEnv):
+    self.cfg = cfg
+    self._env = env
+    self._device = env.device
+    self._asset = env.scene[cfg.params["asset_cfg"].name]
+    self._body_ids = cfg.params["asset_cfg"].body_ids
+    self._num_bodies = len(self._body_ids) if isinstance(self._body_ids, list) else 1
+    self._initial_force_n = float(cfg.params.get("initial_force_n", 100.0))
+    self._initial_action_scale = float(cfg.params.get("initial_action_scale", 1.0))
+    self._success_height_threshold = float(cfg.params.get("success_height_threshold", 0.9))
+    self._force_decay_n = float(cfg.params.get("force_decay_n", 20.0))
+    self._action_scale_decay = float(cfg.params.get("action_scale_decay", 0.02))
+    self._min_force_n = float(cfg.params.get("min_force_n", 0.0))
+    self._min_action_scale = float(cfg.params.get("min_action_scale", 0.25))
+    get_host_getup_curriculum_state(
+      env,
+      initial_force_n=self._initial_force_n,
+      initial_action_scale=self._initial_action_scale,
+    )
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor | None,
+    initial_force_n: float = 100.0,
+    initial_action_scale: float = 1.0,
+    success_height_threshold: float = 0.9,
+    force_decay_n: float = 20.0,
+    action_scale_decay: float = 0.02,
+    min_force_n: float = 0.0,
+    min_action_scale: float = 0.25,
+    unactuated_timesteps: int = 30,
+    orientation_projected_gravity_z_max: float = -0.8,
+    no_orientation_gate: bool = False,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  ) -> None:
+    if env_ids is None:
+      env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+    state = get_host_getup_curriculum_state(
+      env,
+      initial_force_n=initial_force_n,
+      initial_action_scale=initial_action_scale,
+    )
+    asset = env.scene[asset_cfg.name]
+    torso_height = _relative_torso_height(env, asset, asset_cfg.body_ids, env_ids)
+    state["max_torso_height"][env_ids] = torch.maximum(
+      state["max_torso_height"][env_ids],
+      torso_height,
+    )
+
+    episode_length = getattr(env, "episode_length_buf", torch.zeros(env.num_envs, device=env.device))
+    past_startup = episode_length[env_ids] > int(unactuated_timesteps)
+    if no_orientation_gate:
+      oriented = torch.ones_like(past_startup, dtype=torch.bool, device=env.device)
+    else:
+      oriented = asset.data.projected_gravity_b[env_ids, 2] < float(orientation_projected_gravity_z_max)
+    active = past_startup & oriented & (state["force_n"][env_ids] > 0.0)
+
+    forces = torch.zeros((env_ids.numel(), self._num_bodies, 3), device=env.device)
+    torques = torch.zeros_like(forces)
+    forces[active, :, 2] = state["force_n"][env_ids][active].unsqueeze(1)
+    asset.write_external_wrench_to_sim(forces, torques, env_ids=env_ids, body_ids=asset_cfg.body_ids)
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    state = get_host_getup_curriculum_state(
+      self._env,
+      initial_force_n=self._initial_force_n,
+      initial_action_scale=self._initial_action_scale,
+    )
+    if env_ids is None:
+      env_ids = slice(None)
+    if isinstance(env_ids, slice):
+      env_ids_t = torch.arange(self._env.num_envs, device=self._device, dtype=torch.long)[env_ids]
+    else:
+      env_ids_t = env_ids.to(device=self._device, dtype=torch.long)
+    if env_ids_t.numel() == 0:
+      return
+
+    succeeded = state["max_torso_height"][env_ids_t] > self._success_height_threshold
+    if torch.any(succeeded):
+      selected = env_ids_t[succeeded]
+      state["force_n"][selected] = torch.clamp(
+        state["force_n"][selected] - self._force_decay_n,
+        min=self._min_force_n,
+      )
+      state["action_rescale"][selected] = torch.clamp(
+        state["action_rescale"][selected] - self._action_scale_decay,
+        min=self._min_action_scale,
+      )
+    state["max_torso_height"][env_ids_t] = 0.0
+
+    forces = torch.zeros((env_ids_t.numel(), self._num_bodies, 3), device=self._device)
+    torques = torch.zeros_like(forces)
+    self._asset.write_external_wrench_to_sim(forces, torques, env_ids=env_ids_t, body_ids=self._body_ids)
+
+
 class apply_getup_assist_force:
   def __init__(self, cfg, env: ManagerBasedRlEnv):
     self._env = env
@@ -230,6 +370,22 @@ class apply_getup_assist_force:
     forces = torch.zeros((len(env_ids), self._num_bodies, 3), device=self._device)
     torques = torch.zeros_like(forces)
     self._asset.write_external_wrench_to_sim(forces, torques, env_ids=env_ids, body_ids=self._body_ids)
+
+
+def getup_assist_force_n(
+  env: ManagerBasedRlEnv,
+  initial_force_n: float = 100.0,
+) -> torch.Tensor:
+  state = get_host_getup_curriculum_state(env, initial_force_n=initial_force_n)
+  return state["force_n"]
+
+
+def getup_action_rescale(
+  env: ManagerBasedRlEnv,
+  initial_action_scale: float = 1.0,
+) -> torch.Tensor:
+  state = get_host_getup_curriculum_state(env, initial_action_scale=initial_action_scale)
+  return state["action_rescale"]
 
 
 def reset_root_state_from_presets(

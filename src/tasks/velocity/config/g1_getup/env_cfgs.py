@@ -7,7 +7,6 @@ new HoST get-up work does not change current training task behavior.
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
@@ -107,7 +106,35 @@ _GETUP_HARD_VELOCITY_RANGE = {
   "pitch": (-0.75, 0.75),
   "yaw": (-0.75, 0.75),
 }
-_DEFAULT_GETUP_DEMO_NPZ = str(Path("src/assets/motions/g1/getup_synthetic_demo.npz"))
+_HOST_GETUP_UNACTUATED_TIMESTEPS = 30
+_HOST_GETUP_INITIAL_ACTION_SCALE = 1.0
+_HOST_GETUP_MIN_ACTION_SCALE = 0.25
+_HOST_GETUP_TARGET_JOINT_ANGLES = {
+  "left_hip_yaw_joint": 0.0,
+  "left_hip_roll_joint": 0.0,
+  "left_hip_pitch_joint": -0.1,
+  "left_knee_joint": 0.3,
+  "left_ankle_pitch_joint": -0.2,
+  "left_ankle_roll_joint": 0.0,
+  "left_wrist_roll_joint": 0.0,
+  "right_hip_yaw_joint": 0.0,
+  "right_hip_roll_joint": 0.0,
+  "right_hip_pitch_joint": -0.1,
+  "right_knee_joint": 0.3,
+  "right_ankle_pitch_joint": -0.2,
+  "right_ankle_roll_joint": 0.0,
+  "right_wrist_roll_joint": 0.0,
+  "waist_yaw_joint": 0.0,
+  "left_shoulder_pitch_joint": 0.0,
+  "left_shoulder_roll_joint": 0.3,
+  "left_shoulder_yaw_joint": 0.0,
+  "left_elbow_joint": 0.0,
+  "right_shoulder_pitch_joint": 0.0,
+  "right_shoulder_roll_joint": -0.3,
+  "right_shoulder_yaw_joint": 0.0,
+  "right_elbow_joint": 0.0,
+}
+_HOST_GETUP_STYLE_JOINT_NAMES = tuple(_HOST_GETUP_TARGET_JOINT_ANGLES)
 
 
 
@@ -316,15 +343,93 @@ def _apply_getup_nan_safety(cfg: ManagerBasedRlEnvCfg) -> None:
   )
 
 
+def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
+  """Replace inherited locomotion/recovery shaping with HoST-like get-up terms."""
+
+  regularizer_keep = {
+    "body_ang_vel",
+    "angular_momentum",
+    "joint_acc_l2",
+    "joint_pos_limits",
+    "action_rate_l2",
+    "self_collisions",
+    "support_body_contact_penalty_after_lift",
+    "pelvis_clearance_penalty",
+  }
+  for reward_name in list(cfg.rewards):
+    if reward_name not in regularizer_keep:
+      cfg.rewards.pop(reward_name, None)
+
+  cfg.rewards["host_task_reward"] = RewardTermCfg(
+    func=mdp.host_getup_task_reward,
+    weight=2.5,
+    params={
+      "feet_sensor_name": "feet_ground_contact",
+      "body_sensor_name": "support_body_contact",
+      "orientation_threshold": 0.99,
+      "orientation_margin": 0.05,
+      "target_base_height_phase1": 0.45,
+      "target_base_height_phase3": 0.65,
+      "min_feet_contact_count": 1.0,
+      "max_body_support_count": 1.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_action_smoothness"] = RewardTermCfg(
+    func=mdp.host_action_smoothness_penalty,
+    weight=-0.01,
+    params={"action_rate_weight": 1.0, "smoothness_weight": 1.0},
+  )
+  cfg.rewards["host_joint_tracking"] = RewardTermCfg(
+    func=mdp.host_joint_tracking_penalty,
+    weight=-0.00025,
+    params={"asset_cfg": SceneEntityCfg("robot")},
+  )
+  cfg.rewards["host_style_pose"] = RewardTermCfg(
+    func=mdp.host_style_pose_reward,
+    weight=1.0,
+    params={
+      "joint_names": _HOST_GETUP_STYLE_JOINT_NAMES,
+      "target_joint_angles": dict(_HOST_GETUP_TARGET_JOINT_ANGLES),
+      "std": 0.75,
+      "asset_cfg": SceneEntityCfg("robot"),
+    },
+  )
+  cfg.rewards["host_feet_support"] = RewardTermCfg(
+    func=mdp.host_feet_support_reward,
+    weight=1.0,
+    params={
+      "feet_sensor_name": "feet_ground_contact",
+      "body_sensor_name": "support_body_contact",
+      "max_body_support_count": 2.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_target_standing"] = RewardTermCfg(
+    func=mdp.host_target_standing_reward,
+    weight=1.0,
+    params={
+      "feet_sensor_name": "feet_ground_contact",
+      "body_sensor_name": "support_body_contact",
+      "base_height_target": 0.75,
+      "target_base_height_phase3": 0.65,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+
+
 def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_23dof_rough_env_cfg(play=play)
   if not play:
     cfg.scene.num_envs = GETUP_TRAIN_NUM_ENVS
-  _apply_antifall_actor_contract(cfg)
+  _apply_antifall_actor_contract(cfg, history_length=6)
+  cfg.host_unactuated_timesteps = _HOST_GETUP_UNACTUATED_TIMESTEPS  # type: ignore[attr-defined]
+  cfg.host_reward_groups = ("task", "regu", "style", "target")  # type: ignore[attr-defined]
   cfg.actions["joint_pos"] = HostRelativeJointPositionActionCfg(
     entity_name="robot",
     actuator_names=(".*",),
     scale=1.0,
+    unactuated_timesteps=_HOST_GETUP_UNACTUATED_TIMESTEPS,
   )
   _apply_zero_command_profile(cfg)
   _set_train_getup_terrain_mix(cfg)
@@ -334,19 +439,34 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
   _add_support_body_contact_sensor(cfg)
   _add_getup_stall_guard(cfg)
   _apply_getup_nan_safety(cfg)
-  cfg.episode_length_s = 20.0
+  cfg.episode_length_s = 10.0
   cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 128)
   cfg.events.pop("push_robot", None)
   if not play:
     cfg.events["getup_assist_force"] = EventTermCfg(
-      func=mdp.apply_getup_assist_force,
+      func=mdp.apply_host_getup_assist_force,
       mode="step",
       params={
-        "force_n": HOST_TERRAIN_PARITY[terrain]["pull_force_n"],
-        "activation_height": 0.35,
-        "alignment_threshold": 0.0,
+        "initial_force_n": HOST_TERRAIN_PARITY[terrain]["pull_force_n"],
+        "initial_action_scale": _HOST_GETUP_INITIAL_ACTION_SCALE,
+        "success_height_threshold": 0.9,
+        "force_decay_n": 20.0,
+        "action_scale_decay": 0.02,
+        "min_force_n": 0.0,
+        "min_action_scale": _HOST_GETUP_MIN_ACTION_SCALE,
+        "unactuated_timesteps": _HOST_GETUP_UNACTUATED_TIMESTEPS,
+        "orientation_projected_gravity_z_max": -0.8,
+        "no_orientation_gate": False,
         "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
       },
+    )
+    cfg.metrics["getup_assist_force_n"] = MetricsTermCfg(
+      func=mdp.getup_assist_force_n,
+      params={"initial_force_n": HOST_TERRAIN_PARITY[terrain]["pull_force_n"]},
+    )
+    cfg.metrics["getup_action_rescale"] = MetricsTermCfg(
+      func=mdp.getup_action_rescale,
+      params={"initial_action_scale": _HOST_GETUP_INITIAL_ACTION_SCALE},
     )
   cfg.events["reset_robot_joints"].func = mdp.reset_joints_from_presets
   cfg.events["reset_robot_joints"].params = {
@@ -374,77 +494,6 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
     "max_penalty": 1_000_000.0,
     "asset_cfg": SceneEntityCfg("robot"),
   }
-  cfg.rewards["getup_posture_reward"] = RewardTermCfg(
-    func=mdp.getup_posture_reward,
-    weight=1.5,
-    params={"asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",))},
-  )
-  cfg.rewards["track_linear_velocity"] = RewardTermCfg(
-    func=mdp.track_linear_velocity_after_lift,
-    weight=1.0,
-    params={
-      "std": 1.0,
-      "command_name": "twist",
-      "activation_height": 0.45,
-      "alignment_threshold": 0.3,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
-  )
-  cfg.rewards["track_angular_velocity"] = RewardTermCfg(
-    func=mdp.track_angular_velocity_after_lift,
-    weight=1.0,
-    params={
-      "std": 1.0,
-      "command_name": "twist",
-      "activation_height": 0.45,
-      "alignment_threshold": 0.3,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
-  )
-  cfg.rewards["getup_torso_lift_reward"] = RewardTermCfg(
-    func=mdp.getup_torso_lift_reward,
-    weight=3.0,
-    params={"asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",))},
-  )
-  cfg.rewards["getup_facing_up_reward"] = RewardTermCfg(
-    func=mdp.getup_facing_up_reward,
-    weight=3.0,
-    params={"asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",))},
-  )
-  cfg.rewards["getup_orientation_phase_bonus"] = RewardTermCfg(
-    func=mdp.getup_orientation_phase_bonus,
-    weight=4.0,
-    params={
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-      "thresholds": (0.1, 0.4, 0.7),
-      "bonuses": (1.0, 2.0, 3.0),
-    },
-  )
-  cfg.rewards["getup_height_progress_reward"] = RewardTermCfg(
-    func=mdp.getup_height_progress_reward,
-    weight=0.75,
-    params={"asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",))},
-  )
-  cfg.rewards["getup_phase_bonus"] = RewardTermCfg(
-    func=mdp.getup_phase_bonus,
-    weight=10.0,
-    params={
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-      "thresholds": (0.22, 0.4, 0.55),
-      "bonuses": (1.0, 2.0, 3.0),
-    },
-  )
-  cfg.rewards["stand_still"] = RewardTermCfg(
-    func=mdp.stand_still_after_getup,
-    weight=-1.0,
-    params={
-      "command_name": "twist",
-      "activation_height": 0.45,
-      "facing_up_threshold": 0.3,
-      "torso_asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-      "joint_asset_cfg": SceneEntityCfg("robot"),
-    },
-  )
   cfg.rewards["action_rate_l2"] = RewardTermCfg(
     func=mdp.bounded_action_rate_after_lift,
     weight=-0.05,
@@ -474,15 +523,6 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
-  cfg.rewards["support_contact_diversity_reward"] = RewardTermCfg(
-    func=mdp.support_contact_diversity_reward,
-    weight=0.3,
-    params={
-      "sensor_name": "support_body_contact",
-      "active_below_height": 0.2,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
-  )
   cfg.rewards["support_body_contact_penalty_after_lift"] = RewardTermCfg(
     func=mdp.support_body_contact_penalty_after_lift,
     weight=-0.75,
@@ -493,68 +533,9 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
-  cfg.rewards["getup_feet_support_reward"] = RewardTermCfg(
-    func=mdp.getup_feet_support_reward,
-    weight=1.5,
-    params={
-      "feet_sensor_name": "feet_ground_contact",
-      "body_sensor_name": "support_body_contact",
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
-  )
-  cfg.rewards["getup_standing_joint_pose_reward"] = RewardTermCfg(
-    func=mdp.getup_standing_joint_pose_reward,
-    weight=2.0,
-    params={
-      "feet_sensor_name": "feet_ground_contact",
-      "body_sensor_name": "support_body_contact",
-      "joint_names": (
-        "left_hip_pitch_joint",
-        "left_knee_joint",
-        "left_ankle_pitch_joint",
-        "right_hip_pitch_joint",
-        "right_knee_joint",
-        "right_ankle_pitch_joint",
-        "waist_pitch_joint",
-      ),
-    },
-  )
-  cfg.rewards["getup_demo_pose_reward"] = RewardTermCfg(
-    func=mdp.getup_demo_pose_reward,
-    weight=1.0,
-    params={
-      "demo_npz_path": _DEFAULT_GETUP_DEMO_NPZ,
-      "joint_names": (
-        "left_hip_pitch_joint",
-        "left_knee_joint",
-        "left_ankle_pitch_joint",
-        "right_hip_pitch_joint",
-        "right_knee_joint",
-        "right_ankle_pitch_joint",
-        "waist_pitch_joint",
-      ),
-      "dt_per_demo_frame": 0.02,
-    },
-  )
-  cfg.rewards["reduced_support_bonus"] = RewardTermCfg(
-    func=mdp.reduced_support_bonus,
-    weight=5.0,
-    params={
-      "sensor_name": "support_body_contact",
-      "max_support_count": 0.5,
-      "activation_height": 0.4,
-      "alignment_threshold": 0.3,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
-  )
   cfg.rewards["pelvis_clearance_penalty"] = RewardTermCfg(
     func=mdp.pelvis_clearance_penalty,
     weight=-1.0,
-  )
-  cfg.rewards["getup_completion_bonus"] = RewardTermCfg(
-    func=mdp.getup_completion_bonus,
-    weight=2.0,
-    params={"asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",))},
   )
   cfg.rewards.pop("is_terminated", None)
   cfg.events["reset_base"].func = mdp.reset_root_state_from_presets
@@ -615,6 +596,7 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
     ),
     "velocity_range": _GETUP_HARD_VELOCITY_RANGE,
   }
+  _apply_host_getup_reward_stack(cfg)
   return cfg
 
 

@@ -54,6 +54,7 @@ def bounded_angular_momentum_penalty(
   sensor_name: str,
   max_penalty: float = 1000.0,
 ) -> torch.Tensor:
+  env.extras.setdefault("log", {})
   penalty = _base_angular_momentum_penalty(env, sensor_name=sensor_name)
   return _bounded_nonnegative_penalty(penalty, max_penalty=max_penalty)
 
@@ -79,6 +80,171 @@ def _torso_height(
   if env_origins is not None:
     torso_height = torso_height - env_origins[:, 2]
   return torso_height
+
+
+def _contact_count(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
+  sensor = env.scene[sensor_name]
+  found = sensor.data.found
+  assert found is not None
+  return (found > 0).float().flatten(start_dim=1).sum(dim=1)
+
+
+def _host_orientation_term(
+  projected_gravity_b: torch.Tensor,
+  *,
+  orientation_threshold: float = 0.99,
+  margin: float = 0.05,
+) -> torch.Tensor:
+  alignment = _upright_alignment(projected_gravity_b)
+  miss = torch.clamp(orientation_threshold - alignment, min=0.0)
+  return torch.exp(-torch.square(miss / max(margin, 1e-6)))
+
+
+def _host_height_term(
+  torso_height: torch.Tensor,
+  *,
+  target_base_height_phase1: float = 0.45,
+  target_base_height_phase3: float = 0.65,
+) -> torch.Tensor:
+  return torch.clamp(
+    (torso_height - target_base_height_phase1)
+    / max(target_base_height_phase3 - target_base_height_phase1, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+
+
+def host_getup_task_reward(
+  env: ManagerBasedRlEnv,
+  feet_sensor_name: str,
+  body_sensor_name: str,
+  orientation_threshold: float = 0.99,
+  orientation_margin: float = 0.05,
+  target_base_height_phase1: float = 0.45,
+  target_base_height_phase3: float = 0.65,
+  min_feet_contact_count: float = 1.0,
+  max_body_support_count: float = 1.0,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """HoST task reward approximation: orientation × head/torso height × support.
+
+  The failed reward stack paid `facing_up` and `torso_lift` independently.  HoST
+  multiplies task terms, so a policy receives little task reward unless it is
+  both upright and tall.  This MJLab-compatible scalar term also requires foot
+  support and reduced non-foot body support to avoid the observed reward hack:
+  an upright torso/legs posture lying on or floating above the ground.
+  """
+
+  asset: Entity = env.scene[asset_cfg.name]
+  orientation = _host_orientation_term(
+    asset.data.projected_gravity_b,
+    orientation_threshold=orientation_threshold,
+    margin=orientation_margin,
+  )
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
+  height = _host_height_term(
+    torso_height,
+    target_base_height_phase1=target_base_height_phase1,
+    target_base_height_phase3=target_base_height_phase3,
+  )
+  feet_contact = _contact_count(env, feet_sensor_name)
+  body_support = _contact_count(env, body_sensor_name)
+  feet_gate = torch.clamp(feet_contact / max(min_feet_contact_count, 1e-6), min=0.0, max=1.0)
+  body_gate = 1.0 - torch.clamp(body_support / max(max_body_support_count, 1e-6), min=0.0, max=1.0)
+  return orientation * height * feet_gate * body_gate
+
+
+def host_action_smoothness_penalty(
+  env: ManagerBasedRlEnv,
+  action_rate_weight: float = 1.0,
+  smoothness_weight: float = 1.0,
+) -> torch.Tensor:
+  action_manager = getattr(env, "action_manager", None)
+  if action_manager is None:
+    return torch.zeros(env.num_envs, device=env.device)
+  action = action_manager.action
+  prev_action = action_manager.prev_action
+  prev_prev_action = action_manager.prev_prev_action
+  rate = torch.sum(torch.square(action - prev_action), dim=1)
+  smoothness = torch.sum(torch.square(action - 2.0 * prev_action + prev_prev_action), dim=1)
+  return action_rate_weight * rate + smoothness_weight * smoothness
+
+
+def host_joint_tracking_penalty(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _JOINT_ASSET_CFG,
+) -> torch.Tensor:
+  target = getattr(env, "_host_getup_joint_position_target", None)
+  target_ids = getattr(env, "_host_getup_joint_target_ids", None)
+  if target is None or target_ids is None:
+    return torch.zeros(env.num_envs, device=env.device)
+  asset: Entity = env.scene[asset_cfg.name]
+  current = asset.data.joint_pos[:, target_ids]
+  return torch.sum(torch.square(target - current), dim=1)
+
+
+def _select_existing_joint_ids(asset: Entity, joint_names: tuple[str, ...]) -> torch.Tensor:
+  joint_name_to_index = {name: idx for idx, name in enumerate(asset.joint_names)}
+  return torch.tensor(
+    [joint_name_to_index[name] for name in joint_names if name in joint_name_to_index],
+    device=asset.data.joint_pos.device,
+    dtype=torch.long,
+  )
+
+
+def host_style_pose_reward(
+  env: ManagerBasedRlEnv,
+  joint_names: tuple[str, ...],
+  target_joint_angles: dict[str, float],
+  std: float = 0.75,
+  asset_cfg: SceneEntityCfg = _JOINT_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  joint_ids = _select_existing_joint_ids(asset, joint_names)
+  if joint_ids.numel() == 0:
+    return torch.zeros(asset.data.joint_pos.shape[0], device=asset.data.joint_pos.device)
+  targets = torch.tensor(
+    [target_joint_angles[asset.joint_names[int(joint_id)]] for joint_id in joint_ids],
+    dtype=asset.data.joint_pos.dtype,
+    device=asset.data.joint_pos.device,
+  )
+  error = asset.data.joint_pos[:, joint_ids] - targets.unsqueeze(0)
+  return torch.exp(-torch.mean(torch.square(error), dim=1) / max(std**2, 1e-6))
+
+
+def host_feet_support_reward(
+  env: ManagerBasedRlEnv,
+  feet_sensor_name: str,
+  body_sensor_name: str,
+  max_body_support_count: float = 2.0,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  feet_count = _contact_count(env, feet_sensor_name)
+  body_count = _contact_count(env, body_sensor_name)
+  asset: Entity = env.scene[asset_cfg.name]
+  alignment = torch.clamp(_upright_alignment(asset.data.projected_gravity_b), min=0.0, max=1.0)
+  feet_support = torch.clamp(feet_count / 2.0, min=0.0, max=1.0)
+  body_relief = 1.0 - torch.clamp(body_count / max(max_body_support_count, 1e-6), min=0.0, max=1.0)
+  height = _host_height_term(_torso_height(env, asset_cfg=asset_cfg))
+  return feet_support * (0.25 + 0.75 * body_relief) * (0.25 + 0.75 * alignment) * (0.25 + 0.75 * height)
+
+
+def host_target_standing_reward(
+  env: ManagerBasedRlEnv,
+  feet_sensor_name: str,
+  body_sensor_name: str,
+  base_height_target: float = 0.75,
+  target_base_height_phase3: float = 0.65,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
+  standing = torso_height >= target_base_height_phase3
+  feet_supported = _contact_count(env, feet_sensor_name) >= 1.0
+  no_body_support = _contact_count(env, body_sensor_name) <= 1.0
+  orientation = torch.exp(-5.0 * torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1))
+  height = torch.exp(-20.0 * torch.abs(torso_height - base_height_target))
+  return orientation * height * (standing & feet_supported & no_body_support).float()
 
 
 def getup_posture_reward(

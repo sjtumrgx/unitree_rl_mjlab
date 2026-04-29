@@ -320,17 +320,17 @@ namespace
 
   using Seconds = std::chrono::duration<double>;
 
-  void apply_configured_pose_to_qpos(const mjModel* model, mjtNum* qpos)
+  void apply_configured_pose_to_qpos(const mjModel* m, mjtNum* qpos)
   {
-    if (!model || !qpos) {
+    if (!m || !qpos) {
       return;
     }
-    if (!param::config.initial_base_pos.empty() && param::config.initial_base_pos.size() == 3 && model->nq >= 3) {
+    if (!param::config.initial_base_pos.empty() && param::config.initial_base_pos.size() == 3 && m->nq >= 3) {
       qpos[0] = param::config.initial_base_pos[0];
       qpos[1] = param::config.initial_base_pos[1];
       qpos[2] = param::config.initial_base_pos[2];
     }
-    if (!param::config.initial_base_quat.empty() && param::config.initial_base_quat.size() == 4 && model->nq >= 7) {
+    if (!param::config.initial_base_quat.empty() && param::config.initial_base_quat.size() == 4 && m->nq >= 7) {
       qpos[3] = param::config.initial_base_quat[0];
       qpos[4] = param::config.initial_base_quat[1];
       qpos[5] = param::config.initial_base_quat[2];
@@ -339,25 +339,25 @@ namespace
     if (param::config.initial_joint_pos.empty()) {
       return;
     }
-    if (param::config.initial_joint_pos.size() == static_cast<size_t>(model->nu)) {
+    if (param::config.initial_joint_pos.size() == static_cast<size_t>(m->nu)) {
       // Parkour initial_joint_pos is interpreted in actuator/motor order, which
       // matches lowcmd/lowstate sensors but differs from the XML joint order.
-      for (int actuator_id = 0; actuator_id < model->nu; ++actuator_id) {
-        const int joint_id = model->actuator_trnid[2 * actuator_id];
-        if (joint_id < 0 || model->jnt_type[joint_id] == mjJNT_FREE) {
+      for (int actuator_id = 0; actuator_id < m->nu; ++actuator_id) {
+        const int joint_id = m->actuator_trnid[2 * actuator_id];
+        if (joint_id < 0 || m->jnt_type[joint_id] == mjJNT_FREE) {
           continue;
         }
-        qpos[model->jnt_qposadr[joint_id]] = param::config.initial_joint_pos[actuator_id];
+        qpos[m->jnt_qposadr[joint_id]] = param::config.initial_joint_pos[actuator_id];
       }
       return;
     }
     size_t joint_index = 0;
-    for (int joint_id = 0; joint_id < model->njnt && joint_index < param::config.initial_joint_pos.size(); ++joint_id)
+    for (int joint_id = 0; joint_id < m->njnt && joint_index < param::config.initial_joint_pos.size(); ++joint_id)
     {
-      if (model->jnt_type[joint_id] == mjJNT_FREE) {
+      if (m->jnt_type[joint_id] == mjJNT_FREE) {
         continue;
       }
-      qpos[model->jnt_qposadr[joint_id]] = param::config.initial_joint_pos[joint_index++];
+      qpos[m->jnt_qposadr[joint_id]] = param::config.initial_joint_pos[joint_index++];
     }
   }
 
