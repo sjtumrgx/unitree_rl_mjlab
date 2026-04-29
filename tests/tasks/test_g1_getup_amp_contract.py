@@ -70,6 +70,7 @@ def test_new_amp_tests_and_fixtures_are_trackable() -> None:
     "tests/tasks/test_g1_getup_amp_contract.py",
     "tests/tasks/test_g1_getup_amp_algorithm.py",
     "tests/scripts/test_prepare_g1_getup_amp_data.py",
+    "tests/scripts/test_play_g1_getup_amp_data.py",
     "tests/fixtures/g1_getup_amp/valid_getup_canonical.npz",
   ]
   for rel in paths:

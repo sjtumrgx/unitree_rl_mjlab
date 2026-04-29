@@ -38,7 +38,8 @@ def validate_demo_data_dir(demo_data_dir: str, manifest_path: str | None = None)
   manifest = Path(manifest_path).expanduser() if manifest_path else Path(demo_data_dir).expanduser() / "manifest.json"
   if not manifest.exists():
     raise FileNotFoundError(
-      "AMP demo manifest not found. Run scripts/prepare_g1_getup_amp_data.py first; "
+      "AMP demo manifest not found. Run scripts/play_g1_getup_amp_data.py --validate-only "
+      "or scripts/prepare_g1_getup_amp_data.py first; "
       f"expected {manifest}"
     )
   validate_amp_source_gate(manifest)

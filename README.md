@@ -162,16 +162,25 @@ comparing checkpoints.
 Optional AMP/demo-data fallback, kept separate from the default no-demo task:
 
 ```bash
+python scripts/play_g1_getup_amp_data.py \
+  --source-revision <dataset-commit-or-snapshot-id> \
+  --require-go \
+  --validate-only
+
 python scripts/train_getup_amp.py \
-  --demo-data-dir data/motions/g1_getup_amp \
+  --demo-data-dir ~/unitree_rl_mjlab/data/motions/g1_getup_amp \
   --num-envs 4096 \
   --max-iterations 10001
 ```
 
 Before running AMP training, download and prepare the retargeted G1 motion data
-as described in `doc/g1_getup_demo_data.md`.  The AMP path registers
-`Unitree-G1-GetUp-AMP`, is ground-only in this first pass, and refuses to train
-unless `data/motions/g1_getup_amp/source_gate.json` is `GO`.
+as described in `doc/g1_getup_demo_data.md`.  `play_g1_getup_amp_data.py`
+defaults to the six `lafan1_retargeted/fallAndGetUp*.pkl` clips, writes
+`~/unitree_rl_mjlab/data/motions/g1_getup_amp/manifest.json`, and prints the exact training
+command.  Use repeated `--motion-file <pkl>` arguments to train from a different
+curated subset.  The AMP path registers `Unitree-G1-GetUp-AMP`, is ground-only
+in this first pass, and refuses to train unless
+`~/unitree_rl_mjlab/data/motions/g1_getup_amp/source_gate.json` is `GO`.
 
 ### 1.4 G1 Parkour artifacts
 
@@ -236,6 +245,19 @@ python scripts/play.py Unitree-G1-GetUp-AMP \
   --num_envs 1 \
   --viewer native
 ```
+
+To inspect the demonstration motion itself before training, replay the prepared
+retargeted clip directly on the G1 MuJoCo model:
+
+```bash
+python scripts/play_g1_getup_amp_data.py \
+  --source-revision <dataset-commit-or-snapshot-id> \
+  --motion-index 0 \
+  --speed 1.0
+```
+
+Use `--play-all` to step through every accepted clip, or `--validate-only` for a
+headless kinematic check.
 
 For Unitree simulator / C++ controller validation, copy the exported
 `logs/rsl_rl/g1_getup_amp/<run>/policy.onnx` into

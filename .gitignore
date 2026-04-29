@@ -38,6 +38,7 @@ tests/tasks/*
 tests/scripts/*
 !tests/scripts/test_prepare_g1_getup_amp_data.py
 !tests/scripts/test_train_getup_amp.py
+!tests/scripts/test_play_g1_getup_amp_data.py
 !tests/fixtures/
 tests/fixtures/*
 !tests/fixtures/g1_getup_amp/

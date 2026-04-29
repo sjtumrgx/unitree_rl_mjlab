@@ -56,6 +56,21 @@ def test_prepare_cli_validate_only(tmp_path: Path) -> None:
   assert (output / "manifest.json").exists()
 
 
+def test_prepare_cli_defaults_to_real_local_dataset_path() -> None:
+  from scripts.prepare_g1_getup_amp_data import (
+    DEFAULT_PREPARED_DATA_DIR,
+    DEFAULT_RAW_DATA_DIR,
+    build_parser,
+  )
+
+  args = build_parser().parse_args([])
+
+  assert DEFAULT_RAW_DATA_DIR == Path("~/unitree_rl_mjlab/data/g1-retargeted-motions")
+  assert DEFAULT_PREPARED_DATA_DIR == Path("~/unitree_rl_mjlab/data/motions/g1_getup_amp")
+  assert args.input == DEFAULT_RAW_DATA_DIR
+  assert args.output == DEFAULT_PREPARED_DATA_DIR
+
+
 def test_projection_reorders_shuffled_joints_by_name() -> None:
   payload = np.load(_FIXTURE_DIR / "valid_getup_shuffled.npz", allow_pickle=False)
   projected = project_to_canonical_23dof(payload["joint_pos"], payload["joint_vel"], payload["joint_names"])
@@ -88,7 +103,7 @@ def test_prepare_openhe_pkl_source_with_metadata(tmp_path: Path) -> None:
   root_pos = np.stack(
     [np.zeros(T), np.zeros(T), np.linspace(0.2, 0.7, T)], axis=1
   ).astype(np.float32)
-  root_quat = np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (T, 1))
+  root_quat_xyzw = np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (T, 1))
   raw_dir = tmp_path / "raw"
   raw_dir.mkdir()
   pkl_path = raw_dir / "A10-_Lie_to_crouch_stageii.pkl"
@@ -97,7 +112,7 @@ def test_prepare_openhe_pkl_source_with_metadata(tmp_path: Path) -> None:
       {
         "A10-_Lie_to_crouch_stageii.npz": {
           "root_trans_offset": root_pos,
-          "root_rot": root_quat,
+          "root_rot": root_quat_xyzw,
           "dof": joint_pos,
           "fps": np.array(30),
         }
@@ -120,4 +135,8 @@ def test_prepare_openhe_pkl_source_with_metadata(tmp_path: Path) -> None:
   standardized = Path(result["manifest"]["accepted"][0]["output_path"])
   payload = np.load(standardized, allow_pickle=False)
   assert payload["joint_pos"].shape == (T, 23)
+  np.testing.assert_allclose(
+    payload["root_quat_w"][0],
+    np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+  )
   assert "openhe_g1_retargeted_pkl" in str(payload["projection"])

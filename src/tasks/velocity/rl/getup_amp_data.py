@@ -290,8 +290,7 @@ def _validate_and_standardize_openhe_pkl(
   copy_standardized: bool = True,
 ) -> SequenceValidationResult:
   try:
-    with path.open("rb") as f:
-      payload = pickle.load(f)
+    payload = _load_openhe_pickle_payload(path)
   except Exception as exc:  # pragma: no cover - pickle errors are data-dependent
     return SequenceValidationResult(str(path), False, f"failed to load pkl: {exc}")
   try:
@@ -323,7 +322,9 @@ def _validate_and_standardize_openhe_pkl(
       "OpenHE Unitree G1 23DoF README dof order matches active g1_23dof.xml"
     )
     root_pos = np.asarray(motion["root_trans_offset"], dtype=np.float32)
-    root_quat = np.asarray(motion["root_rot"], dtype=np.float32)
+    root_quat = _openhe_quat_xyzw_to_wxyz(
+      np.asarray(motion["root_rot"], dtype=np.float32)
+    )
     amp_obs = amp_obs_from_motion_arrays(root_pos, root_quat, projection.joint_pos, projection.joint_vel)
     _validate_common_arrays(projection=projection, root_pos=root_pos, root_quat=root_quat, amp_obs=amp_obs)
 
@@ -357,6 +358,45 @@ def _validate_and_standardize_openhe_pkl(
     )
   except Exception as exc:
     return SequenceValidationResult(str(path), False, str(exc))
+
+
+def _load_openhe_pickle_payload(path: Path) -> Any:
+  """Load OpenHE `.pkl` files produced by joblib while keeping fixture support.
+
+  OpenHE stores large NumPy arrays with joblib's `NumpyArrayWrapper`, which a
+  plain `pickle.load` cannot fully consume.  Synthetic tests and hand-authored
+  small clips may still be regular pickle files, so keep pickle as fallback.
+  """
+  try:
+    import joblib
+  except ModuleNotFoundError:
+    with path.open("rb") as f:
+      try:
+        return pickle.load(f)
+      except Exception as pickle_exc:  # pragma: no cover - depends on external data encoding
+        raise ModuleNotFoundError(
+          "OpenHE retargeted `.pkl` files require the optional `joblib` package; "
+          "install this project dependency or run `python -m pip install joblib`."
+        ) from pickle_exc
+
+  try:
+    return joblib.load(path)
+  except Exception:
+    with path.open("rb") as f:
+      return pickle.load(f)
+
+
+def _openhe_quat_xyzw_to_wxyz(root_quat_xyzw: np.ndarray) -> np.ndarray:
+  root_quat_xyzw = np.asarray(root_quat_xyzw, dtype=np.float32)
+  if root_quat_xyzw.ndim != 2 or root_quat_xyzw.shape[1] != 4:
+    raise ValueError(
+      f"OpenHE root_rot must be [T, 4] xyzw, got {root_quat_xyzw.shape}"
+    )
+  root_quat_wxyz = root_quat_xyzw[:, [3, 0, 1, 2]].astype(np.float32, copy=True)
+  norms = np.linalg.norm(root_quat_wxyz, axis=1, keepdims=True)
+  if np.any(norms <= 1e-8):
+    raise ValueError("OpenHE root_rot contains a near-zero quaternion")
+  return root_quat_wxyz / norms
 
 def validate_and_standardize_sequence(
   path: Path,
@@ -467,8 +507,6 @@ def prepare_amp_dataset(
   upstream_license: str | None = None,
 ) -> dict[str, Any]:
   input_dir = Path(input_dir)
-  output_dir = Path(output_dir)
-  output_dir.mkdir(parents=True, exist_ok=True)
   if not input_dir.exists():
     raise FileNotFoundError(f"AMP input path does not exist: {input_dir}")
   sequence_paths = (
@@ -476,6 +514,35 @@ def prepare_amp_dataset(
     if input_dir.is_dir()
     else [input_dir]
   )
+  return prepare_amp_sequences(
+    sequence_paths,
+    output_dir,
+    input_label=str(input_dir),
+    validate_only=validate_only,
+    source_url=source_url,
+    source_revision=source_revision,
+    source_license=source_license,
+    upstream_license=upstream_license,
+  )
+
+
+def prepare_amp_sequences(
+  sequence_paths: Sequence[Path],
+  output_dir: Path,
+  *,
+  input_label: str | None = None,
+  validate_only: bool = False,
+  source_url: str | None = None,
+  source_revision: str | None = None,
+  source_license: str | None = None,
+  upstream_license: str | None = None,
+) -> dict[str, Any]:
+  output_dir = Path(output_dir)
+  output_dir.mkdir(parents=True, exist_ok=True)
+  sequence_paths = [Path(path) for path in sequence_paths]
+  missing = [str(path) for path in sequence_paths if not path.exists()]
+  if missing:
+    raise FileNotFoundError(f"AMP input sequence path(s) do not exist: {missing}")
   results = [
     validate_and_standardize_sequence(path, output_dir / "motions", copy_standardized=True)
     for path in sequence_paths
@@ -493,7 +560,9 @@ def prepare_amp_dataset(
 
   manifest = {
     "schema_version": _SCHEMA_VERSION,
-    "input": str(input_dir),
+    "input": (
+      input_label if input_label is not None else [str(path) for path in sequence_paths]
+    ),
     "validate_only": bool(validate_only),
     "canonical_joint_names": list(CANONICAL_G1_23DOF_JOINT_NAMES),
     "accepted_count": len(accepted),

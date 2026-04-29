@@ -58,35 +58,42 @@ Download to this ignored raw-data directory:
 ```bash
 huggingface-cli download openhe/g1-retargeted-motions \
   --repo-type dataset \
-  --local-dir data/raw/g1_getup_source/openhe/g1-retargeted-motions \
+  --local-dir ~/unitree_rl_mjlab/data/g1-retargeted-motions \
   --local-dir-use-symlinks False
 ```
 
-Prepare into the training directory:
+The first-pass curated subset is the six LAFAN1 clips used by
+`scripts/play_g1_getup_amp_data.py` by default:
+
+```text
+~/unitree_rl_mjlab/data/g1-retargeted-motions/lafan1_retargeted/
+  fallAndGetUp1_subject1.pkl
+  fallAndGetUp1_subject4.pkl
+  fallAndGetUp1_subject5.pkl
+  fallAndGetUp2_subject2.pkl
+  fallAndGetUp2_subject3.pkl
+  fallAndGetUp3_subject1.pkl
+```
+
+Validate/replay those clips and prepare the exact training manifest:
 
 ```bash
-python scripts/prepare_g1_getup_amp_data.py \
-  --input data/raw/g1_getup_source/openhe/g1-retargeted-motions \
-  --output data/motions/g1_getup_amp \
-  --source-url https://huggingface.co/datasets/openhe/g1-retargeted-motions \
+python scripts/play_g1_getup_amp_data.py \
   --source-revision <dataset-commit-or-snapshot-id> \
-  --source-license MIT \
-  --upstream-license "ACCAD/LAFAN1/DanceDB/etc. original source restrictions reviewed" \
-  --require-go
+  --require-go \
+  --validate-only
 ```
 
 Expected tree:
 
 ```text
-data/raw/g1_getup_source/openhe/g1-retargeted-motions/
-  ACCAD_retargeted/*.pkl
-  LAFAN1_retargeted/*.pkl
-  ...
+~/unitree_rl_mjlab/data/g1-retargeted-motions/
+  lafan1_retargeted/*.pkl
 
-data/motions/g1_getup_amp/
+~/unitree_rl_mjlab/data/motions/g1_getup_amp/
   manifest.json
   source_gate.json
-  motions/*.npz
+  motions/fallAndGetUp*.npz
 ```
 
 See `doc/g1_getup_demo_data.md` for full source-gate, schema, and licensing
@@ -98,7 +105,7 @@ Formal AMP training:
 
 ```bash
 python scripts/train_getup_amp.py \
-  --demo-data-dir data/motions/g1_getup_amp \
+  --demo-data-dir ~/unitree_rl_mjlab/data/motions/g1_getup_amp \
   --num-envs 4096 \
   --max-iterations 10001
 ```
@@ -107,13 +114,13 @@ Equivalent generic form:
 
 ```bash
 python scripts/train.py Unitree-G1-GetUp-AMP \
-  --agent.algorithm.demo-data-dir=data/motions/g1_getup_amp \
+  --agent.algorithm.demo-data-dir=$HOME/unitree_rl_mjlab/data/motions/g1_getup_amp \
   --env.scene.num-envs=4096 \
   --agent.max-iterations=10001
 ```
 
 `Unitree-G1-GetUp-AMP` refuses to train unless
-`data/motions/g1_getup_amp/source_gate.json` exists and is `GO`.
+`~/unitree_rl_mjlab/data/motions/g1_getup_amp/source_gate.json` exists and is `GO`.
 
 ## Play
 
@@ -131,6 +138,15 @@ python scripts/play.py Unitree-G1-GetUp-AMP \
   --checkpoint_file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
   --num_envs 1 \
   --viewer native
+```
+
+Demonstration data playback before training:
+
+```bash
+python scripts/play_g1_getup_amp_data.py \
+  --source-revision <dataset-commit-or-snapshot-id> \
+  --motion-index 0 \
+  --speed 1.0
 ```
 
 Keep play terrain equal to train terrain for default variants.  For AMP, keep the

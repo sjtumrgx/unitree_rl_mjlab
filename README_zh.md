@@ -158,15 +158,24 @@ terrain 参数会影响 reset pose、地形分布、辅助力设置和 RL run na
 可选 AMP/示教数据 fallback 与默认 no-demo 任务完全分离：
 
 ```bash
+python scripts/play_g1_getup_amp_data.py \
+  --source-revision <dataset-commit-or-snapshot-id> \
+  --require-go \
+  --validate-only
+
 python scripts/train_getup_amp.py \
-  --demo-data-dir data/motions/g1_getup_amp \
+  --demo-data-dir ~/unitree_rl_mjlab/data/motions/g1_getup_amp \
   --num-envs 4096 \
   --max-iterations 10001
 ```
 
 运行 AMP 训练前，先按 `doc/g1_getup_demo_data.md` 下载并准备 G1 retargeted motion
-数据。AMP 路径注册为 `Unitree-G1-GetUp-AMP`，第一版只支持 ground，并且训练前会强制
-检查 `data/motions/g1_getup_amp/source_gate.json` 是否为 `GO`。
+数据。`play_g1_getup_amp_data.py` 默认选择六个
+`lafan1_retargeted/fallAndGetUp*.pkl`，写入
+`~/unitree_rl_mjlab/data/motions/g1_getup_amp/manifest.json`，并打印正式训练命令；如果要换成自己的
+精选数据，用多个 `--motion-file <pkl>` 指定。AMP 路径注册为
+`Unitree-G1-GetUp-AMP`，第一版只支持 ground，并且训练前会强制检查
+`~/unitree_rl_mjlab/data/motions/g1_getup_amp/source_gate.json` 是否为 `GO`。
 
 ### 1.4 G1 Parkour artifact
 
@@ -226,6 +235,17 @@ python scripts/play.py Unitree-G1-GetUp-AMP \
   --num_envs 1 \
   --viewer native
 ```
+
+训练前如果要直接检查示教轨迹本身，可以把 retargeted motion 回放到 G1 MuJoCo 模型：
+
+```bash
+python scripts/play_g1_getup_amp_data.py \
+  --source-revision <dataset-commit-or-snapshot-id> \
+  --motion-index 0 \
+  --speed 1.0
+```
+
+用 `--play-all` 逐个播放所有 accepted clip；用 `--validate-only` 做无头运动学检查。
 
 Unitree simulator / C++ controller 验证时，将导出的
 `logs/rsl_rl/g1_getup_amp/<run>/policy.onnx` 复制到
