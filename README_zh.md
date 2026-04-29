@@ -25,6 +25,7 @@
 | `scripts/play_parkour.py` | 带深度输入的 G1 Parkour 回放与诊断。 |
 | `scripts/play_antifall.py` | 带 MuJoCo 鼠标拖拽扰动的 G1 AntiFall 回放。 |
 | `scripts/train_getup.py`, `scripts/play_getup.py` | 带 terrain 选择的 GetUp 便捷入口。 |
+| `scripts/prepare_g1_getup_amp_data.py`, `scripts/train_getup_amp.py`, `scripts/evaluate_getup_amp.py` | 可选的 ground-only GetUp AMP/示教数据 fallback 流程。 |
 | `scripts/edit_parkour_scene.py` | 基于浏览器/Viser 的 Parkour 地形盒子编辑器。 |
 | `deploy/robots/g1_parkour/` | C++/DDS G1 Parkour controller 与 policy runtime。 |
 | `simulate/` | Unitree MuJoCo simulator 集成与配置。 |
@@ -154,6 +155,26 @@ python scripts/train.py Unitree-G1-GetUp --getup-terrain=platform
 terrain 参数会影响 reset pose、地形分布、辅助力设置和 RL run name。比较 checkpoint
 时应保留 terrain 信息。
 
+可选 AMP/示教数据 fallback 与默认 no-demo 任务完全分离：
+
+```bash
+python scripts/prepare_g1_getup_amp_data.py \
+  --input tests/fixtures/g1_getup_amp \
+  --output /tmp/g1_getup_amp_fixture \
+  --validate-only
+
+python scripts/train_getup_amp.py \
+  --demo-data-dir /tmp/g1_getup_amp_fixture \
+  --max-iterations 1 \
+  --num-envs 4 \
+  --headless-smoke \
+  -- --agent.num-steps-per-env=2
+```
+
+AMP 路径注册为 `Unitree-G1-GetUp-AMP`，第一版只支持 ground，并且训练前会强制
+检查 prepared data 目录中的 `source_gate.json` 是否为 `status: GO`。使用真实下载
+动作数据前先阅读 `doc/g1_getup_demo_data.md`。
+
 ### 1.4 G1 Parkour artifact
 
 当前 Parkour 主要是一个 **play/deploy lane**，用于已导出的 InstinctLab 风格深度
@@ -203,6 +224,21 @@ python scripts/play_getup.py --terrain slope -- \
 ```
 
 除非刻意测试 terrain transfer，否则 play terrain 应与训练 terrain 一致。
+
+AMP 数据路径诊断：
+
+```bash
+python scripts/evaluate_getup_amp.py \
+  --demo-data-dir /tmp/g1_getup_amp_fixture \
+  --policy-mode random \
+  --compare-no-demo \
+  --max-steps 32 \
+  --viewer none \
+  --output /tmp/g1_getup_amp_eval.json
+```
+
+该诊断会输出 torso height、upright alignment、termination 状态以及 AMP score/reward。
+它只用于 smoke/诊断，不代表长训练收敛。
 
 ### 2.4 Parkour play 与地形编辑
 

@@ -26,6 +26,7 @@ The intended workflow is:
 | `scripts/play_parkour.py` | Depth-conditioned G1 Parkour replay and diagnostics. |
 | `scripts/play_antifall.py` | G1 AntiFall replay with native MuJoCo drag perturbations. |
 | `scripts/train_getup.py`, `scripts/play_getup.py` | GetUp convenience wrappers with terrain selection. |
+| `scripts/prepare_g1_getup_amp_data.py`, `scripts/train_getup_amp.py`, `scripts/evaluate_getup_amp.py` | Optional ground-only GetUp AMP/demo-data fallback workflow. |
 | `scripts/edit_parkour_scene.py` | Browser-based Viser editor for parkour terrain boxes. |
 | `deploy/robots/g1_parkour/` | C++/DDS G1 Parkour controller and policy runtime. |
 | `simulate/` | Unitree MuJoCo simulator integration and configuration. |
@@ -158,6 +159,27 @@ The terrain flag controls reset poses, terrain distribution, assist-force
 settings, and RL run naming.  Keep the selected terrain in the run name when
 comparing checkpoints.
 
+Optional AMP/demo-data fallback, kept separate from the default no-demo task:
+
+```bash
+python scripts/prepare_g1_getup_amp_data.py \
+  --input tests/fixtures/g1_getup_amp \
+  --output /tmp/g1_getup_amp_fixture \
+  --validate-only
+
+python scripts/train_getup_amp.py \
+  --demo-data-dir /tmp/g1_getup_amp_fixture \
+  --max-iterations 1 \
+  --num-envs 4 \
+  --headless-smoke \
+  -- --agent.num-steps-per-env=2
+```
+
+The AMP path registers `Unitree-G1-GetUp-AMP`, is ground-only in this first
+pass, and refuses to train unless the prepared data directory contains a
+`source_gate.json` with `status: GO`.  See `doc/g1_getup_demo_data.md` before
+using real downloaded motions.
+
 ### 1.4 G1 Parkour artifacts
 
 The current Parkour lane is primarily a **play/deploy lane** for an exported
@@ -212,6 +234,21 @@ python scripts/play_getup.py --terrain slope -- \
 
 The play terrain should match the terrain used for training unless you are
 intentionally testing terrain transfer.
+
+AMP data-path diagnostic:
+
+```bash
+python scripts/evaluate_getup_amp.py \
+  --demo-data-dir /tmp/g1_getup_amp_fixture \
+  --policy-mode random \
+  --compare-no-demo \
+  --max-steps 32 \
+  --viewer none \
+  --output /tmp/g1_getup_amp_eval.json
+```
+
+This diagnostic reports torso height, upright alignment, termination status, and
+AMP score/reward.  It is a smoke/diagnostic signal, not convergence proof.
 
 ### 2.4 Parkour play and terrain editing
 
