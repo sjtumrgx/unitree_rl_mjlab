@@ -26,6 +26,8 @@
 | `scripts/play_antifall.py` | 带 MuJoCo 鼠标拖拽扰动的 G1 AntiFall 回放。 |
 | `scripts/train_getup.py`, `scripts/play_getup.py` | 带 terrain 选择的 GetUp 便捷入口。 |
 | `scripts/train_getup_amp.py` | 可选的 ground-only GetUp AMP/示教数据 fallback 训练入口。 |
+| `scripts/prepare_g1_getup_amp_data.py`, `scripts/play_g1_getup_amp_data.py` | 由 YAML 配置驱动的 GetUp 示教数据转换和 G1 MuJoCo 回放入口。 |
+| `data/g1_getup_amp.yaml` | 本地 GetUp 示教数据流程配置，用来选择 `.pkl`、要播放的 `.npz` 和训练用 `.npz`。 |
 | `scripts/edit_parkour_scene.py` | 基于浏览器/Viser 的 Parkour 地形盒子编辑器。 |
 | `deploy/robots/g1_parkour/` | C++/DDS G1 Parkour controller 与 policy runtime。 |
 | `simulate/` | Unitree MuJoCo simulator 集成与配置。 |
@@ -71,12 +73,21 @@ pip install -e .
 
 ## 1. Train
 
+下面所有训练示例都显式包含：
+
+- `--gpu-ids "[0]"`：指定使用 0 号 GPU
+- `--env.scene.num-envs=4096`：指定并行环境数量
+- `--agent.max-iterations=...` 或 wrapper 的 `--max-iterations ...`：指定最大训练迭代数
+
 ### 1.1 基础速度跟踪策略
 
 通用训练脚本的第一个参数是任务 id：
 
 ```bash
-python scripts/train.py Unitree-G1-Flat --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-Flat \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
 ```
 
 常见 flat velocity 任务：
@@ -91,13 +102,11 @@ python scripts/train.py Unitree-G1-Flat --env.scene.num-envs=4096
 常用参数：
 
 ```bash
-# 选择 GPU。
-python scripts/train.py Unitree-G1-Flat --device cuda:0 --rl_device cuda:0
-
-# 用 dotted config key 覆盖环境或 runner 参数。
+# 用 dotted config key 覆盖 GPU、环境数量或训练预算。
 python scripts/train.py Unitree-G1-Flat \
+  --gpu-ids "[1]" \
   --env.scene.num-envs=2048 \
-  --runner.max_iterations=3000
+  --agent.max-iterations=3000
 ```
 
 训练日志保存在 `logs/rsl_rl/<experiment>/<run>/`。
@@ -122,11 +131,12 @@ AntiFall 为 G1 增加分阶段扰动恢复课程。它保持盲态/本体感知
 
 ```bash
 python scripts/train.py Unitree-G1-AntiFall-Curriculum \
+  --gpu-ids "[0]" \
   --env.scene.num-envs=4096 \
-  --runner.max_iterations=5000
+  --agent.max-iterations=10000
 ```
 
-对 curriculum 而言，`runner.max_iterations` 是每个 stage 的预算。Stage checkpoint
+对 curriculum 而言，`agent.max-iterations` 是每个 stage 的预算。Stage checkpoint
 保存在：
 
 ```text
@@ -140,16 +150,35 @@ logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/<stage>/model_*.pt
 GetUp 将 HoST 风格地形变体迁移为 MJLab 任务：
 
 ```bash
-python scripts/train_getup.py --terrain ground -- --env.scene.num-envs=4096
-python scripts/train_getup.py --terrain platform -- --env.scene.num-envs=4096
-python scripts/train_getup.py --terrain wall -- --env.scene.num-envs=4096
-python scripts/train_getup.py --terrain slope -- --env.scene.num-envs=4096
+python scripts/train_getup.py --terrain ground -- \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
+
+python scripts/train_getup.py --terrain platform -- \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
+
+python scripts/train_getup.py --terrain wall -- \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
+
+python scripts/train_getup.py --terrain slope -- \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
 ```
 
 等价通用写法：
 
 ```bash
-python scripts/train.py Unitree-G1-GetUp --getup-terrain=platform
+python scripts/train.py Unitree-G1-GetUp \
+  --getup-terrain=platform \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
 ```
 
 terrain 参数会影响 reset pose、地形分布、辅助力设置和 RL run name。比较 checkpoint
@@ -158,24 +187,19 @@ terrain 参数会影响 reset pose、地形分布、辅助力设置和 RL run na
 可选 AMP/示教数据 fallback 与默认 no-demo 任务完全分离：
 
 ```bash
-python scripts/play_g1_getup_amp_data.py \
-  --source-revision <dataset-commit-or-snapshot-id> \
-  --require-go \
-  --validate-only
+python scripts/prepare_g1_getup_amp_data.py
+python scripts/play_g1_getup_amp_data.py --validate-only
 
 python scripts/train_getup_amp.py \
-  --demo-data-dir ~/unitree_rl_mjlab/data/motions/g1_getup_amp \
   --num-envs 4096 \
-  --max-iterations 10001
+  --max-iterations 10001 \
+  -- --gpu-ids "[0]"
 ```
 
-运行 AMP 训练前，先按 `doc/g1_getup_demo_data.md` 下载并准备 G1 retargeted motion
-数据。`play_g1_getup_amp_data.py` 默认选择六个
-`lafan1_retargeted/fallAndGetUp*.pkl`，写入
-`~/unitree_rl_mjlab/data/motions/g1_getup_amp/manifest.json`，并打印正式训练命令；如果要换成自己的
-精选数据，用多个 `--motion-file <pkl>` 指定。AMP 路径注册为
-`Unitree-G1-GetUp-AMP`，第一版只支持 ground，并且训练前会强制检查
-`~/unitree_rl_mjlab/data/motions/g1_getup_amp/source_gate.json` 是否为 `GO`。
+运行 AMP 训练前，在 `data/g1_getup_amp.yaml` 中配置本地 `.pkl` 来源、要播放检查的
+`.npz`，以及最终用于训练的 `train.npz_files`。推荐流程是：把选中的本地 `.pkl`
+转成 `data/motions/g1_getup_amp/motions/*.npz`，用仓库内 G1 MuJoCo 模型播放确认，
+最后只用确认过的 `.npz` 训练。详细的下载后流程见 `doc/g1_getup_demo_data.md`。
 
 ### 1.4 G1 Parkour artifact
 
@@ -240,7 +264,6 @@ python scripts/play.py Unitree-G1-GetUp-AMP \
 
 ```bash
 python scripts/play_g1_getup_amp_data.py \
-  --source-revision <dataset-commit-or-snapshot-id> \
   --motion-index 0 \
   --speed 1.0
 ```

@@ -27,6 +27,8 @@ The intended workflow is:
 | `scripts/play_antifall.py` | G1 AntiFall replay with native MuJoCo drag perturbations. |
 | `scripts/train_getup.py`, `scripts/play_getup.py` | GetUp convenience wrappers with terrain selection. |
 | `scripts/train_getup_amp.py` | Optional ground-only GetUp AMP/demo-data fallback training wrapper. |
+| `scripts/prepare_g1_getup_amp_data.py`, `scripts/play_g1_getup_amp_data.py` | YAML-driven GetUp demo-data conversion and G1 MuJoCo playback. |
+| `data/g1_getup_amp.yaml` | Local GetUp demo-data workflow config for selected `.pkl`, playable `.npz`, and training `.npz` clips. |
 | `scripts/edit_parkour_scene.py` | Browser-based Viser editor for parkour terrain boxes. |
 | `deploy/robots/g1_parkour/` | C++/DDS G1 Parkour controller and policy runtime. |
 | `simulate/` | Unitree MuJoCo simulator integration and configuration. |
@@ -72,12 +74,21 @@ headless machine, run with `--viewer none --no-depth-viewer`, or set the proper
 
 ## 1. Train
 
+All training examples below explicitly include:
+
+- `--gpu-ids "[0]"` to select GPU 0
+- `--env.scene.num-envs=4096` to set the parallel environment count
+- `--agent.max-iterations=...` or wrapper `--max-iterations ...` to set the training budget
+
 ### 1.1 Base velocity policies
 
 Use the generic training script and pass the task id as the first argument:
 
 ```bash
-python scripts/train.py Unitree-G1-Flat --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-Flat \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
 ```
 
 Common flat velocity tasks include:
@@ -92,13 +103,11 @@ Common flat velocity tasks include:
 Useful runtime flags:
 
 ```bash
-# Select GPUs.
-python scripts/train.py Unitree-G1-Flat --device cuda:0 --rl_device cuda:0
-
-# Override environment or runner values through dotted config keys.
+# Change GPU id, environment count, or runner budget through dotted config keys.
 python scripts/train.py Unitree-G1-Flat \
+  --gpu-ids "[1]" \
   --env.scene.num-envs=2048 \
-  --runner.max_iterations=3000
+  --agent.max-iterations=3000
 ```
 
 Training logs are written under `logs/rsl_rl/<experiment>/<run>/`.
@@ -124,11 +133,12 @@ Recommended training entrypoint:
 
 ```bash
 python scripts/train.py Unitree-G1-AntiFall-Curriculum \
+  --gpu-ids "[0]" \
   --env.scene.num-envs=4096 \
-  --runner.max_iterations=5000
+  --agent.max-iterations=10000
 ```
 
-For curriculum runs, `runner.max_iterations` is the per-stage budget.  Stage
+For curriculum runs, `agent.max-iterations` is the per-stage budget.  Stage
 checkpoints are written below:
 
 ```text
@@ -143,16 +153,35 @@ checkpoints for Python replay.
 GetUp ports HoST-style terrain variants into an MJLab task:
 
 ```bash
-python scripts/train_getup.py --terrain ground -- --env.scene.num-envs=4096
-python scripts/train_getup.py --terrain platform -- --env.scene.num-envs=4096
-python scripts/train_getup.py --terrain wall -- --env.scene.num-envs=4096
-python scripts/train_getup.py --terrain slope -- --env.scene.num-envs=4096
+python scripts/train_getup.py --terrain ground -- \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
+
+python scripts/train_getup.py --terrain platform -- \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
+
+python scripts/train_getup.py --terrain wall -- \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
+
+python scripts/train_getup.py --terrain slope -- \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
 ```
 
 Equivalent generic form:
 
 ```bash
-python scripts/train.py Unitree-G1-GetUp --getup-terrain=platform
+python scripts/train.py Unitree-G1-GetUp \
+  --getup-terrain=platform \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
 ```
 
 The terrain flag controls reset poses, terrain distribution, assist-force
@@ -162,25 +191,21 @@ comparing checkpoints.
 Optional AMP/demo-data fallback, kept separate from the default no-demo task:
 
 ```bash
-python scripts/play_g1_getup_amp_data.py \
-  --source-revision <dataset-commit-or-snapshot-id> \
-  --require-go \
-  --validate-only
+python scripts/prepare_g1_getup_amp_data.py
+python scripts/play_g1_getup_amp_data.py --validate-only
 
 python scripts/train_getup_amp.py \
-  --demo-data-dir ~/unitree_rl_mjlab/data/motions/g1_getup_amp \
   --num-envs 4096 \
-  --max-iterations 10001
+  --max-iterations 10001 \
+  -- --gpu-ids "[0]"
 ```
 
-Before running AMP training, download and prepare the retargeted G1 motion data
-as described in `doc/g1_getup_demo_data.md`.  `play_g1_getup_amp_data.py`
-defaults to the six `lafan1_retargeted/fallAndGetUp*.pkl` clips, writes
-`~/unitree_rl_mjlab/data/motions/g1_getup_amp/manifest.json`, and prints the exact training
-command.  Use repeated `--motion-file <pkl>` arguments to train from a different
-curated subset.  The AMP path registers `Unitree-G1-GetUp-AMP`, is ground-only
-in this first pass, and refuses to train unless
-`~/unitree_rl_mjlab/data/motions/g1_getup_amp/source_gate.json` is `GO`.
+Before AMP training, configure local `.pkl` source clips, playback `.npz` files,
+and final training `.npz` files in `data/g1_getup_amp.yaml`.  The workflow is:
+prepare selected local `.pkl` clips into `data/motions/g1_getup_amp/motions/*.npz`,
+play the converted data on the checked-in G1 MuJoCo model, then train only with
+the confirmed clips listed under `train.npz_files`.  See
+`doc/g1_getup_demo_data.md` for the detailed post-download workflow.
 
 ### 1.4 G1 Parkour artifacts
 
@@ -251,7 +276,6 @@ retargeted clip directly on the G1 MuJoCo model:
 
 ```bash
 python scripts/play_g1_getup_amp_data.py \
-  --source-revision <dataset-commit-or-snapshot-id> \
   --motion-index 0 \
   --speed 1.0
 ```
