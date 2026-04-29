@@ -43,12 +43,11 @@ Recommended host:
 - NVIDIA driver 550+ when using CUDA/MuJoCo rendering
 - Python 3.11
 
-Install `uv` and create the training/play Python environment:
+Create and activate an environment:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv --python 3.11 .venv
-source .venv/bin/activate
+conda create -n unitree_rl_mjlab python=3.11 -y
+conda activate unitree_rl_mjlab
 ```
 
 Install system packages used by the C++ simulator/deploy side:
@@ -60,46 +59,18 @@ sudo apt install -y \
   libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
 ```
 
-Install the Python package into that `uv` environment:
+Install the Python package:
 
 ```bash
 git clone https://github.com/sjtumrgx/unitree_rl_mjlab.git
 cd unitree_rl_mjlab
-uv pip install -e .
+pip install -e .
 ```
 
 `setup.py` pins the core MJLab dependencies (`mjlab==1.2.0`,
-`mujoco-warp==3.5.0`).
-
-Prepare a separate policy-controller Python runtime when you need ROS 2 `rclpy`
-plus `torch`.  `rclpy` is normally provided by the ROS apt packages and is tied
-to the ROS distro's system Python ABI, so create the `uv` environment with
-`--system-site-packages` instead of forcing Python 3.11:
-
-```bash
-# Example: ROS 2 Humble on Ubuntu 22.04.
-source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
-uv venv --python "$(command -v python3)" --system-site-packages .venv-policy
-source .venv-policy/bin/activate
-
-# CPU wheel is usually enough for policy-controller nodes on the robot.
-uv pip install --index-url https://download.pytorch.org/whl/cpu torch
-
-python - <<'PY'
-import rclpy
-import torch
-print('rclpy ok')
-print('torch', torch.__version__)
-PY
-```
-
-If `import rclpy` fails, install the ROS package first, for example
-`sudo apt install ros-${ROS_DISTRO:-humble}-rclpy`, then recreate the
-`.venv-policy` environment after sourcing ROS.
-
-If native viewers or depth windows fail to open on a headless machine, run with
-`--viewer none --no-depth-viewer`, or set the proper `DISPLAY` /
-`WAYLAND_DISPLAY` / `MUJOCO_GL` variables for your display stack.
+`mujoco-warp==3.5.0`).  If native viewers or depth windows fail to open on a
+headless machine, run with `--viewer none --no-depth-viewer`, or set the proper
+`DISPLAY` / `WAYLAND_DISPLAY` / `MUJOCO_GL` variables for your display stack.
 
 ## 1. Train
 

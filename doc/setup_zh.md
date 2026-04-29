@@ -20,43 +20,18 @@
 ## 2. Python 环境
 
 ```bash
+conda create -n unitree_rl_mjlab python=3.11 -y
+conda activate unitree_rl_mjlab
+
 git clone https://github.com/sjtumrgx/unitree_rl_mjlab.git
 cd unitree_rl_mjlab
-
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv --python 3.11 .venv
-source .venv/bin/activate
-uv pip install -e .
+pip install -e .
 ```
 
 核心 Python 依赖固定在 `setup.py`：
 
 - `mjlab==1.2.0`
 - `mujoco-warp==3.5.0`
-
-### 策略控制器 Python 运行时（`rclpy + torch`）
-
-ROS 2 策略控制器节点建议单独使用一个 `uv` 环境。`rclpy` 通常来自 ROS apt 包，
-并且绑定 ROS 发行版的系统 Python ABI，所以这里不要强制 Python 3.11；用
-`--system-site-packages` 让环境能看到 ROS 的 Python 包：
-
-```bash
-source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
-uv venv --python "$(command -v python3)" --system-site-packages .venv-policy
-source .venv-policy/bin/activate
-uv pip install --index-url https://download.pytorch.org/whl/cpu torch
-
-python - <<'PY'
-import rclpy
-import torch
-print('rclpy ok')
-print('torch', torch.__version__)
-PY
-```
-
-如果 `import rclpy` 失败，先安装
-`sudo apt install ros-${ROS_DISTRO:-humble}-rclpy`，然后 source ROS 并重新创建
-`.venv-policy`。
 
 如果使用 Viser 或 Matplotlib 等额外可视化窗口，请在同一环境中安装缺失的可选依赖。
 

@@ -42,12 +42,11 @@
 - 使用 CUDA/MuJoCo 渲染时建议 NVIDIA Driver 550+
 - Python 3.11
 
-安装 `uv` 并创建训练/回放 Python 环境：
+创建并激活环境：
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv --python 3.11 .venv
-source .venv/bin/activate
+conda create -n unitree_rl_mjlab python=3.11 -y
+conda activate unitree_rl_mjlab
 ```
 
 安装 C++ simulator/deploy 侧依赖：
@@ -59,42 +58,15 @@ sudo apt install -y \
   libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
 ```
 
-把 Python 包安装到这个 `uv` 环境：
+安装 Python 包：
 
 ```bash
 git clone https://github.com/sjtumrgx/unitree_rl_mjlab.git
 cd unitree_rl_mjlab
-uv pip install -e .
+pip install -e .
 ```
 
 `setup.py` 固定了核心 MJLab 依赖（`mjlab==1.2.0`, `mujoco-warp==3.5.0`）。
-
-如果要准备策略控制器 Python 运行时（`rclpy + torch`），建议单独建一个 `uv`
-环境。`rclpy` 通常来自 ROS apt 包，并且绑定 ROS 发行版的系统 Python ABI，所以不要
-强制用 Python 3.11；用 `--system-site-packages` 让 `uv` 环境能看到 ROS 的
-`rclpy`：
-
-```bash
-# 示例：Ubuntu 22.04 + ROS 2 Humble。
-source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
-uv venv --python "$(command -v python3)" --system-site-packages .venv-policy
-source .venv-policy/bin/activate
-
-# 机器人上的策略控制器节点通常用 CPU torch wheel 即可。
-uv pip install --index-url https://download.pytorch.org/whl/cpu torch
-
-python - <<'PY'
-import rclpy
-import torch
-print('rclpy ok')
-print('torch', torch.__version__)
-PY
-```
-
-如果 `import rclpy` 失败，先安装 ROS 包，例如
-`sudo apt install ros-${ROS_DISTRO:-humble}-rclpy`，然后 source ROS 并重新创建
-`.venv-policy`。
-
 如果在无显示机器上无法打开 native viewer 或 depth window，请使用
 `--viewer none --no-depth-viewer`，或者正确设置 `DISPLAY` / `WAYLAND_DISPLAY` /
 `MUJOCO_GL`。
