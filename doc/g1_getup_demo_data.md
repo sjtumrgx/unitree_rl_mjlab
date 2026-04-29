@@ -1,118 +1,156 @@
-# G1 GetUp AMP Demonstration Data Guide
+# G1 GetUp demo data workflow
 
-This guide is for the optional **ground-only** AMP fallback task
-`Unitree-G1-GetUp-AMP`.  The default `Unitree-G1-GetUp` HoST-parity task remains
-no-demo; use AMP only when the default get-up policy is not natural enough.
+_最短路径：本地 `.pkl` 动作数据 -> 转成训练可用 `.npz` -> 用 G1 MuJoCo 模型播放检查 -> 选择这些 `.npz` 开始 GetUp AMP 训练。_
 
-Large motion files are not tracked in git.  The real local raw-data path for
-this workspace is:
+---
 
-```text
-~/unitree_rl_mjlab/data/g1-retargeted-motions
-```
+## 📁 Folder tree
 
-Validate/replay the selected clips from that path, prepare them into the local
-AMP manifest directory, then point AMP training at the prepared directory.
-
-## Data source
-
-Use this public dataset first:
-
-- Hugging Face: <https://huggingface.co/datasets/openhe/g1-retargeted-motions>
-- Local raw-data target used by the tools:
-  `~/unitree_rl_mjlab/data/g1-retargeted-motions/`
-- Prepared AMP-data target:
-  `~/unitree_rl_mjlab/data/motions/g1_getup_amp/`
-- Dataset-host license metadata for `source_gate.json`: `MIT`
-- Upstream restrictions to review: LAFAN1 original data restrictions for the
-  selected `lafan1_retargeted` clips.
-
-The selected first-pass GetUp subset is:
+本文假设原始动作数据已经放在本地 `data/g1-retargeted-motions/`。不在这里重复下载步骤；只关心下载完成后怎么选、转、看、训。
 
 ```text
-~/unitree_rl_mjlab/data/g1-retargeted-motions/lafan1_retargeted/
-  fallAndGetUp1_subject1.pkl
-  fallAndGetUp1_subject4.pkl
-  fallAndGetUp1_subject5.pkl
-  fallAndGetUp2_subject2.pkl
-  fallAndGetUp2_subject3.pkl
-  fallAndGetUp3_subject1.pkl
+unitree_rl_mjlab/
+  data/
+    g1_getup_amp.yaml                 # 本流程默认读取的配置
+    g1-retargeted-motions/            # 本地原始数据，不进 git
+      README.md
+      lafan1_retargeted/
+        fallAndGetUp1_subject1.pkl
+        fallAndGetUp1_subject4.pkl
+        fallAndGetUp1_subject5.pkl
+        fallAndGetUp2_subject2.pkl
+        fallAndGetUp2_subject3.pkl
+        fallAndGetUp3_subject1.pkl
+      ACCAD_retargeted/
+        ...
+    motions/
+      g1_getup_amp/                   # prepare 后生成，不进 git
+        manifest.json
+        source_gate.json
+        motions/
+          fallAndGetUp1_subject1.npz
+          fallAndGetUp1_subject4.npz
+          ...
+  scripts/
+    prepare_g1_getup_amp_data.py      # pkl/npz -> 标准 AMP npz
+    play_g1_getup_amp_data.py         # 用 G1 MuJoCo 模型播放 npz
+    train_getup_amp.py                # 用配置里的 npz 数据训练 AMP
+  src/assets/robots/unitree_g1/xmls/
+    g1_23dof.xml                      # 播放动作时使用的 G1 模型
 ```
 
-These are the defaults in `scripts/play_g1_getup_amp_data.py`.  Use repeated
-`--motion-file <path>` arguments if you want a different curated subset.
+## ⚙️ Edit one YAML file
 
-## Download
+默认配置在 `data/g1_getup_amp.yaml`。通常只改三处：
 
-Install Hugging Face tooling if needed:
+```yaml
+prepare:
+  output_dir: data/motions/g1_getup_amp
+  inputs:
+    # 可以写文件夹：脚本会递归扫描下面的 .pkl
+    - data/g1-retargeted-motions/lafan1_retargeted
+
+    # 也可以只写你确定要用的若干个 .pkl
+    # - data/g1-retargeted-motions/lafan1_retargeted/fallAndGetUp1_subject1.pkl
+    # - data/g1-retargeted-motions/lafan1_retargeted/fallAndGetUp2_subject2.pkl
+
+play:
+  xml: src/assets/robots/unitree_g1/xmls/g1_23dof.xml
+  npz_files:
+    - data/motions/g1_getup_amp/motions/fallAndGetUp1_subject1.npz
+  speed: 1.0
+  loop: false
+
+train:
+  demo_data_dir: data/motions/g1_getup_amp
+  npz_files:
+    - data/motions/g1_getup_amp/motions/fallAndGetUp1_subject1.npz
+    - data/motions/g1_getup_amp/motions/fallAndGetUp2_subject2.npz
+  num_envs: 4096
+  max_iterations: 10001
+```
+
+`dataset:` 里的来源信息只用于写入本地 `source_gate.json`。一般不用碰；如果你想记录具体快照，把 `dataset_commit_or_snapshot_id` 改成自己的数据集 commit 或 snapshot id 即可。
+
+## 🔄 Prepare selected local data
+
+把 YAML 里 `prepare.inputs` 指定的动作转成训练可用的 `.npz`：
 
 ```bash
-python -m pip install -U huggingface_hub
+python scripts/prepare_g1_getup_amp_data.py
 ```
 
-Download the dataset with the official Hugging Face CLI:
+脚本会：
+
+- 读取 `data/g1_getup_amp.yaml`
+- 对文件夹递归扫描 `.pkl`，对文件路径只处理该文件
+- 把 OpenHE/G1 retargeted `.pkl` 转成标准 AMP `.npz`
+- 写入 `data/motions/g1_getup_amp/manifest.json`
+- 写入 `data/motions/g1_getup_amp/motions/*.npz`
+
+临时想覆盖 YAML，也可以用 CLI 指一个文件夹或文件：
 
 ```bash
-huggingface-cli download openhe/g1-retargeted-motions \
-  --repo-type dataset \
-  --local-dir ~/unitree_rl_mjlab/data/g1-retargeted-motions \
-  --local-dir-use-symlinks False
+python scripts/prepare_g1_getup_amp_data.py \
+  --input data/g1-retargeted-motions/lafan1_retargeted \
+  --output data/motions/g1_getup_amp
 ```
 
-Alternative with Git LFS:
+## 👀 Play converted data on G1
+
+先在 YAML 的 `play.npz_files` 里选择要看的 `.npz`，然后运行：
 
 ```bash
-git lfs install
-git clone https://huggingface.co/datasets/openhe/g1-retargeted-motions \
-  ~/unitree_rl_mjlab/data/g1-retargeted-motions
+python scripts/play_g1_getup_amp_data.py
 ```
 
-Raw data under `~/unitree_rl_mjlab/data/g1-retargeted-motions/` is gitignored.
-Do not move third-party motion files into tracked source directories.
+这会打开 MuJoCo viewer，并使用 `src/assets/robots/unitree_g1/xmls/g1_23dof.xml` 把动作重定向到 G1 23DoF 模型上播放。
 
-For a Git clone, record the dataset revision with:
+只想做无窗口检查：
 
 ```bash
-git -C ~/unitree_rl_mjlab/data/g1-retargeted-motions rev-parse HEAD
+python scripts/play_g1_getup_amp_data.py --validate-only
 ```
 
-For a Hugging Face snapshot download, use the snapshot commit shown by the
-Hugging Face web UI or your local download metadata.
+临时播放某个 `.npz`，不改 YAML：
 
-## Folder tree
-
-After download:
-
-```text
-~/unitree_rl_mjlab/data/g1-retargeted-motions/
-  README.md
-  accad_retargeted/...
-  lafan1_retargeted/
-    fallAndGetUp1_subject1.pkl
-    fallAndGetUp1_subject4.pkl
-    fallAndGetUp1_subject5.pkl
-    fallAndGetUp2_subject2.pkl
-    fallAndGetUp2_subject3.pkl
-    fallAndGetUp3_subject1.pkl
-  ...
+```bash
+python scripts/play_g1_getup_amp_data.py \
+  --npz-file data/motions/g1_getup_amp/motions/fallAndGetUp1_subject1.npz \
+  --speed 1.0
 ```
 
-After selected-clip preparation:
+播放多个动作：
 
-```text
-~/unitree_rl_mjlab/data/motions/g1_getup_amp/
-  manifest.json
-  source_gate.json
-  motions/
-    fallAndGetUp1_subject1.npz
-    fallAndGetUp1_subject4.npz
-    fallAndGetUp1_subject5.npz
-    fallAndGetUp2_subject2.npz
-    fallAndGetUp2_subject3.npz
-    fallAndGetUp3_subject1.npz
+```bash
+python scripts/play_g1_getup_amp_data.py \
+  --npz-file data/motions/g1_getup_amp/motions/fallAndGetUp1_subject1.npz \
+  --npz-file data/motions/g1_getup_amp/motions/fallAndGetUp2_subject2.npz \
+  --play-all
 ```
 
-After training:
+如果动作看起来不自然，回到 `data/g1_getup_amp.yaml` 调整 `prepare.inputs`，只保留质量更好的 get-up/fall-recovery 片段，再重新 prepare 和 play。
+
+## 🏋️ Train with selected `.npz`
+
+确认播放没问题后，把要训练的 `.npz` 写到 YAML 的 `train.npz_files`，然后直接开始训练：
+
+```bash
+python scripts/train_getup_amp.py
+```
+
+如果 `train.npz_files` 存在，脚本会在 `train.demo_data_dir` 下生成 `selected_manifest.json`，并只把这些 `.npz` 转发给 `Unitree-G1-GetUp-AMP`。
+
+等价于显式写：
+
+```bash
+python scripts/train_getup_amp.py \
+  --demo-data-dir data/motions/g1_getup_amp \
+  --num-envs 4096 \
+  --max-iterations 10001
+```
+
+训练任务是 `Unitree-G1-GetUp-AMP`，输出目录类似：
 
 ```text
 logs/rsl_rl/g1_getup_amp/
@@ -124,202 +162,25 @@ logs/rsl_rl/g1_getup_amp/
       env.yaml
 ```
 
-For C++/DDS deployment, the GetUp controller expects:
-
-```text
-deploy/robots/g1_getup/config/policy/getup/v0/
-  exported/
-    policy.onnx
-```
-
-## Prepare all local source data
-
-`scripts/prepare_g1_getup_amp_data.py` now defaults to the real local raw-data
-path and prepared-data path:
-
-```bash
-python scripts/prepare_g1_getup_amp_data.py \
-  --source-revision <dataset-commit-or-snapshot-id> \
-  --require-go
-```
-
-Equivalent explicit form:
-
-```bash
-python scripts/prepare_g1_getup_amp_data.py \
-  --input ~/unitree_rl_mjlab/data/g1-retargeted-motions \
-  --output ~/unitree_rl_mjlab/data/motions/g1_getup_amp \
-  --source-url https://huggingface.co/datasets/openhe/g1-retargeted-motions \
-  --source-revision <dataset-commit-or-snapshot-id> \
-  --source-license MIT \
-  --upstream-license "LAFAN1 original source restrictions reviewed" \
-  --require-go
-```
-
-This broad prepare command scans `.pkl` and `.npz` files under the input path.
-If you want to prepare only the six curated `fallAndGetUp` clips, use the
-playback helper below.
-
-## Validate and replay the selected data
-
-Validate the six default LAFAN1 `fallAndGetUp` clips, convert OpenHE quaternion
-`xyzw` to MuJoCo/AMP `wxyz`, write the AMP manifest, and run a headless MuJoCo
-kinematic check:
-
-```bash
-python scripts/play_g1_getup_amp_data.py \
-  --source-revision <dataset-commit-or-snapshot-id> \
-  --require-go \
-  --validate-only
-```
-
-The command writes
-`~/unitree_rl_mjlab/data/motions/g1_getup_amp/manifest.json`,
-`~/unitree_rl_mjlab/data/motions/g1_getup_amp/source_gate.json`, and one
-prepared `.npz` per accepted clip under
-`~/unitree_rl_mjlab/data/motions/g1_getup_amp/motions/`.
-
-Replay the first accepted clip in the native MuJoCo viewer:
-
-```bash
-python scripts/play_g1_getup_amp_data.py \
-  --source-revision <dataset-commit-or-snapshot-id> \
-  --motion-index 0 \
-  --speed 1.0
-```
-
-Replay every accepted clip sequentially:
-
-```bash
-python scripts/play_g1_getup_amp_data.py \
-  --source-revision <dataset-commit-or-snapshot-id> \
-  --play-all
-```
-
-Prepare/play a custom subset:
-
-```bash
-python scripts/play_g1_getup_amp_data.py \
-  --motion-file ~/unitree_rl_mjlab/data/g1-retargeted-motions/lafan1_retargeted/fallAndGetUp1_subject1.pkl \
-  --motion-file ~/unitree_rl_mjlab/data/g1-retargeted-motions/lafan1_retargeted/fallAndGetUp2_subject2.pkl \
-  --source-revision <dataset-commit-or-snapshot-id> \
-  --require-go \
-  --validate-only
-```
-
-## Prepared data schema
-
-Each accepted `.npz` contains:
-
-```text
-joint_pos              [T, 23] canonical active G1 23DoF order
-joint_vel              [T, 23]
-root_pos_w             [T, 3]
-root_quat_w            [T, 4] wxyz; converted from OpenHE xyzw
-amp_obs                [T, 53] root pos + root quat + joint pos + joint vel
-joint_names            [23]
-source_joint_names     [23]
-fps, tags, source, license, projection
-```
-
-The canonical joint order is derived from
-`src/assets/robots/unitree_g1/xmls/g1_23dof.xml`.  Shape-only data is rejected
-unless it is handled by an explicit source adapter such as the OpenHE `.pkl`
-adapter, which records that source-format assumption in the `projection` field.
-
-## Train with the prepared data
-
-Run formal AMP training from the prepared selected-clip directory:
-
-```bash
-python scripts/train_getup_amp.py \
-  --demo-data-dir ~/unitree_rl_mjlab/data/motions/g1_getup_amp \
-  --num-envs 4096 \
-  --max-iterations 10001
-```
-
-Equivalent generic entrypoint:
-
-```bash
-python scripts/train.py Unitree-G1-GetUp-AMP \
-  --agent.algorithm.demo-data-dir=$HOME/unitree_rl_mjlab/data/motions/g1_getup_amp \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-```
-
-The default no-demo terrain task remains:
+默认无 demo 的 GetUp 训练仍然是：
 
 ```bash
 python scripts/train_getup.py --terrain ground -- --env.scene.num-envs=4096
 ```
 
-`Unitree-G1-GetUp-AMP` refuses to train unless the selected data directory has a
-`source_gate.json` with `"status": "GO"`.
+## ✅ Recommended loop
 
-## Play the trained policy
+1. 在 `data/g1_getup_amp.yaml` 的 `prepare.inputs` 里选动作
+2. 运行 `python scripts/prepare_g1_getup_amp_data.py`
+3. 在 `play.npz_files` 里选一个或多个生成的 `.npz`
+4. 运行 `python scripts/play_g1_getup_amp_data.py`，用 MuJoCo 观察动作
+5. 把确认过的 `.npz` 写到 `train.npz_files`
+6. 运行 `python scripts/train_getup_amp.py`
 
-Replay the AMP checkpoint in Python/MuJoCo:
+## 🧯 Troubleshooting
 
-```bash
-python scripts/play.py Unitree-G1-GetUp-AMP \
-  --checkpoint_file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
-  --num_envs 1 \
-  --viewer native
-```
-
-Use `--viewer viser` for a browser viewer or `--video` if you want a recorded
-video in the run directory.  Keep
-`~/unitree_rl_mjlab/data/motions/g1_getup_amp/source_gate.json` available
-because the AMP algorithm config validates the demo-data gate when the runner is
-constructed.
-
-## Sim2Real / Unitree simulator path
-
-AMP is still a fallback policy and must pass the same simulator safety gates as
-the no-demo GetUp policy.  Do not put it on real hardware directly after
-training.
-
-1. Confirm Python play recovers from the intended ground fallen poses.
-2. Copy or symlink the exported policy into the GetUp deployment bundle:
-
-   ```bash
-   mkdir -p deploy/robots/g1_getup/config/policy/getup/v0/exported
-   cp logs/rsl_rl/g1_getup_amp/<run>/policy.onnx \
-     deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx
-   ```
-
-3. Build the controller:
-
-   ```bash
-   cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build
-   cmake --build deploy/robots/g1_getup/build -j4
-   ```
-
-4. Start Unitree MuJoCo simulator and then the controller on loopback:
-
-   ```bash
-   ./simulate/build/unitree_mujoco
-   ./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard
-   ```
-
-5. Use keyboard `f` then `g` (`Passive -> FixStand -> GetUp`) only after the
-   simulator robot is in the expected supported start state.
-
-6. For real robot testing, keep the robot physically supported, keep an operator
-   ready to switch to Passive, and verify action order/PD gains/torque limits
-   against the exported policy metadata first.
-
-## Troubleshooting
-
-- **`source_gate.json` is STOP:** pass a real `--source-revision`, review source
-  URL, dataset license, upstream restrictions, and accepted clip count.
-- **Missing `joblib`:** install this repo with `pip install -e .` or run
-  `python -m pip install joblib`; OpenHE `.pkl` files use joblib array wrappers.
-- **No accepted clips:** confirm filenames include get-up/fall-recovery content;
-  the selected `fallAndGetUp*.pkl` files above are expected to pass.
-- **Training fails before env creation:** the source gate is missing or not GO.
-- **Policy looks unnatural:** curate fewer/higher-quality get-up clips before
-  increasing reward scale; do not enable platform/wall/slope AMP until ground
-  succeeds.
-- **Sim2Real mismatch:** check exported `policy.onnx`, joint order, action scale,
-  default pose, PD gains, and initial fallen geometry before tuning rewards.
+- **找不到 `.pkl`：** 检查 `prepare.inputs` 路径是否相对 repo 根目录，或改成绝对路径
+- **没有生成 `.npz`：** 文件名需要像 get-up/fall/recovery 相关动作；普通 walk/run 会被拒绝
+- **播放窗口打不开：** 先用 `--validate-only` 确认数据和 G1 XML 能被加载，再检查本机 MuJoCo viewer 环境
+- **训练启动前失败：** 先重新运行 prepare，确认 `data/motions/g1_getup_amp/manifest.json` 和 `source_gate.json` 都存在
+- **动作不适合训练：** 不要先调奖励；先缩小 `prepare.inputs`，只保留播放效果好的 `.npz`

@@ -10,6 +10,8 @@ import numpy as np
 
 from src.tasks.velocity.rl.getup_amp_data import CANONICAL_G1_23DOF_JOINT_NAMES
 
+_FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "g1_getup_amp"
+
 
 def _write_openhe_clip(path: Path, *, frames: int = 5, fps: int = 30) -> None:
   joint_count = len(CANONICAL_G1_23DOF_JOINT_NAMES)
@@ -115,3 +117,86 @@ def test_cli_validate_only_prepares_selected_files_and_prints_training_hint(tmp_
   assert "python scripts/train_getup_amp.py" in completed.stdout
   manifest = json.loads((output / "manifest.json").read_text())
   assert manifest["accepted_count"] == 2
+
+
+def test_cli_validate_only_uses_yaml_for_prepare_and_play_selection(tmp_path: Path) -> None:
+  raw_dir = tmp_path / "raw"
+  raw_dir.mkdir()
+  selected_a = raw_dir / "fallAndGetUp1_subject1.pkl"
+  selected_b = raw_dir / "fallAndGetUp3_subject1.pkl"
+  _write_openhe_clip(selected_a)
+  _write_openhe_clip(selected_b)
+
+  output = tmp_path / "prepared"
+  config = tmp_path / "g1_getup_amp.yaml"
+  config.write_text(
+    "\n".join(
+      [
+        "dataset:",
+        "  source_revision: config-snapshot",
+        "  source_url: https://example.invalid/g1-retargeted-motions",
+        "  source_license: MIT",
+        "  upstream_license: local review complete",
+        "prepare:",
+        "  inputs:",
+        f"    - {selected_a}",
+        f"    - {selected_b}",
+        f"  output_dir: {output}",
+        "play:",
+        "  npz_files:",
+        f"    - {output / 'motions' / 'fallAndGetUp3_subject1.npz'}",
+        "  speed: 1.25",
+        "  loop: false",
+      ]
+    )
+  )
+
+  completed = subprocess.run(
+    [
+      sys.executable,
+      "scripts/play_g1_getup_amp_data.py",
+      "--config",
+      str(config),
+      "--validate-only",
+    ],
+    check=True,
+    cwd=Path(__file__).resolve().parents[2],
+    text=True,
+    capture_output=True,
+  )
+
+  assert '"accepted_count": 2' in completed.stdout
+  assert "fallAndGetUp3_subject1.npz" in completed.stdout
+  assert "fallAndGetUp1_subject1.npz" not in completed.stdout
+
+
+def test_cli_npz_file_validates_without_raw_prepare_config(tmp_path: Path) -> None:
+  config = tmp_path / "g1_getup_amp.yaml"
+  config.write_text(
+    "\n".join(
+      [
+        "play:",
+        "  xml: src/assets/robots/unitree_g1/xmls/g1_23dof.xml",
+      ]
+    )
+  )
+  prepared_clip = _FIXTURE_DIR / "valid_getup_canonical.npz"
+
+  completed = subprocess.run(
+    [
+      sys.executable,
+      "scripts/play_g1_getup_amp_data.py",
+      "--config",
+      str(config),
+      "--npz-file",
+      str(prepared_clip),
+      "--validate-only",
+    ],
+    check=True,
+    cwd=Path(__file__).resolve().parents[2],
+    text=True,
+    capture_output=True,
+  )
+
+  assert "Skipping raw-data preparation" in completed.stdout
+  assert "valid_getup_canonical.npz" in completed.stdout

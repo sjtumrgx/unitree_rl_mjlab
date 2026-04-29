@@ -25,6 +25,15 @@ from src.tasks.velocity.rl.getup_amp_data import (  # noqa: E402
   CANONICAL_G1_23DOF_JOINT_NAMES,
   prepare_amp_sequences,
 )
+from scripts.g1_getup_amp_config import (  # noqa: E402
+  DEFAULT_CONFIG_PATH,
+  collect_sequence_paths,
+  load_workflow_config,
+  path_list,
+  repo_path,
+  section,
+  source_metadata_from_config,
+)
 
 DEFAULT_LAFAN1_GETUP_FILES = (
   Path(
@@ -77,14 +86,9 @@ class PlaybackClip:
     return self.frame_count / self.fps
 
 
-def _repo_path(path: Path) -> Path:
-  path = path.expanduser()
-  return path if path.is_absolute() else (_REPO_ROOT / path)
-
-
 def resolve_motion_files(motion_files: Sequence[Path] | None) -> list[Path]:
   selected = list(motion_files or DEFAULT_LAFAN1_GETUP_FILES)
-  resolved = [_repo_path(Path(path)) for path in selected]
+  resolved = [repo_path(Path(path)) for path in selected]
   missing = [str(path) for path in resolved if not path.exists()]
   if missing:
     raise FileNotFoundError(f"Selected motion file(s) do not exist: {missing}")
@@ -237,6 +241,15 @@ def _train_command(output_dir: Path) -> str:
 def build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument(
+    "--config",
+    default=DEFAULT_CONFIG_PATH,
+    type=Path,
+    help=(
+      "YAML workflow config. Defaults to "
+      f"{DEFAULT_CONFIG_PATH.as_posix()}."
+    ),
+  )
+  parser.add_argument(
     "--motion-file",
     action="append",
     type=Path,
@@ -247,9 +260,19 @@ def build_parser() -> argparse.ArgumentParser:
     ),
   )
   parser.add_argument(
+    "--npz-file",
+    action="append",
+    type=Path,
+    default=None,
+    help=(
+      "Prepared .npz clip to validate/play. Repeatable. Overrides play.npz_files "
+      "from the YAML config."
+    ),
+  )
+  parser.add_argument(
     "--prepare-output",
     type=Path,
-    default=DEFAULT_PREPARE_OUTPUT,
+    default=None,
     help="AMP output directory that receives manifest.json, source_gate.json, and motions/*.npz.",
   )
   parser.add_argument(
@@ -257,9 +280,9 @@ def build_parser() -> argparse.ArgumentParser:
     default=None,
     help="Dataset commit/snapshot id recorded in source_gate.json.",
   )
-  parser.add_argument("--source-url", default=DEFAULT_SOURCE_URL)
-  parser.add_argument("--source-license", default=DEFAULT_SOURCE_LICENSE)
-  parser.add_argument("--upstream-license", default=DEFAULT_UPSTREAM_LICENSE)
+  parser.add_argument("--source-url", default=None)
+  parser.add_argument("--source-license", default=None)
+  parser.add_argument("--upstream-license", default=None)
   parser.add_argument(
     "--require-go",
     action="store_true",
@@ -272,25 +295,27 @@ def build_parser() -> argparse.ArgumentParser:
   )
   parser.add_argument(
     "--play-all",
-    action="store_true",
+    action=argparse.BooleanOptionalAction,
+    default=None,
     help="Replay every accepted clip instead of only --motion-index.",
   )
   parser.add_argument(
     "--motion-index",
     type=int,
-    default=0,
+    default=None,
     help="Accepted clip index to replay when --play-all is not set.",
   )
   parser.add_argument(
     "--xml",
     type=Path,
-    default=DEFAULT_XML,
+    default=None,
     help="G1 23DoF MuJoCo XML used for kinematic playback.",
   )
-  parser.add_argument("--speed", type=float, default=1.0, help="Playback speed multiplier.")
+  parser.add_argument("--speed", type=float, default=None, help="Playback speed multiplier.")
   parser.add_argument(
     "--loop",
-    action="store_true",
+    action=argparse.BooleanOptionalAction,
+    default=None,
     help="Loop the selected clip(s) until the viewer is closed.",
   )
   return parser
@@ -298,20 +323,82 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
   args = build_parser().parse_args(argv)
-  motion_files = resolve_motion_files(args.motion_file)
-  output_dir = _repo_path(args.prepare_output)
-  xml_path = _repo_path(args.xml)
+  config = load_workflow_config(args.config)
+  prepare_cfg = section(config, "prepare")
+  play_cfg = section(config, "play")
+  configured_npz = path_list(play_cfg.get("npz_files"))
+  play_npz_files = args.npz_file if args.npz_file is not None else configured_npz
+  configured_inputs = path_list(prepare_cfg.get("inputs"))
+  output_dir = repo_path(
+    args.prepare_output
+    if args.prepare_output is not None
+    else Path(prepare_cfg.get("output_dir", DEFAULT_PREPARE_OUTPUT))
+  )
+  xml_path = repo_path(
+    args.xml
+    if args.xml is not None
+    else Path(play_cfg.get("xml", DEFAULT_XML))
+  )
   if not xml_path.exists():
     raise FileNotFoundError(f"MuJoCo XML does not exist: {xml_path}")
+
+  play_all = bool(play_cfg.get("play_all", False)) if args.play_all is None else args.play_all
+  motion_index = int(play_cfg.get("motion_index", 0)) if args.motion_index is None else args.motion_index
+  speed = float(play_cfg.get("speed", 1.0)) if args.speed is None else args.speed
+  loop = bool(play_cfg.get("loop", False)) if args.loop is None else args.loop
+
+  if args.npz_file is not None and args.motion_file is None:
+    playback_paths = [repo_path(path) for path in play_npz_files]
+    missing_playback_paths = [str(path) for path in playback_paths if not path.exists()]
+    if missing_playback_paths:
+      raise FileNotFoundError(f"Configured playback .npz file(s) do not exist: {missing_playback_paths}")
+    print("[INFO] Skipping raw-data preparation because --npz-file was provided.")
+    summaries = [
+      validate_clip_headless(load_playback_clip(path), xml_path)
+      for path in playback_paths
+    ]
+    print(json.dumps({"accepted_playback": summaries}, indent=2, sort_keys=True))
+    if args.validate_only:
+      return 0
+    if not play_all and not 0 <= motion_index < len(playback_paths):
+      raise IndexError(
+        f"--motion-index {motion_index} is out of range for {len(playback_paths)} playback clip(s)"
+      )
+    selected_paths = playback_paths if play_all else [playback_paths[motion_index]]
+    for standardized_path in selected_paths:
+      clip = load_playback_clip(standardized_path)
+      print(
+        f"[INFO] Playing {standardized_path} "
+        f"({clip.frame_count} frames @ {clip.fps:g} FPS)"
+      )
+      play_clip(clip, xml_path, speed=speed, loop=loop)
+    return 0
+
+  motion_inputs = args.motion_file if args.motion_file is not None else configured_inputs
+  motion_files = (
+    collect_sequence_paths(motion_inputs)
+    if motion_inputs
+    else resolve_motion_files(None)
+  )
+  source = source_metadata_from_config(
+    config,
+    default_source_url=DEFAULT_SOURCE_URL,
+    default_source_license=DEFAULT_SOURCE_LICENSE,
+    default_upstream_license=DEFAULT_UPSTREAM_LICENSE,
+    cli_source_url=args.source_url,
+    cli_source_revision=args.source_revision,
+    cli_source_license=args.source_license,
+    cli_upstream_license=args.upstream_license,
+  )
 
   result = prepare_selected_motions(
     motion_files,
     output_dir,
-    source_revision=args.source_revision,
+    source_revision=source.source_revision,
     validate_only=args.validate_only,
-    source_url=args.source_url,
-    source_license=args.source_license,
-    upstream_license=args.upstream_license,
+    source_url=source.source_url,
+    source_license=source.source_license,
+    upstream_license=source.upstream_license,
   )
   print(json.dumps(result["source_gate"], indent=2, sort_keys=True))
   accepted_paths = _accepted_output_paths(result)
@@ -328,29 +415,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     return 2
 
+  playback_paths = (
+    [repo_path(path) for path in play_npz_files]
+    if play_npz_files
+    else accepted_paths
+  )
+  missing_playback_paths = [str(path) for path in playback_paths if not path.exists()]
+  if missing_playback_paths:
+    raise FileNotFoundError(f"Configured playback .npz file(s) do not exist: {missing_playback_paths}")
+
   summaries = [
     validate_clip_headless(load_playback_clip(path), xml_path)
-    for path in accepted_paths
+    for path in playback_paths
   ]
   print(json.dumps({"accepted_playback": summaries}, indent=2, sort_keys=True))
   print("\nTraining command after source_gate.status is GO:")
-  print(_train_command(args.prepare_output))
+  print(_train_command(output_dir))
 
   if args.validate_only:
     return 0
 
-  if not args.play_all and not 0 <= args.motion_index < len(accepted_paths):
+  if not play_all and not 0 <= motion_index < len(playback_paths):
     raise IndexError(
-      f"--motion-index {args.motion_index} is out of range for {len(accepted_paths)} accepted clip(s)"
+      f"--motion-index {motion_index} is out of range for {len(playback_paths)} playback clip(s)"
     )
-  selected_paths = accepted_paths if args.play_all else [accepted_paths[args.motion_index]]
+  selected_paths = playback_paths if play_all else [playback_paths[motion_index]]
   for standardized_path in selected_paths:
     clip = load_playback_clip(standardized_path)
     print(
       f"[INFO] Playing {standardized_path} "
       f"({clip.frame_count} frames @ {clip.fps:g} FPS)"
     )
-    play_clip(clip, xml_path, speed=args.speed, loop=args.loop)
+    play_clip(clip, xml_path, speed=speed, loop=loop)
   return 0
 
 

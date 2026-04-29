@@ -1,0 +1,43 @@
+# G1 GetUp AMP local data workflow.
+#
+# Edit only the paths you care about:
+# - prepare.inputs can contain folders or individual .pkl files.
+# - play.npz_files picks which converted clips open in the MuJoCo G1 viewer.
+# - train.demo_data_dir is the prepared directory used by scripts/train_getup_amp.py.
+
+dataset:
+  source_url: https://huggingface.co/datasets/openhe/g1-retargeted-motions
+  dataset_commit_or_snapshot_id: local-g1-retargeted-motions
+  source_license: MIT
+  upstream_license: LAFAN1 selected clips reviewed locally
+
+prepare:
+  output_dir: data/motions/g1_getup_amp
+  inputs:
+    - data/g1-retargeted-motions/lafan1_retargeted/fallAndGetUp1_subject1.pkl
+    - data/g1-retargeted-motions/lafan1_retargeted/fallAndGetUp1_subject4.pkl
+    - data/g1-retargeted-motions/lafan1_retargeted/fallAndGetUp1_subject5.pkl
+    - data/g1-retargeted-motions/lafan1_retargeted/fallAndGetUp2_subject2.pkl
+    - data/g1-retargeted-motions/lafan1_retargeted/fallAndGetUp2_subject3.pkl
+    - data/g1-retargeted-motions/lafan1_retargeted/fallAndGetUp3_subject1.pkl
+
+play:
+  xml: src/assets/robots/unitree_g1/xmls/g1_23dof.xml
+  npz_files:
+    - data/motions/g1_getup_amp/motions/fallAndGetUp1_subject1.npz
+  motion_index: 0
+  speed: 1.0
+  loop: false
+  play_all: false
+
+train:
+  demo_data_dir: data/motions/g1_getup_amp
+  npz_files:
+    - data/motions/g1_getup_amp/motions/fallAndGetUp1_subject1.npz
+    - data/motions/g1_getup_amp/motions/fallAndGetUp1_subject4.npz
+    - data/motions/g1_getup_amp/motions/fallAndGetUp1_subject5.npz
+    - data/motions/g1_getup_amp/motions/fallAndGetUp2_subject2.npz
+    - data/motions/g1_getup_amp/motions/fallAndGetUp2_subject3.npz
+    - data/motions/g1_getup_amp/motions/fallAndGetUp3_subject1.npz
+  num_envs: 4096
+  max_iterations: 10001

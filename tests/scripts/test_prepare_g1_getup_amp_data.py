@@ -56,8 +56,72 @@ def test_prepare_cli_validate_only(tmp_path: Path) -> None:
   assert (output / "manifest.json").exists()
 
 
-def test_prepare_cli_defaults_to_real_local_dataset_path() -> None:
+def test_prepare_cli_reads_yaml_inputs_and_metadata(tmp_path: Path) -> None:
+  import pickle
+
+  T = 4
+  joint_pos = np.zeros((T, len(CANONICAL_G1_23DOF_JOINT_NAMES)), dtype=np.float32)
+  root_pos = np.stack(
+    [np.zeros(T), np.zeros(T), np.linspace(0.25, 0.8, T)], axis=1
+  ).astype(np.float32)
+  root_quat_xyzw = np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (T, 1))
+  raw_dir = tmp_path / "raw"
+  nested = raw_dir / "nested"
+  nested.mkdir(parents=True)
+  pkl_path = nested / "fallAndGetUp1_subject1.pkl"
+  with pkl_path.open("wb") as f:
+    pickle.dump(
+      {
+        pkl_path.stem: {
+          "root_trans_offset": root_pos,
+          "root_rot": root_quat_xyzw,
+          "dof": joint_pos,
+          "fps": np.array(30),
+        }
+      },
+      f,
+    )
+  output = tmp_path / "prepared"
+  config = tmp_path / "g1_getup_amp.yaml"
+  config.write_text(
+    "\n".join(
+      [
+        "dataset:",
+        "  source_url: https://example.invalid/g1-retargeted-motions",
+        "  source_revision: unit-test-snapshot",
+        "  source_license: MIT",
+        "  upstream_license: local review complete",
+        "prepare:",
+        "  inputs:",
+        f"    - {raw_dir}",
+        f"  output_dir: {output}",
+      ]
+    )
+  )
+
+  completed = subprocess.run(
+    [
+      sys.executable,
+      "scripts/prepare_g1_getup_amp_data.py",
+      "--config",
+      str(config),
+    ],
+    check=True,
+    cwd=Path(__file__).resolve().parents[2],
+    text=True,
+    capture_output=True,
+  )
+
+  assert '"source_revision": "unit-test-snapshot"' in completed.stdout
+  assert (output / "manifest.json").exists()
+  manifest = json.loads((output / "manifest.json").read_text())
+  assert manifest["accepted_count"] == 1
+  assert Path(manifest["accepted"][0]["path"]) == pkl_path
+
+
+def test_prepare_cli_defaults_to_yaml_config_path() -> None:
   from scripts.prepare_g1_getup_amp_data import (
+    DEFAULT_CONFIG_PATH,
     DEFAULT_PREPARED_DATA_DIR,
     DEFAULT_RAW_DATA_DIR,
     build_parser,
@@ -67,8 +131,10 @@ def test_prepare_cli_defaults_to_real_local_dataset_path() -> None:
 
   assert DEFAULT_RAW_DATA_DIR == Path("~/unitree_rl_mjlab/data/g1-retargeted-motions")
   assert DEFAULT_PREPARED_DATA_DIR == Path("~/unitree_rl_mjlab/data/motions/g1_getup_amp")
-  assert args.input == DEFAULT_RAW_DATA_DIR
-  assert args.output == DEFAULT_PREPARED_DATA_DIR
+  assert DEFAULT_CONFIG_PATH == Path("data/g1_getup_amp.yaml")
+  assert args.config == DEFAULT_CONFIG_PATH
+  assert args.input is None
+  assert args.output is None
 
 
 def test_projection_reorders_shuffled_joints_by_name() -> None:
