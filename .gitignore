@@ -18,10 +18,26 @@ __pycache__/
 *.pyc
 .history/
 .workflow/
-tests/
 .ccw/
 .vscode/
 HoST/
 cpp_dds_smoke_logs/
 *.mp4
 tea_debug.log
+data/motions/g1_getup_amp/
+data/huggingface/
+data/raw/g1_getup_source/
+# Keep legacy broad test ignores narrow: only newly approved AMP tests/fixtures are trackable.
+tests/*
+!tests/tasks/
+tests/tasks/*
+!tests/tasks/test_g1_getup_amp_contract.py
+!tests/tasks/test_g1_getup_amp_algorithm.py
+!tests/scripts/
+tests/scripts/*
+!tests/scripts/test_prepare_g1_getup_amp_data.py
+!tests/scripts/test_train_getup_amp.py
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/g1_getup_amp/
+!tests/fixtures/g1_getup_amp/**

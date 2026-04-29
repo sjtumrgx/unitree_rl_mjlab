@@ -600,9 +600,49 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
   return cfg
 
 
+
+def _apply_getup_amp_observation_group(
+  cfg: ManagerBasedRlEnvCfg,
+  *,
+  demo_data_dir: str,
+) -> None:
+  """Attach discriminator-only AMP observations to an opt-in GetUp config."""
+  cfg.getup_amp_enabled = True  # type: ignore[attr-defined]
+  cfg.getup_amp_demo_data_dir = demo_data_dir  # type: ignore[attr-defined]
+  cfg.observations["amp"] = ObservationGroupCfg(
+    terms={
+      "features": ObservationTermCfg(
+        func=mdp.amp_getup_features,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+      ),
+    },
+    concatenate_terms=True,
+    enable_corruption=False,
+    history_length=1,
+    nan_policy="sanitize",
+    nan_check_per_term=True,
+  )
+
+
 def unitree_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create the Unitree G1 HoST get-up configuration for one terrain variant."""
   return _make_g1_getup_env_cfg(terrain=terrain, play=play)
+
+
+def unitree_g1_getup_amp_env_cfg(
+  demo_data_dir: str = "data/motions/g1_getup_amp",
+  *,
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Create the opt-in ground-only G1 GetUp AMP fallback env config.
+
+  The default HoST-parity Unitree-G1-GetUp task remains no-demo.  AMP is
+  intentionally constrained to flat ground in this first pass.
+  """
+  cfg = _make_g1_getup_env_cfg(terrain="ground", play=play)
+  cfg.getup_terrain = "ground"  # type: ignore[attr-defined]
+  _apply_getup_amp_observation_group(cfg, demo_data_dir=demo_data_dir)
+  return cfg
 
 
 def unitree_g1_getup_benchmark_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:

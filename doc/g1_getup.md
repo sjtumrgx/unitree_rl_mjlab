@@ -46,6 +46,29 @@ python scripts/play_getup.py --terrain platform -- \
 Keep play terrain equal to train terrain for baseline validation.  Cross-terrain
 play is useful only after the baseline terrain succeeds.
 
+## Optional AMP fallback
+
+If the no-demo HoST-parity ground task still fails to learn a natural get-up, use
+the separate AMP fallback instead of modifying the default task:
+
+```bash
+python scripts/prepare_g1_getup_amp_data.py \
+  --input tests/fixtures/g1_getup_amp \
+  --output /tmp/g1_getup_amp_fixture \
+  --validate-only
+
+python scripts/train_getup_amp.py \
+  --demo-data-dir /tmp/g1_getup_amp_fixture \
+  --max-iterations 1 \
+  --num-envs 4 \
+  --headless-smoke \
+  -- --agent.num-steps-per-env=2
+```
+
+`Unitree-G1-GetUp-AMP` is ground-only and opt-in.  See
+`doc/g1_getup_demo_data.md` for public-data source gates, canonical 23DoF
+projection, and diagnostic commands.
+
 ## Migration notes
 
 - HoST reward groups are represented as MJLab reward/event wiring in

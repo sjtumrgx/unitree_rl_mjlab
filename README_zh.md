@@ -303,6 +303,7 @@ Parkour 特别注意：
 - `doc/train_play_sim2real_en.md` / `doc/train_play_sim2real_zh.md` — 端到端流程检查清单。
 - `doc/g1_antifall.md` — AntiFall train/play/sim2real 说明。
 - `doc/g1_parkour.md` — Parkour artifact、深度、地形和部署说明。
+- `doc/g1_getup_demo_data.md` — 可选 GetUp AMP/示教数据 fallback 与 source-gate 流程。
 - `doc/g1_getup.md` — GetUp 地形迁移和使用说明。
 
 ## 致谢
