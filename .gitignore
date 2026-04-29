@@ -27,6 +27,7 @@ tea_debug.log
 data/motions/g1_getup_amp/
 data/huggingface/
 data/raw/g1_getup_source/
+data/g1-retargeted-motions/
 # Keep legacy broad test ignores narrow: only newly approved AMP tests/fixtures are trackable.
 tests/*
 !tests/tasks/

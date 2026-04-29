@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pickle
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
@@ -33,6 +34,11 @@ _KNOWN_29DOF_EXTRAS = {
   "right_wrist_pitch_joint",
   "right_wrist_yaw_joint",
 }
+
+_OPENHE_GETUP_NAME_PATTERN = re.compile(
+  r"(get.?up|lie.?to.?crouch|crouch.?to.?walk|crouch.?to.?run|stand.?up|recovery)",
+  re.I,
+)
 
 
 def canonical_g1_23dof_joint_names() -> tuple[str, ...]:
@@ -198,6 +204,160 @@ def _root_height_is_plausible(root_pos: np.ndarray) -> bool:
   return bool(np.nanmin(z) > -0.25 and np.nanmax(z) < 2.2)
 
 
+
+def _write_standardized_npz(
+  output_path: Path,
+  *,
+  projection: ProjectionResult,
+  root_pos: np.ndarray,
+  root_quat: np.ndarray,
+  amp_obs: np.ndarray,
+  fps: float,
+  tags: Sequence[str],
+  source: str,
+  license_name: str,
+) -> None:
+  np.savez(
+    output_path,
+    joint_pos=projection.joint_pos,
+    joint_vel=projection.joint_vel,
+    root_pos_w=root_pos,
+    root_quat_w=root_quat,
+    amp_obs=amp_obs,
+    joint_names=np.array(projection.canonical_joint_names),
+    source_joint_names=np.array(projection.source_joint_names),
+    fps=np.array([fps], dtype=np.float32),
+    tags=np.array(tuple(tags)),
+    source=np.array(source),
+    license=np.array(license_name),
+    projection=json.dumps(projection.projection, sort_keys=True),
+  )
+
+
+def _standardized_metadata(
+  *,
+  path: Path,
+  projection: ProjectionResult,
+  output_path: Path | None,
+  frame_count: int,
+  fps: float,
+  tags: Sequence[str],
+  source: str,
+  license_name: str,
+) -> dict[str, Any]:
+  metadata = {
+    "frames": int(frame_count),
+    "fps": float(fps),
+    "source": source,
+    "license": license_name,
+    "tags": list(tags),
+    "joint_names": list(projection.source_joint_names),
+    "canonical_joint_names": list(projection.canonical_joint_names),
+    "projection": projection.projection,
+    "sha256": file_sha256(path),
+  }
+  if output_path is not None:
+    metadata["standardized_sha256"] = file_sha256(output_path)
+  return metadata
+
+
+def _validate_common_arrays(
+  *,
+  projection: ProjectionResult,
+  root_pos: np.ndarray,
+  root_quat: np.ndarray,
+  amp_obs: np.ndarray,
+) -> None:
+  for name, array in {
+    "joint_pos": projection.joint_pos,
+    "joint_vel": projection.joint_vel,
+    "root_pos_w": root_pos,
+    "root_quat_w": root_quat,
+    "amp_obs": amp_obs,
+  }.items():
+    if not np.isfinite(array).all():
+      raise ValueError(f"{name} contains NaN/Inf")
+  if projection.joint_pos.shape[0] < 2:
+    raise ValueError("sequence must contain at least two frames")
+  if not _root_height_is_plausible(root_pos):
+    raise ValueError("root_pos_w height is implausible for a G1 get-up clip")
+
+
+def _validate_and_standardize_openhe_pkl(
+  path: Path,
+  output_dir: Path,
+  *,
+  copy_standardized: bool = True,
+) -> SequenceValidationResult:
+  try:
+    with path.open("rb") as f:
+      payload = pickle.load(f)
+  except Exception as exc:  # pragma: no cover - pickle errors are data-dependent
+    return SequenceValidationResult(str(path), False, f"failed to load pkl: {exc}")
+  try:
+    if not isinstance(payload, dict) or not payload:
+      raise ValueError("OpenHE pkl must contain a non-empty motion dictionary")
+    motion_key = next(iter(payload))
+    motion = payload[motion_key]
+    required = {"root_trans_offset", "root_rot", "dof", "fps"}
+    missing = sorted(required - set(motion))
+    if missing:
+      raise ValueError(f"missing required OpenHE fields: {missing}")
+    tags = (path.stem, str(motion_key))
+    if not _OPENHE_GETUP_NAME_PATTERN.search(" ".join(tags)):
+      raise ValueError("OpenHE clip name does not indicate get-up/fall-recovery content")
+    fps = float(np.asarray(motion["fps"]).reshape(-1)[0])
+    if not 10.0 <= fps <= 240.0:
+      raise ValueError(f"unreasonable fps: {fps}")
+    joint_pos = np.asarray(motion["dof"], dtype=np.float32)
+    if joint_pos.ndim != 2 or joint_pos.shape[1] != len(CANONICAL_G1_23DOF_JOINT_NAMES):
+      raise ValueError(f"OpenHE dof must be [T, 23], got {joint_pos.shape}")
+    joint_vel = np.gradient(joint_pos, axis=0).astype(np.float32) * fps
+    projection = project_to_canonical_23dof(
+      joint_pos,
+      joint_vel,
+      CANONICAL_G1_23DOF_JOINT_NAMES,
+    )
+    projection.projection["source_format"] = "openhe_g1_retargeted_pkl"
+    projection.projection["joint_order_assumption"] = (
+      "OpenHE Unitree G1 23DoF README dof order matches active g1_23dof.xml"
+    )
+    root_pos = np.asarray(motion["root_trans_offset"], dtype=np.float32)
+    root_quat = np.asarray(motion["root_rot"], dtype=np.float32)
+    amp_obs = amp_obs_from_motion_arrays(root_pos, root_quat, projection.joint_pos, projection.joint_vel)
+    _validate_common_arrays(projection=projection, root_pos=root_pos, root_quat=root_quat, amp_obs=amp_obs)
+
+    output_path: Path | None = None
+    if copy_standardized:
+      output_dir.mkdir(parents=True, exist_ok=True)
+      output_path = output_dir / f"{path.stem}.npz"
+      _write_standardized_npz(
+        output_path,
+        projection=projection,
+        root_pos=root_pos,
+        root_quat=root_quat,
+        amp_obs=amp_obs,
+        fps=fps,
+        tags=tags,
+        source="openhe/g1-retargeted-motions",
+        license_name="MIT + original source restrictions",
+      )
+    metadata = _standardized_metadata(
+      path=path,
+      projection=projection,
+      output_path=output_path,
+      frame_count=projection.joint_pos.shape[0],
+      fps=fps,
+      tags=tags,
+      source="openhe/g1-retargeted-motions",
+      license_name="MIT + original source restrictions",
+    )
+    return SequenceValidationResult(
+      str(path), True, "accepted", str(output_path) if output_path is not None else None, metadata
+    )
+  except Exception as exc:
+    return SequenceValidationResult(str(path), False, str(exc))
+
 def validate_and_standardize_sequence(
   path: Path,
   output_dir: Path,
@@ -206,6 +366,10 @@ def validate_and_standardize_sequence(
 ) -> SequenceValidationResult:
   path = Path(path)
   output_dir = Path(output_dir)
+  if path.suffix.lower() == ".pkl":
+    return _validate_and_standardize_openhe_pkl(
+      path, output_dir, copy_standardized=copy_standardized
+    )
   try:
     payload = np.load(path, allow_pickle=False)
   except Exception as exc:  # pragma: no cover - exact numpy error is not stable
@@ -231,53 +395,34 @@ def validate_and_standardize_sequence(
     root_pos = np.asarray(payload["root_pos_w"], dtype=np.float32)
     root_quat = np.asarray(payload["root_quat_w"], dtype=np.float32)
     amp_obs = amp_obs_from_motion_arrays(root_pos, root_quat, projection.joint_pos, projection.joint_vel)
-    for name, array in {
-      "joint_pos": projection.joint_pos,
-      "joint_vel": projection.joint_vel,
-      "root_pos_w": root_pos,
-      "root_quat_w": root_quat,
-      "amp_obs": amp_obs,
-    }.items():
-      if not np.isfinite(array).all():
-        raise ValueError(f"{name} contains NaN/Inf")
-    if projection.joint_pos.shape[0] < 2:
-      raise ValueError("sequence must contain at least two frames")
-    if not _root_height_is_plausible(root_pos):
-      raise ValueError("root_pos_w height is implausible for a G1 get-up clip")
+    _validate_common_arrays(projection=projection, root_pos=root_pos, root_quat=root_quat, amp_obs=amp_obs)
 
     output_path: Path | None = None
     if copy_standardized:
       output_dir.mkdir(parents=True, exist_ok=True)
       output_path = output_dir / f"{path.stem}.npz"
-      np.savez(
+      _write_standardized_npz(
         output_path,
-        joint_pos=projection.joint_pos,
-        joint_vel=projection.joint_vel,
-        root_pos_w=root_pos,
-        root_quat_w=root_quat,
+        projection=projection,
+        root_pos=root_pos,
+        root_quat=root_quat,
         amp_obs=amp_obs,
-        joint_names=np.array(projection.canonical_joint_names),
-        source_joint_names=np.array(projection.source_joint_names),
-        fps=np.array([fps], dtype=np.float32),
-        tags=np.array(meta["tags"]),
-        source=np.array(meta["source"]),
-        license=np.array(meta["license"]),
-        projection=json.dumps(projection.projection, sort_keys=True),
+        fps=fps,
+        tags=meta["tags"],
+        source=meta["source"],
+        license_name=meta["license"],
       )
 
-    metadata = {
-      "frames": int(projection.joint_pos.shape[0]),
-      "fps": fps,
-      "source": meta["source"],
-      "license": meta["license"],
-      "tags": list(meta["tags"]),
-      "joint_names": list(projection.source_joint_names),
-      "canonical_joint_names": list(projection.canonical_joint_names),
-      "projection": projection.projection,
-      "sha256": file_sha256(path),
-    }
-    if output_path is not None:
-      metadata["standardized_sha256"] = file_sha256(output_path)
+    metadata = _standardized_metadata(
+      path=path,
+      projection=projection,
+      output_path=output_path,
+      frame_count=projection.joint_pos.shape[0],
+      fps=fps,
+      tags=meta["tags"],
+      source=meta["source"],
+      license_name=meta["license"],
+    )
     return SequenceValidationResult(
       str(path), True, "accepted", str(output_path) if output_path is not None else None, metadata
     )
@@ -326,7 +471,11 @@ def prepare_amp_dataset(
   output_dir.mkdir(parents=True, exist_ok=True)
   if not input_dir.exists():
     raise FileNotFoundError(f"AMP input path does not exist: {input_dir}")
-  sequence_paths = sorted(input_dir.rglob("*.npz")) if input_dir.is_dir() else [input_dir]
+  sequence_paths = (
+    sorted([*input_dir.rglob("*.npz"), *input_dir.rglob("*.pkl")])
+    if input_dir.is_dir()
+    else [input_dir]
+  )
   results = [
     validate_and_standardize_sequence(path, output_dir / "motions", copy_standardized=True)
     for path in sequence_paths

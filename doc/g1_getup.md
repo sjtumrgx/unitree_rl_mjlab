@@ -1,29 +1,37 @@
-# G1 GetUp: HoST Migration and Train → Play Notes
+# G1 GetUp: Train → Play → Sim2Real Notes
 
-G1 GetUp is an added module that ports HoST-style get-up terrain variants into
-MJLab while keeping the normal Unitree RL MJLab train/play workflow.
+G1 GetUp ports HoST-style get-up terrain variants into MJLab while keeping the
+normal Unitree RL MJLab workflow.  The default task is no-demo HoST parity;
+`Unitree-G1-GetUp-AMP` is a separate ground-only fallback that uses prepared
+retargeted demonstration data.
 
-## Scope
+## Task map
 
-| HoST source concept | MJLab entrypoint | Terrain flag |
+| Path | MJLab task | Scope |
 | --- | --- | --- |
-| `g1_ground` | `Unitree-G1-GetUp` | `ground` |
-| `g1_platform` | `Unitree-G1-GetUp` | `platform` |
-| `g1_wall` | `Unitree-G1-GetUp` | `wall` |
-| `g1_slope` | `Unitree-G1-GetUp` | `slope` |
+| Default ground | `Unitree-G1-GetUp` + `--getup-terrain=ground` | no-demo HoST ground get-up |
+| Default platform | `Unitree-G1-GetUp` + `--getup-terrain=platform` | no-demo HoST platform variant |
+| Default wall | `Unitree-G1-GetUp` + `--getup-terrain=wall` | no-demo HoST wall variant |
+| Default slope | `Unitree-G1-GetUp` + `--getup-terrain=slope` | no-demo HoST slope variant |
+| AMP fallback | `Unitree-G1-GetUp-AMP` | ground-only demo-data fallback |
 
-Core mapping lives in:
+Core code lives in:
 
 - `src/tasks/velocity/config/g1_getup/env_cfgs.py`
 - `src/tasks/velocity/config/g1_getup/rl_cfg.py`
 - `src/tasks/velocity/mdp/getup/`
+- `src/tasks/velocity/rl/getup_amp.py`
+- `src/tasks/velocity/rl/getup_amp_data.py`
 
-## Train
+## Default no-demo training
 
 Convenience wrapper:
 
 ```bash
+python scripts/train_getup.py --terrain ground -- --env.scene.num-envs=4096
 python scripts/train_getup.py --terrain platform -- --env.scene.num-envs=4096
+python scripts/train_getup.py --terrain wall -- --env.scene.num-envs=4096
+python scripts/train_getup.py --terrain slope -- --env.scene.num-envs=4096
 ```
 
 Generic form:
@@ -36,38 +44,132 @@ The terrain flag affects terrain mix, reset state, assist force, and run naming.
 Use separate runs for each terrain unless you intentionally test cross-terrain
 transfer.
 
-## Play
+## AMP fallback data setup
 
-```bash
-python scripts/play_getup.py --terrain platform -- \
-  --checkpoint_file logs/rsl_rl/g1_getup/<run>/model_*.pt
+Use the AMP fallback only after the default ground task is insufficient.  The
+recommended public source is:
+
+```text
+https://huggingface.co/datasets/openhe/g1-retargeted-motions
 ```
 
-Keep play terrain equal to train terrain for baseline validation.  Cross-terrain
-play is useful only after the baseline terrain succeeds.
+Download to this ignored raw-data directory:
 
-## Optional AMP fallback
+```bash
+huggingface-cli download openhe/g1-retargeted-motions \
+  --repo-type dataset \
+  --local-dir data/raw/g1_getup_source/openhe/g1-retargeted-motions \
+  --local-dir-use-symlinks False
+```
 
-If the no-demo HoST-parity ground task still fails to learn a natural get-up, use
-the separate AMP fallback instead of modifying the default task:
+Prepare into the training directory:
 
 ```bash
 python scripts/prepare_g1_getup_amp_data.py \
-  --input tests/fixtures/g1_getup_amp \
-  --output /tmp/g1_getup_amp_fixture \
-  --validate-only
-
-python scripts/train_getup_amp.py \
-  --demo-data-dir /tmp/g1_getup_amp_fixture \
-  --max-iterations 1 \
-  --num-envs 4 \
-  --headless-smoke \
-  -- --agent.num-steps-per-env=2
+  --input data/raw/g1_getup_source/openhe/g1-retargeted-motions \
+  --output data/motions/g1_getup_amp \
+  --source-url https://huggingface.co/datasets/openhe/g1-retargeted-motions \
+  --source-revision <dataset-commit-or-snapshot-id> \
+  --source-license MIT \
+  --upstream-license "ACCAD/LAFAN1/DanceDB/etc. original source restrictions reviewed" \
+  --require-go
 ```
 
-`Unitree-G1-GetUp-AMP` is ground-only and opt-in.  See
-`doc/g1_getup_demo_data.md` for public-data source gates, canonical 23DoF
-projection, and diagnostic commands.
+Expected tree:
+
+```text
+data/raw/g1_getup_source/openhe/g1-retargeted-motions/
+  ACCAD_retargeted/*.pkl
+  LAFAN1_retargeted/*.pkl
+  ...
+
+data/motions/g1_getup_amp/
+  manifest.json
+  source_gate.json
+  motions/*.npz
+```
+
+See `doc/g1_getup_demo_data.md` for full source-gate, schema, and licensing
+details.
+
+## AMP fallback training
+
+Formal AMP training:
+
+```bash
+python scripts/train_getup_amp.py \
+  --demo-data-dir data/motions/g1_getup_amp \
+  --num-envs 4096 \
+  --max-iterations 10001
+```
+
+Equivalent generic form:
+
+```bash
+python scripts/train.py Unitree-G1-GetUp-AMP \
+  --agent.algorithm.demo-data-dir=data/motions/g1_getup_amp \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
+```
+
+`Unitree-G1-GetUp-AMP` refuses to train unless
+`data/motions/g1_getup_amp/source_gate.json` exists and is `GO`.
+
+## Play
+
+Default no-demo terrain play:
+
+```bash
+python scripts/play_getup.py --terrain ground -- \
+  --checkpoint_file logs/rsl_rl/g1_getup/<run>/model_*.pt
+```
+
+AMP fallback play:
+
+```bash
+python scripts/play.py Unitree-G1-GetUp-AMP \
+  --checkpoint_file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
+  --num_envs 1 \
+  --viewer native
+```
+
+Keep play terrain equal to train terrain for default variants.  For AMP, keep the
+prepared demo directory available because the AMP algorithm checks the source
+gate during runner construction.
+
+## Sim2Real / Unitree simulator
+
+Get-up is contact-rich.  Validate in Python play and Unitree simulator before any
+real-robot attempt.
+
+1. Copy the exported AMP policy into the existing GetUp deployment bundle:
+
+   ```bash
+   mkdir -p deploy/robots/g1_getup/config/policy/getup/v0/exported
+   cp logs/rsl_rl/g1_getup_amp/<run>/policy.onnx \
+     deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx
+   ```
+
+2. Build the controller:
+
+   ```bash
+   cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build
+   cmake --build deploy/robots/g1_getup/build -j4
+   ```
+
+3. Start Unitree MuJoCo simulator and controller:
+
+   ```bash
+   ./simulate/build/unitree_mujoco
+   ./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard
+   ```
+
+4. Keyboard transitions are `f` then `g` (`Passive -> FixStand -> GetUp`).
+
+Before hardware, confirm exported ONNX metadata, joint order, action scale,
+default pose, PD gains, torque limits, and initial fallen geometry.  Keep an
+operator ready to switch to Passive and physically support the robot on the first
+motor-enable tests.
 
 ## Migration notes
 
@@ -75,16 +177,6 @@ projection, and diagnostic commands.
   `g1_getup/env_cfgs.py` plus reusable functions in `src/tasks/velocity/mdp/getup/`.
 - Terrain variant metadata is stored on the env cfg (`getup_terrain`,
   `host_source_task`) so scripts and diagnostics can report provenance.
-- Pull/assist behavior is represented through MJLab event logic rather than
-  copying HoST runner code directly.
-
-## Sim2Real cautions
-
-Get-up behavior is contact-rich and sensitive to initial pose, terrain height,
-and motor limits.  Before attempting hardware:
-
-1. Validate the same checkpoint in Python play.
-2. Check that the robot starts from the expected fallen pose for the selected terrain.
-3. Use conservative motor enable procedures and physical support.
-4. Avoid testing near walls/platforms on hardware until ground get-up is reliable.
-5. Keep an operator ready to switch to Passive.
+- AMP is not a renamed pose reward: it uses a discriminator, expert/policy
+  transitions, and an AMP reward added into PPO only in the AMP task.
+- Platform/wall/slope AMP are intentionally not enabled in this pass.

@@ -1,157 +1,243 @@
-# G1 GetUp AMP Demo Data Fallback
+# G1 GetUp AMP Demonstration Data Guide
 
-This document describes the optional, simulation-only AMP fallback for flat-ground
-G1 GetUp.  The default `Unitree-G1-GetUp` HoST-parity task remains no-demo and
-should be tried first.  AMP is registered separately as `Unitree-G1-GetUp-AMP`.
+This guide is for the optional **ground-only** AMP fallback task
+`Unitree-G1-GetUp-AMP`.  The default `Unitree-G1-GetUp` HoST-parity task remains
+no-demo; use AMP only when the default get-up policy is not natural enough.
 
-## What this first pass does and does not prove
+The repository does not include large motion data.  Download data outside git,
+prepare it into the local AMP schema, then train/play from the prepared directory.
 
-- Proves the local data contract, canonical 23DoF joint projection, discriminator
-  reward wiring, one-iteration AMP/PPO smoke, and diagnostic JSON path.
-- Does **not** claim long-run convergence or real-robot readiness.
-- Does **not** enable platform/wall/slope AMP yet.
-- Does **not** commit third-party motion data to git.
+## Data source
 
-## Directory layout
+Use this dataset first:
 
-Prepared demo data lives outside git:
+- Hugging Face: <https://huggingface.co/datasets/openhe/g1-retargeted-motions>
+- Local raw-data target: `data/raw/g1_getup_source/openhe/g1-retargeted-motions/`
+- License metadata to record in `source_gate.json`: dataset card license `MIT`,
+  plus original source restrictions for ACCAD/LAFAN1/DanceDB/etc.
+
+Why this source: the dataset card describes Unitree G1 retargeted motions in
+Python pickle format, 23 DoF, 30 FPS, and includes transition/fall/get-up-like
+clips.  The prep tool in this repo accepts those `.pkl` files directly and
+converts accepted get-up/fall-recovery candidates to the AMP `.npz` schema.
+
+## Download
+
+Install Hugging Face tooling if needed:
+
+```bash
+python -m pip install -U huggingface_hub
+```
+
+Download the dataset with the official Hugging Face CLI:
+
+```bash
+huggingface-cli download openhe/g1-retargeted-motions \
+  --repo-type dataset \
+  --local-dir data/raw/g1_getup_source/openhe/g1-retargeted-motions \
+  --local-dir-use-symlinks False
+```
+
+Alternative with Git LFS:
+
+```bash
+git lfs install
+git clone https://huggingface.co/datasets/openhe/g1-retargeted-motions \
+  data/raw/g1_getup_source/openhe/g1-retargeted-motions
+```
+
+Raw data under `data/raw/g1_getup_source/` is gitignored.  Do not move downloaded
+motions into tracked source directories.
+
+## Folder tree
+
+After download:
+
+```text
+data/raw/g1_getup_source/
+  openhe/
+    g1-retargeted-motions/
+      README.md
+      ACCAD_retargeted/
+        A10-_Lie_to_crouch_stageii.pkl
+        A10_-_lie_to_crouch_stageii.pkl
+        ...
+      LAFAN1_retargeted/
+        ...
+      dance_db_retargeted/
+        ...
+      kungfu_retargeted/
+        ...
+```
+
+After preparation:
 
 ```text
 data/motions/g1_getup_amp/
   manifest.json
   source_gate.json
   motions/
-    <standardized get-up clip>.npz
+    A10-_Lie_to_crouch_stageii.npz
+    A10_-_lie_to_crouch_stageii.npz
+    ...
 ```
 
-`data/motions/g1_getup_amp/` and `data/huggingface/` are gitignored.  Tests use
-tiny fixture NPZ files under `tests/fixtures/g1_getup_amp/` only.
+After training:
 
-## Candidate public sources
+```text
+logs/rsl_rl/g1_getup_amp/
+  <timestamp>_ground_amp/
+    model_*.pt
+    policy.onnx
+    params/
+      agent.yaml
+      env.yaml
+```
 
-These sources must still pass the local source gate before real training:
+For C++/DDS deployment, the GetUp controller expects:
 
-| Candidate | Why useful | First-pass caveat |
-| --- | --- | --- |
-| [`openhe/g1-retargeted-motions`](https://huggingface.co/datasets/openhe/g1-retargeted-motions) | Hugging Face card reports Unitree G1 23DoF, 30 FPS, 174 motion files, and includes falls/get-ups in LAFAN1 categories. | Files are `.pkl`, not this repo's standardized `.npz`; source/subset licenses still need recording. |
-| [`fleaven/Retargeted_AMASS_for_robotics`](https://huggingface.co/datasets/fleaven/Retargeted_AMASS_for_robotics) | Provides Unitree G1 retargeted AMASS data and explicit joint order. | G1 layout is 29DoF with xyzw root quaternion, so it needs conversion to wxyz plus explicit 29→23 projection. AMASS subset licenses must be respected. |
+```text
+deploy/robots/g1_getup/config/policy/getup/v0/
+  exported/
+    policy.onnx
+```
 
-Do not assume either source contains a clean get-up clip for this task.  The prep
-script must emit `source_gate.json`; real training is allowed only when the gate
-is `GO` and at least one license-clear get-up/fall-recovery clip is accepted.
+## Prepare downloaded data
 
-## Source gate fields
+The prep step scans `.pkl` and `.npz` files, accepts get-up/fall-recovery-like
+clips, projects them to the active G1 23DoF joint order, and writes
+`manifest.json` plus `source_gate.json`.
 
-`source_gate.json` records:
+Use a real dataset revision.  For a Git clone, obtain it with:
 
-- `status`: `GO` or `STOP`.
-- `stop_reasons`: unresolved source/license, no accepted clips, unsupported joint
-  projection, etc.
-- `source_url` and `source_revision`.
-- `dataset_host_license`.
-- `upstream_license_restrictions`.
-- accepted/rejected sequence counts.
+```bash
+git -C data/raw/g1_getup_source/openhe/g1-retargeted-motions rev-parse HEAD
+```
 
-STOP means: keep using fixture smoke/tests only; do not report real-data training
-readiness.
-
-## Standardized NPZ schema
-
-Each accepted clip is written under `motions/` with:
-
-- `joint_pos`: `[T, 23]`, canonical active G1 23DoF joint order.
-- `joint_vel`: `[T, 23]`, same order.
-- `root_pos_w`: `[T, 3]`.
-- `root_quat_w`: `[T, 4]`, `wxyz`.
-- `amp_obs`: `[T, 53]`, concatenated root position, root quaternion, joint pos,
-  joint vel.
-- `joint_names`, `source_joint_names`, `fps`, `tags`, `source`, `license`, and
-  JSON `projection` metadata.
-
-Shape-only arrays are rejected.  Shuffled joints are reordered by name.  Known
-29DoF extras (`waist_roll_joint`, `waist_pitch_joint`, wrist pitch/yaw joints)
-are dropped only if every canonical 23DoF joint is present.
-
-## Commands
-
-### 1. Prepare/validate local data
-
-For fixture smoke:
+Prepare data:
 
 ```bash
 python scripts/prepare_g1_getup_amp_data.py \
-  --input tests/fixtures/g1_getup_amp \
-  --output /tmp/g1_getup_amp_fixture \
-  --validate-only
-```
-
-For real downloaded data, include source metadata:
-
-```bash
-python scripts/prepare_g1_getup_amp_data.py \
-  --input data/raw/g1_getup_source \
+  --input data/raw/g1_getup_source/openhe/g1-retargeted-motions \
   --output data/motions/g1_getup_amp \
   --source-url https://huggingface.co/datasets/openhe/g1-retargeted-motions \
-  --source-revision <commit-or-snapshot-id> \
+  --source-revision <dataset-commit-or-snapshot-id> \
   --source-license MIT \
-  --upstream-license "record ACCAD/LAFAN1/original subset restrictions" \
+  --upstream-license "ACCAD/LAFAN1/DanceDB/etc. original source restrictions reviewed" \
   --require-go
 ```
 
-### 2. One-iteration smoke training
+Training is blocked unless `data/motions/g1_getup_amp/source_gate.json` exists
+and has `"status": "GO"`.
+
+## Prepared data schema
+
+Each accepted `.npz` contains:
+
+```text
+joint_pos              [T, 23] canonical active G1 23DoF order
+joint_vel              [T, 23]
+root_pos_w             [T, 3]
+root_quat_w            [T, 4] wxyz
+amp_obs                [T, 53] root pos + root quat + joint pos + joint vel
+joint_names            [23]
+source_joint_names     [23]
+fps, tags, source, license, projection
+```
+
+The canonical joint order is derived from
+`src/assets/robots/unitree_g1/xmls/g1_23dof.xml`.  Shape-only data is rejected
+unless it is handled by an explicit source adapter such as the OpenHE `.pkl`
+adapter, which records that source-format assumption in the `projection` field.
+
+## Train
+
+Run formal AMP training from the prepared data directory:
 
 ```bash
 python scripts/train_getup_amp.py \
   --demo-data-dir data/motions/g1_getup_amp \
-  --max-iterations 1 \
-  --num-envs 4 \
-  --headless-smoke \
-  -- --agent.num-steps-per-env=2
+  --num-envs 4096 \
+  --max-iterations 10001
 ```
 
-The wrapper maps short flags to real `scripts/train.py`/Tyro overrides and runs
-`Unitree-G1-GetUp-AMP`.  The default `scripts/train_getup.py` remains the no-demo
-HoST path.
-
-### 3. Diagnostic JSON
+Equivalent generic entrypoint:
 
 ```bash
-python scripts/evaluate_getup_amp.py \
-  --demo-data-dir data/motions/g1_getup_amp \
-  --policy-mode random \
-  --compare-no-demo \
-  --max-steps 32 \
-  --viewer none \
-  --output /tmp/g1_getup_amp_eval.json
+python scripts/train.py Unitree-G1-GetUp-AMP \
+  --agent.algorithm.demo-data-dir=data/motions/g1_getup_amp \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
 ```
 
-The JSON contains torso-height, upright-alignment, termination, run-mode, AMP
-score/reward, and source-gate fields.  In this first pass it is a data-path and
-short-rollout diagnostic, not a naturalness certificate.
+The default no-demo terrain task remains:
 
-## Advanced: raw human motion → G1 demos
+```bash
+python scripts/train_getup.py --terrain ground -- --env.scene.num-envs=4096
+```
 
-If no public retargeted get-up clip passes validation:
+## Play
 
-1. Obtain raw motion under a license that allows your intended use.
-2. Retarget to the active G1 model using an external IK/retargeting tool.
-3. Export root position/quaternion and joint positions with explicit joint names.
-4. Convert quaternions to `wxyz` and velocities to rad/s.
-5. Smooth/filter obvious mocap spikes; remove clips with foot sliding, impossible
-   root heights, or self-collision artifacts.
-6. Run `scripts/prepare_g1_getup_amp_data.py --require-go` and inspect
-   `manifest.json`/`source_gate.json` before training.
+Replay the AMP checkpoint in Python/MuJoCo:
 
-A full retarget optimizer is intentionally not implemented in this pass.
+```bash
+python scripts/play.py Unitree-G1-GetUp-AMP \
+  --checkpoint_file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
+  --num_envs 1 \
+  --viewer native
+```
+
+Use `--viewer viser` for a browser viewer or `--video` if you want a recorded
+video in the run directory.  Keep `data/motions/g1_getup_amp/source_gate.json`
+available because the AMP algorithm config validates the demo-data gate when the
+runner is constructed.
+
+## Sim2Real / Unitree simulator path
+
+AMP is still a fallback policy and must pass the same simulator safety gates as
+the no-demo GetUp policy.  Do not put it on real hardware directly after
+training.
+
+1. Confirm Python play recovers from the intended ground fallen poses.
+2. Copy or symlink the exported policy into the GetUp deployment bundle:
+
+   ```bash
+   mkdir -p deploy/robots/g1_getup/config/policy/getup/v0/exported
+   cp logs/rsl_rl/g1_getup_amp/<run>/policy.onnx \
+     deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx
+   ```
+
+3. Build the controller:
+
+   ```bash
+   cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build
+   cmake --build deploy/robots/g1_getup/build -j4
+   ```
+
+4. Start Unitree MuJoCo simulator and then the controller on loopback:
+
+   ```bash
+   ./simulate/build/unitree_mujoco
+   ./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard
+   ```
+
+5. Use keyboard `f` then `g` (`Passive -> FixStand -> GetUp`) only after the
+   simulator robot is in the expected supported start state.
+
+6. For real robot testing, keep the robot physically supported, keep an operator
+   ready to switch to Passive, and verify action order/PD gains/torque limits
+   against the exported policy metadata first.
 
 ## Troubleshooting
 
-- **No accepted clips:** names/tags may not indicate get-up/fall recovery, or the
-  source genuinely lacks useful clips.
-- **Wrong joint count/order:** include `joint_names`; do not rely on shape.
-- **29DoF data rejected:** only known full-G1 extras can be dropped; missing
-  canonical joints fail closed.
-- **License STOP:** record dataset-host and upstream subset restrictions.
-- **No AMP reward in logs:** ensure task is `Unitree-G1-GetUp-AMP`, not the
-  default `Unitree-G1-GetUp`.
-- **NaN/Inf data:** clean/filter the raw clip before preparation.
+- **`source_gate.json` is STOP:** review source URL, revision, dataset license,
+  upstream license restrictions, and accepted clip count.
+- **No accepted clips:** inspect filenames under `ACCAD_retargeted/` and
+  `LAFAN1_retargeted/`; get-up-like names such as `Lie_to_crouch` are expected
+  to pass before generic locomotion clips.
+- **Training fails before env creation:** the source gate is missing or not GO.
+- **Policy looks unnatural:** curate fewer/higher-quality get-up clips before
+  increasing reward scale; do not enable platform/wall/slope AMP until ground
+  succeeds.
+- **Sim2Real mismatch:** check exported `policy.onnx`, joint order, action scale,
+  default pose, PD gains, and initial fallen geometry before tuning rewards.

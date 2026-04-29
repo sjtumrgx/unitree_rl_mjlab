@@ -26,7 +26,7 @@ The intended workflow is:
 | `scripts/play_parkour.py` | Depth-conditioned G1 Parkour replay and diagnostics. |
 | `scripts/play_antifall.py` | G1 AntiFall replay with native MuJoCo drag perturbations. |
 | `scripts/train_getup.py`, `scripts/play_getup.py` | GetUp convenience wrappers with terrain selection. |
-| `scripts/prepare_g1_getup_amp_data.py`, `scripts/train_getup_amp.py`, `scripts/evaluate_getup_amp.py` | Optional ground-only GetUp AMP/demo-data fallback workflow. |
+| `scripts/train_getup_amp.py` | Optional ground-only GetUp AMP/demo-data fallback training wrapper. |
 | `scripts/edit_parkour_scene.py` | Browser-based Viser editor for parkour terrain boxes. |
 | `deploy/robots/g1_parkour/` | C++/DDS G1 Parkour controller and policy runtime. |
 | `simulate/` | Unitree MuJoCo simulator integration and configuration. |
@@ -162,23 +162,16 @@ comparing checkpoints.
 Optional AMP/demo-data fallback, kept separate from the default no-demo task:
 
 ```bash
-python scripts/prepare_g1_getup_amp_data.py \
-  --input tests/fixtures/g1_getup_amp \
-  --output /tmp/g1_getup_amp_fixture \
-  --validate-only
-
 python scripts/train_getup_amp.py \
-  --demo-data-dir /tmp/g1_getup_amp_fixture \
-  --max-iterations 1 \
-  --num-envs 4 \
-  --headless-smoke \
-  -- --agent.num-steps-per-env=2
+  --demo-data-dir data/motions/g1_getup_amp \
+  --num-envs 4096 \
+  --max-iterations 10001
 ```
 
-The AMP path registers `Unitree-G1-GetUp-AMP`, is ground-only in this first
-pass, and refuses to train unless the prepared data directory contains a
-`source_gate.json` with `status: GO`.  See `doc/g1_getup_demo_data.md` before
-using real downloaded motions.
+Before running AMP training, download and prepare the retargeted G1 motion data
+as described in `doc/g1_getup_demo_data.md`.  The AMP path registers
+`Unitree-G1-GetUp-AMP`, is ground-only in this first pass, and refuses to train
+unless `data/motions/g1_getup_amp/source_gate.json` is `GO`.
 
 ### 1.4 G1 Parkour artifacts
 
@@ -235,20 +228,19 @@ python scripts/play_getup.py --terrain slope -- \
 The play terrain should match the terrain used for training unless you are
 intentionally testing terrain transfer.
 
-AMP data-path diagnostic:
+AMP fallback play uses the generic play entrypoint:
 
 ```bash
-python scripts/evaluate_getup_amp.py \
-  --demo-data-dir /tmp/g1_getup_amp_fixture \
-  --policy-mode random \
-  --compare-no-demo \
-  --max-steps 32 \
-  --viewer none \
-  --output /tmp/g1_getup_amp_eval.json
+python scripts/play.py Unitree-G1-GetUp-AMP \
+  --checkpoint_file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
+  --num_envs 1 \
+  --viewer native
 ```
 
-This diagnostic reports torso height, upright alignment, termination status, and
-AMP score/reward.  It is a smoke/diagnostic signal, not convergence proof.
+For Unitree simulator / C++ controller validation, copy the exported
+`logs/rsl_rl/g1_getup_amp/<run>/policy.onnx` into
+`deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx`, then use
+the existing GetUp controller build/run flow.
 
 ### 2.4 Parkour play and terrain editing
 

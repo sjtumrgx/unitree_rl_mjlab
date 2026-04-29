@@ -78,3 +78,46 @@ def test_projection_accepts_known_29dof_extras_only() -> None:
 
   assert projected.projection["source_joint_count"] == 29
   assert set(projected.projection["dropped_extra_joints"])
+
+
+def test_prepare_openhe_pkl_source_with_metadata(tmp_path: Path) -> None:
+  import pickle
+
+  T = 4
+  joint_pos = np.zeros((T, len(CANONICAL_G1_23DOF_JOINT_NAMES)), dtype=np.float32)
+  root_pos = np.stack(
+    [np.zeros(T), np.zeros(T), np.linspace(0.2, 0.7, T)], axis=1
+  ).astype(np.float32)
+  root_quat = np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (T, 1))
+  raw_dir = tmp_path / "raw"
+  raw_dir.mkdir()
+  pkl_path = raw_dir / "A10-_Lie_to_crouch_stageii.pkl"
+  with pkl_path.open("wb") as f:
+    pickle.dump(
+      {
+        "A10-_Lie_to_crouch_stageii.npz": {
+          "root_trans_offset": root_pos,
+          "root_rot": root_quat,
+          "dof": joint_pos,
+          "fps": np.array(30),
+        }
+      },
+      f,
+    )
+
+  output = tmp_path / "prepared"
+  result = prepare_amp_dataset(
+    raw_dir,
+    output,
+    source_url="https://huggingface.co/datasets/openhe/g1-retargeted-motions",
+    source_revision="test-revision",
+    source_license="MIT",
+    upstream_license="ACCAD/LAFAN1 restrictions recorded",
+  )
+
+  assert result["manifest"]["accepted_count"] == 1
+  assert result["source_gate"]["status"] == "GO"
+  standardized = Path(result["manifest"]["accepted"][0]["output_path"])
+  payload = np.load(standardized, allow_pickle=False)
+  assert payload["joint_pos"].shape == (T, 23)
+  assert "openhe_g1_retargeted_pkl" in str(payload["projection"])
