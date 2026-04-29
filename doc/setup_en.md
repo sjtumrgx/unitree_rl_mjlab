@@ -21,18 +21,42 @@ Headless machines can still run most validation commands with `--viewer none`,
 ## 2. Python environment
 
 ```bash
-conda create -n unitree_rl_mjlab python=3.11 -y
-conda activate unitree_rl_mjlab
-
 git clone https://github.com/sjtumrgx/unitree_rl_mjlab.git
 cd unitree_rl_mjlab
-pip install -e .
+
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv --python 3.11 .venv
+source .venv/bin/activate
+uv pip install -e .
 ```
 
 Core Python dependencies are pinned in `setup.py`:
 
 - `mjlab==1.2.0`
 - `mujoco-warp==3.5.0`
+
+### Policy-controller Python runtime (`rclpy + torch`)
+
+Use a separate `uv` environment for ROS 2 policy-controller Python nodes.
+`rclpy` usually comes from ROS apt packages and is tied to the ROS distro's
+system Python ABI, so expose ROS site-packages instead of forcing Python 3.11:
+
+```bash
+source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
+uv venv --python "$(command -v python3)" --system-site-packages .venv-policy
+source .venv-policy/bin/activate
+uv pip install --index-url https://download.pytorch.org/whl/cpu torch
+
+python - <<'PY'
+import rclpy
+import torch
+print('rclpy ok')
+print('torch', torch.__version__)
+PY
+```
+
+If `import rclpy` fails, install `sudo apt install ros-${ROS_DISTRO:-humble}-rclpy`
+and recreate `.venv-policy` after sourcing ROS.
 
 If you use extra visualization tools such as Viser or Matplotlib windows, install
 missing optional packages in the same environment.
