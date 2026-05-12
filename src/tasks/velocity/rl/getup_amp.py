@@ -121,6 +121,13 @@ class GetupAmpPPO(PPO):
     cfg["algorithm"].setdefault("amp_obs_dim", _infer_obs_group_dim(obs, amp_group))
     if cfg["algorithm"].get("amp_obs_dim") is None:
       raise ValueError(f"AMP observation group {amp_group!r} is missing from env observations")
+    # Forward env step_dt so the expert dataset can resample demos to match
+    # the policy's transition spacing.  Falls back to 0.02 (50 Hz) when the
+    # env wrapper does not expose step_dt (e.g., unit-test fakes).
+    env_step_dt = getattr(getattr(env, "unwrapped", env), "step_dt", None)
+    if env_step_dt is None:
+      env_step_dt = getattr(env, "step_dt", 0.02)
+    cfg["algorithm"].setdefault("amp_target_dt", float(env_step_dt))
     return PPO.construct_algorithm(obs, env, cfg, device)  # type: ignore[return-value]
 
   def __init__(
@@ -137,6 +144,9 @@ class GetupAmpPPO(PPO):
     amp_buffer_capacity: int = 65536,
     discriminator_grad_penalty: float = 0.0,
     require_demo_data: bool = True,
+    amp_target_dt: float = 0.02,
+    amp_getup_segments: bool = True,
+    amp_feature_layout: str = "yaw_invariant",
     **kwargs,
   ) -> None:
     super().__init__(*args, **kwargs)
@@ -151,7 +161,13 @@ class GetupAmpPPO(PPO):
 
     self.expert_dataset: AmpExpertDataset | None = None
     if self.manifest_path is not None and self.manifest_path.exists():
-      self.expert_dataset = AmpExpertDataset(self.manifest_path, device=self.device)
+      self.expert_dataset = AmpExpertDataset(
+        self.manifest_path,
+        device=self.device,
+        target_dt=float(amp_target_dt),
+        getup_segments=bool(amp_getup_segments),
+        feature_layout=str(amp_feature_layout),
+      )
       amp_obs_dim = self.expert_dataset.obs_dim
     elif require_demo_data:
       raise FileNotFoundError(

@@ -22,6 +22,11 @@ class GetupAmpPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
   amp_buffer_capacity: int = 65536
   discriminator_grad_penalty: float = 0.0
   require_demo_data: bool = True
+  # Demo resampling target step.  Overridden at construct time with the env's
+  # actual step_dt so the discriminator never sees mismatched temporal scales.
+  amp_target_dt: float = 0.02
+  amp_getup_segments: bool = True
+  amp_feature_layout: str = "yaw_invariant"
 
 
 def unitree_g1_getup_ppo_runner_cfg(terrain: str = "ground") -> RslRlOnPolicyRunnerCfg:

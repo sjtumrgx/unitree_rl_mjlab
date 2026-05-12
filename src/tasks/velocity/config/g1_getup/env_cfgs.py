@@ -375,6 +375,19 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
+  # Dense progress signal that survives the fallen-state zero-gradient trap.
+  # Without it the multiplicative host_task_reward stays at 0 in the supine
+  # start state and PPO has no gradient toward 'lift the torso'.
+  cfg.rewards["host_lift_progress"] = RewardTermCfg(
+    func=mdp.host_getup_lift_progress_reward,
+    weight=1.5,
+    params={
+      "min_height": 0.12,
+      "target_height": 0.55,
+      "orientation_floor": -1.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
   cfg.rewards["host_action_smoothness"] = RewardTermCfg(
     func=mdp.host_action_smoothness_penalty,
     weight=-0.01,

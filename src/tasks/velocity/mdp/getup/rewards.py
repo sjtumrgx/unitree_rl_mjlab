@@ -126,13 +126,12 @@ def host_getup_task_reward(
   max_body_support_count: float = 1.0,
   asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
 ) -> torch.Tensor:
-  """HoST task reward approximation: orientation × head/torso height × support.
+  """Strict HoST end-state reward (kept multiplicative for anti-reward-hack).
 
-  The failed reward stack paid `facing_up` and `torso_lift` independently.  HoST
-  multiplies task terms, so a policy receives little task reward unless it is
-  both upright and tall.  This MJLab-compatible scalar term also requires foot
-  support and reduced non-foot body support to avoid the observed reward hack:
-  an upright torso/legs posture lying on or floating above the ground.
+  Paid only when the policy is simultaneously upright, tall, on its feet and
+  not body-supported.  This is the *terminal* part of the get-up curriculum.
+  Use ``host_getup_lift_progress_reward`` for the dense progress signal that
+  shapes exploration from the fallen state.
   """
 
   asset: Entity = env.scene[asset_cfg.name]
@@ -154,11 +153,53 @@ def host_getup_task_reward(
   return orientation * height * feet_gate * body_gate
 
 
+def host_getup_lift_progress_reward(
+  env: ManagerBasedRlEnv,
+  min_height: float = 0.12,
+  target_height: float = 0.55,
+  orientation_floor: float = -1.0,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """Dense early-stage progress reward to break the zero-gradient trap.
+
+  ``host_getup_task_reward`` evaluates to exactly zero in the fallen start
+  state (orientation gate ≈ 0, body gate = 0, feet gate = 0), so PPO had no
+  exploration signal toward 'lift the torso'.  This term provides a soft,
+  always-non-negative gradient that grows with torso height progress from
+  the supine z (~0.1 m) up to the standing phase target (~0.55 m), weighted
+  by upright alignment progress from ``orientation_floor`` upward so it
+  doesn't reward purely passive falls.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
+  height_progress = torch.clamp(
+    (torso_height - min_height) / max(target_height - min_height, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  alignment = _upright_alignment(asset.data.projected_gravity_b)
+  alignment_progress = torch.clamp(
+    (alignment - orientation_floor) / max(1.0 - orientation_floor, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  # Mix: 70% height progress (primary direction), 30% alignment progress.
+  return 0.7 * height_progress + 0.3 * alignment_progress
+
+
 def host_action_smoothness_penalty(
   env: ManagerBasedRlEnv,
   action_rate_weight: float = 1.0,
   smoothness_weight: float = 1.0,
+  max_penalty: float = 50.0,
 ) -> torch.Tensor:
+  """Bounded HoST action smoothness penalty.
+
+  Without an upper bound, second-order smoothness over 23 dof at action-clip 5
+  can reach ~9200 per step.  At weight -0.01 and scale_by_dt this still wipes
+  out the host_task_reward, so clip per-step before the manager scales by dt.
+  """
+
   action_manager = getattr(env, "action_manager", None)
   if action_manager is None:
     return torch.zeros(env.num_envs, device=env.device)
@@ -167,7 +208,8 @@ def host_action_smoothness_penalty(
   prev_prev_action = action_manager.prev_prev_action
   rate = torch.sum(torch.square(action - prev_action), dim=1)
   smoothness = torch.sum(torch.square(action - 2.0 * prev_action + prev_prev_action), dim=1)
-  return action_rate_weight * rate + smoothness_weight * smoothness
+  penalty = action_rate_weight * rate + smoothness_weight * smoothness
+  return _bounded_nonnegative_penalty(penalty, max_penalty=max_penalty)
 
 
 def host_joint_tracking_penalty(
@@ -237,14 +279,26 @@ def host_target_standing_reward(
   target_base_height_phase3: float = 0.65,
   asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
 ) -> torch.Tensor:
+  """Soft standing-pose reward.
+
+  The original exp(-20*|h-target|) collapses to zero for any miss beyond ~15 cm,
+  giving no gradient early.  Use a gentler height kernel (std ~0.2 m) and a
+  soft feet/body gate so partial progress still gets credit.
+  """
   asset: Entity = env.scene[asset_cfg.name]
   torso_height = _torso_height(env, asset_cfg=asset_cfg)
-  standing = torso_height >= target_base_height_phase3
-  feet_supported = _contact_count(env, feet_sensor_name) >= 1.0
-  no_body_support = _contact_count(env, body_sensor_name) <= 1.0
-  orientation = torch.exp(-5.0 * torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1))
-  height = torch.exp(-20.0 * torch.abs(torso_height - base_height_target))
-  return orientation * height * (standing & feet_supported & no_body_support).float()
+  feet_count = _contact_count(env, feet_sensor_name)
+  body_count = _contact_count(env, body_sensor_name)
+  feet_gate = torch.clamp(feet_count / 2.0, min=0.0, max=1.0)
+  body_gate = 1.0 - torch.clamp((body_count - 1.0) / 2.0, min=0.0, max=1.0)
+  standing_gate = torch.clamp(
+    (torso_height - target_base_height_phase3) / max(0.1, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  orientation = torch.exp(-2.0 * torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1))
+  height = torch.exp(-torch.square(torso_height - base_height_target) / max(0.2 ** 2, 1e-6))
+  return orientation * height * standing_gate * feet_gate * (0.25 + 0.75 * body_gate)
 
 
 def getup_posture_reward(

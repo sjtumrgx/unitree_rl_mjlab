@@ -184,6 +184,114 @@ def amp_obs_from_motion_arrays(
   return np.concatenate([root_pos_w, root_quat_w, joint_pos, joint_vel], axis=1).astype(np.float32)
 
 
+def _yaw_invariant_quat_wxyz_np(quat_wxyz: np.ndarray) -> np.ndarray:
+  """Numpy equivalent of the env-side yaw-invariant quaternion transform."""
+  q = np.asarray(quat_wxyz, dtype=np.float32)
+  w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+  yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+  half = -0.5 * yaw
+  yw, yz = np.cos(half), np.sin(half)
+  new_w = yw * w - yz * z
+  new_x = yw * x - yz * y
+  new_y = yw * y + yz * x
+  new_z = yw * z + yz * w
+  out = np.stack([new_w, new_x, new_y, new_z], axis=-1).astype(np.float32)
+  norm = np.clip(np.linalg.norm(out, axis=-1, keepdims=True), 1e-6, None)
+  return out / norm
+
+
+def amp_obs_yaw_invariant(
+  root_pos_w: np.ndarray,
+  root_quat_w: np.ndarray,
+  joint_pos: np.ndarray,
+  joint_vel: np.ndarray,
+) -> np.ndarray:
+  """Heading-invariant AMP features: [root_z, yaw_free_quat, joint_pos, joint_vel].
+
+  Mirrors `src/tasks/velocity/mdp/getup/amp_observations.py:amp_getup_features`
+  so demo and env observations live in the same distribution.  Dropping XY
+  removes a confound that previously let the discriminator separate by
+  absolute world position alone.
+  """
+  root_pos_w = np.asarray(root_pos_w, dtype=np.float32)
+  root_quat_w = np.asarray(root_quat_w, dtype=np.float32)
+  joint_pos = np.asarray(joint_pos, dtype=np.float32)
+  joint_vel = np.asarray(joint_vel, dtype=np.float32)
+  z = root_pos_w[:, 2:3]
+  quat = _yaw_invariant_quat_wxyz_np(root_quat_w)
+  return np.concatenate([z, quat, joint_pos, joint_vel], axis=1).astype(np.float32)
+
+
+def _resample_motion_to_dt(
+  joint_pos: np.ndarray,
+  root_pos_w: np.ndarray,
+  root_quat_w: np.ndarray,
+  source_fps: float,
+  target_dt: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+  """Resample a clip from source_fps to 1/target_dt and recompute joint_vel.
+
+  Linear interpolation is sufficient because the resulting joint_vel is
+  computed by finite differences over the resampled grid, matching the env's
+  per-step velocity time scale.
+  """
+  source_dt = 1.0 / float(source_fps)
+  num_source = int(joint_pos.shape[0])
+  duration = (num_source - 1) * source_dt
+  num_target = max(2, int(round(duration / float(target_dt))) + 1)
+  t_source = np.arange(num_source, dtype=np.float32) * source_dt
+  t_target = np.linspace(0.0, duration, num_target, dtype=np.float32)
+
+  def _interp(arr: np.ndarray) -> np.ndarray:
+    out = np.empty((num_target, arr.shape[1]), dtype=np.float32)
+    for c in range(arr.shape[1]):
+      out[:, c] = np.interp(t_target, t_source, arr[:, c])
+    return out
+
+  jp = _interp(joint_pos)
+  rp = _interp(root_pos_w)
+  rq = _interp(root_quat_w)
+  rq = rq / np.clip(np.linalg.norm(rq, axis=1, keepdims=True), 1e-6, None)
+  jv = np.gradient(jp, axis=0).astype(np.float32) / float(target_dt)
+  return jp, jv, rp, rq.astype(np.float32)
+
+
+def _extract_getup_segments(
+  root_pos_w: np.ndarray,
+  *,
+  fallen_height: float = 0.30,
+  standing_height: float = 0.55,
+  pad_frames: int = 5,
+) -> list[tuple[int, int]]:
+  """Find contiguous frame ranges spanning an actual fall->stand-up rise.
+
+  Random sampling over the full LAFAN clip is dominated by the standing-walking
+  segments; the discriminator learns 'be tall' rather than 'perform a get-up'.
+  Returning explicit (start, end) ranges that contain a transition from
+  ``z < fallen_height`` up through ``z >= standing_height`` lets the dataset
+  sample inside each segment without straddling unrelated content.
+  """
+  z = np.asarray(root_pos_w, dtype=np.float32)[:, 2]
+  n = z.shape[0]
+  segments: list[tuple[int, int]] = []
+  i = 0
+  while i < n:
+    if z[i] < fallen_height:
+      j = i
+      while j < n and z[j] < standing_height:
+        j += 1
+      if j < n:  # only keep segments that actually reach standing
+        start = max(0, i - pad_frames)
+        end = min(n - 1, j + pad_frames)
+        segments.append((start, end))
+        i = end + 1
+      else:
+        break
+    else:
+      i += 1
+  return segments
+
+
 def _metadata_from_npz(payload: np.lib.npyio.NpzFile, path: Path) -> dict[str, Any]:
   tags = _to_str_tuple(payload["tags"]) if "tags" in payload else (path.stem,)
   source = _to_str(payload["source"]) if "source" in payload else "local-fixture"
@@ -610,34 +718,109 @@ def validate_amp_source_gate(manifest_path: str | Path) -> dict[str, Any]:
 
 
 class AmpExpertDataset:
-  """Expert transition sampler for GetUp AMP."""
+  """Expert transition sampler for GetUp AMP.
 
-  def __init__(self, manifest_path: str | Path, device: str | torch.device = "cpu"):
+  Three correctness invariants over the legacy implementation:
+    1. Per-sequence boundary tracking — sampled (t, t+1) pairs never cross
+       motion files concatenated end-to-end.
+    2. Resample each motion to ``target_dt`` so the demo and env share the
+       same temporal scale.  Joint velocity is recomputed by finite differences
+       at the new spacing instead of trusting the source's ``np.gradient * fps``.
+    3. Use a yaw-invariant feature layout (drops world XY, removes yaw from
+       root_quat) so policy and demo observations live in the same heading
+       frame.  See ``amp_obs_yaw_invariant``.
+
+  When ``getup_segments=True`` only frame ranges that actually contain a fall
+  -> stand-up transition are kept, so random pair samples reflect the
+  recovery skill rather than the dominant standing-walking content.
+  """
+
+  def __init__(
+    self,
+    manifest_path: str | Path,
+    device: str | torch.device = "cpu",
+    *,
+    target_dt: float = 0.02,
+    getup_segments: bool = True,
+    fallen_height: float = 0.30,
+    standing_height: float = 0.55,
+    feature_layout: str = "yaw_invariant",
+  ):
     manifest_path = Path(manifest_path)
     self.source_gate = validate_amp_source_gate(manifest_path)
     manifest = json.loads(manifest_path.read_text())
     accepted = manifest.get("accepted", [])
     if not accepted:
       raise ValueError(f"AMP manifest has no accepted sequences: {manifest_path}")
-    obs_arrays = []
+
+    obs_arrays: list[np.ndarray] = []
+    boundaries: list[int] = []
+    cursor = 0
     for item in accepted:
       output_path = item.get("output_path")
       if not output_path:
         continue
       payload = np.load(output_path, allow_pickle=False)
-      if "amp_obs" not in payload:
-        payload_amp = amp_obs_from_motion_arrays(
-          payload["root_pos_w"], payload["root_quat_w"], payload["joint_pos"], payload["joint_vel"]
+      joint_pos = np.asarray(payload["joint_pos"], dtype=np.float32)
+      root_pos = np.asarray(payload["root_pos_w"], dtype=np.float32)
+      root_quat = np.asarray(payload["root_quat_w"], dtype=np.float32)
+      source_fps = float(np.asarray(payload["fps"]).reshape(-1)[0])
+
+      # Resample to env dt; recompute joint_vel at target spacing.
+      joint_pos_r, joint_vel_r, root_pos_r, root_quat_r = _resample_motion_to_dt(
+        joint_pos, root_pos, root_quat, source_fps=source_fps, target_dt=float(target_dt)
+      )
+
+      # Optionally crop to actual fall->stand segments.
+      if getup_segments:
+        segments = _extract_getup_segments(
+          root_pos_r, fallen_height=fallen_height, standing_height=standing_height
         )
       else:
-        payload_amp = payload["amp_obs"]
-      obs_arrays.append(np.asarray(payload_amp, dtype=np.float32))
+        segments = [(0, joint_pos_r.shape[0] - 1)]
+
+      for start, end in segments:
+        if end - start < 2:
+          continue
+        if feature_layout == "yaw_invariant":
+          seg_obs = amp_obs_yaw_invariant(
+            root_pos_r[start : end + 1],
+            root_quat_r[start : end + 1],
+            joint_pos_r[start : end + 1],
+            joint_vel_r[start : end + 1],
+          )
+        else:
+          seg_obs = amp_obs_from_motion_arrays(
+            root_pos_r[start : end + 1],
+            root_quat_r[start : end + 1],
+            joint_pos_r[start : end + 1],
+            joint_vel_r[start : end + 1],
+          )
+        obs_arrays.append(np.asarray(seg_obs, dtype=np.float32))
+        cursor += seg_obs.shape[0]
+        boundaries.append(cursor)
+
     if not obs_arrays:
-      raise ValueError(f"AMP manifest accepted entries have no standardized output files: {manifest_path}")
+      raise ValueError(
+        f"AMP manifest produced no usable get-up segments: {manifest_path}. "
+        "Check fallen/standing height thresholds or disable getup_segments."
+      )
     self.manifest_path = manifest_path
+    self.target_dt = float(target_dt)
+    self.feature_layout = str(feature_layout)
     self.amp_obs = torch.tensor(np.concatenate(obs_arrays, axis=0), dtype=torch.float32, device=device)
     if self.amp_obs.shape[0] < 2:
       raise ValueError("AMP expert dataset requires at least two frames")
+
+    # boundaries[k] = exclusive end index of sequence k; previous = inclusive start.
+    starts = [0, *boundaries[:-1]]
+    valid_pair_starts: list[int] = []
+    for s, e in zip(starts, boundaries):
+      # last frame of each sequence has no valid t+1 partner -> drop it.
+      valid_pair_starts.extend(range(s, max(s, e - 1)))
+    if not valid_pair_starts:
+      raise ValueError("AMP expert dataset has no within-sequence transitions")
+    self._pair_start_indices = torch.tensor(valid_pair_starts, dtype=torch.long, device=device)
 
   @property
   def obs_dim(self) -> int:
@@ -648,6 +831,7 @@ class AmpExpertDataset:
     return self.amp_obs[idx]
 
   def sample_transitions(self, batch_size: int) -> torch.Tensor:
-    max_start = self.amp_obs.shape[0] - 1
-    idx = torch.randint(0, max_start, (batch_size,), device=self.amp_obs.device)
-    return torch.cat([self.amp_obs[idx], self.amp_obs[idx + 1]], dim=-1)
+    pool = self._pair_start_indices
+    pick = torch.randint(0, pool.shape[0], (int(batch_size),), device=pool.device)
+    starts = pool[pick]
+    return torch.cat([self.amp_obs[starts], self.amp_obs[starts + 1]], dim=-1)
