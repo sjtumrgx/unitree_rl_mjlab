@@ -24,6 +24,8 @@ class HostRelativeJointPositionActionCfg(JointPositionActionCfg):
 
   use_default_offset: bool = False
   unactuated_timesteps: int = 0
+  max_delta: float | None = None
+  """Optional per-step delta clamp for current-pose get-up actions."""
 
   def build(self, env: ManagerBasedRlEnv) -> HostRelativeJointPositionAction:
     return HostRelativeJointPositionAction(self, env)
@@ -55,11 +57,17 @@ class HostRelativeJointPositionAction(JointPositionAction):
       if action_rescale.ndim == 1:
         action_rescale = action_rescale.unsqueeze(1)
       self._processed_actions = self._processed_actions * action_rescale
+    if self.cfg.max_delta is not None:
+      max_delta = float(self.cfg.max_delta)
+      if max_delta <= 0.0:
+        raise ValueError("HostRelativeJointPositionActionCfg.max_delta must be positive when set")
+      self._processed_actions = self._processed_actions.clamp(-max_delta, max_delta)
 
   def apply_actions(self) -> None:
     current_joint_pos = self._entity.data.joint_pos[:, self._target_ids]
     encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
     target = current_joint_pos + self._processed_actions - encoder_bias
+    setattr(self._env, "_host_getup_joint_position_delta", self._processed_actions.detach().clone())
     setattr(self._env, "_host_getup_joint_position_target", target.detach().clone())
     setattr(self._env, "_host_getup_joint_target_ids", self._target_ids.detach().clone())
     self._entity.set_joint_position_target(target, joint_ids=self._target_ids)

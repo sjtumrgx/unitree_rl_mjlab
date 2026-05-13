@@ -99,6 +99,7 @@ def test_getup_actor_history_and_unactuated_contract_match_host_ground() -> None
     assert action_cfg.unactuated_timesteps == 30
     assert action_cfg.scale == 1.0
     assert action_cfg.use_default_offset is False
+    assert action_cfg.max_delta == 1.0
 
 
 def test_getup_assist_uses_host_curriculum_not_fixed_force_crutch() -> None:
@@ -225,6 +226,32 @@ def test_host_relative_action_zeros_delta_during_unactuated_startup() -> None:
   assert torch.allclose(action.raw_action[0], raw[0])
   assert torch.allclose(target[0], torch.zeros(3))
   assert torch.allclose(target[1], raw[1])
+
+
+def test_host_relative_action_clamps_current_pose_delta_after_startup() -> None:
+  from src.tasks.velocity.mdp.getup.actions import HostRelativeJointPositionActionCfg
+
+  env = _FakeActionEnv()
+  env.episode_length_buf[:] = 31
+  action = HostRelativeJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=1.0,
+    unactuated_timesteps=30,
+    max_delta=0.75,
+  ).build(env)
+
+  raw = torch.tensor([[2.0, -2.0, 0.5], [0.25, -0.25, 1.5]])
+  action.process_actions(raw)
+  action.apply_actions()
+
+  target = env.scene["robot"].targets
+  assert target is not None
+  assert torch.allclose(
+    target,
+    torch.tensor([[0.75, -0.75, 0.5], [0.25, -0.25, 0.75]]),
+  )
+  assert torch.allclose(env._host_getup_joint_position_delta, target)
 
 
 class _FakeContactSensor:

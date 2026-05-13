@@ -234,11 +234,16 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
     from src.tasks.velocity.config.g1_getup.env_cfgs import unitree_g1_getup_env_cfg
     from src.tasks.velocity.config.g1_getup.rl_cfg import unitree_g1_getup_ppo_runner_cfg
 
-    args = replace(
-      args,
-      env=unitree_g1_getup_env_cfg(terrain=args.getup_terrain),
-      agent=unitree_g1_getup_ppo_runner_cfg(terrain=args.getup_terrain),
-    )
+    terrain_env_cfg = unitree_g1_getup_env_cfg(terrain=args.getup_terrain)
+    terrain_agent_cfg = unitree_g1_getup_ppo_runner_cfg(terrain=args.getup_terrain)
+    terrain_env_cfg.scene.num_envs = args.env.scene.num_envs
+    terrain_agent_cfg.max_iterations = args.agent.max_iterations
+    terrain_agent_cfg.num_steps_per_env = args.agent.num_steps_per_env
+    terrain_agent_cfg.save_interval = args.agent.save_interval
+    terrain_agent_cfg.logger = args.agent.logger
+    terrain_agent_cfg.upload_model = args.agent.upload_model
+    terrain_agent_cfg.seed = args.agent.seed
+    args = replace(args, env=terrain_env_cfg, agent=terrain_agent_cfg)
 
   # Create log directory once before launching workers.
   log_root_path = Path("logs") / "rsl_rl" / args.agent.experiment_name

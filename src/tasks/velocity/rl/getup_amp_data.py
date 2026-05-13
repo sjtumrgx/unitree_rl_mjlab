@@ -52,7 +52,7 @@ def canonical_g1_23dof_joint_names() -> tuple[str, ...]:
 
 
 CANONICAL_G1_23DOF_JOINT_NAMES = canonical_g1_23dof_joint_names()
-AMP_OBS_DIM = 3 + 4 + 2 * len(CANONICAL_G1_23DOF_JOINT_NAMES)
+AMP_OBS_DIM = 1 + 4 + 2 * len(CANONICAL_G1_23DOF_JOINT_NAMES)
 
 
 @dataclass(frozen=True)

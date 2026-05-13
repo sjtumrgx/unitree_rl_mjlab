@@ -109,6 +109,7 @@ _GETUP_HARD_VELOCITY_RANGE = {
 _HOST_GETUP_UNACTUATED_TIMESTEPS = 30
 _HOST_GETUP_INITIAL_ACTION_SCALE = 1.0
 _HOST_GETUP_MIN_ACTION_SCALE = 0.25
+_HOST_GETUP_MAX_ACTION_DELTA = 1.0
 _HOST_GETUP_TARGET_JOINT_ANGLES = {
   "left_hip_yaw_joint": 0.0,
   "left_hip_roll_joint": 0.0,
@@ -443,6 +444,7 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
     actuator_names=(".*",),
     scale=1.0,
     unactuated_timesteps=_HOST_GETUP_UNACTUATED_TIMESTEPS,
+    max_delta=_HOST_GETUP_MAX_ACTION_DELTA,
   )
   _apply_zero_command_profile(cfg)
   _set_train_getup_terrain_mix(cfg)
@@ -470,6 +472,12 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
         "unactuated_timesteps": _HOST_GETUP_UNACTUATED_TIMESTEPS,
         "orientation_projected_gravity_z_max": -0.8,
         "no_orientation_gate": False,
+        "stable_success_required": True,
+        "upright_alignment_threshold": 0.85,
+        "feet_sensor_name": "feet_ground_contact",
+        "body_sensor_name": "support_body_contact",
+        "min_feet_contact_count": 1.0,
+        "max_body_support_count": 1.0,
         "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
       },
     )
@@ -560,9 +568,10 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
           "x": (-0.15, 0.15),
           "y": (-0.15, 0.15),
           # reset_root_state_uniform() is relative to the standing default root pose.
-          # Use negative z-offsets so fallen presets start on terrain instead of at
-          # standing height with a long passive drop before recovery begins.
-          "z": (-0.7, -0.6),
+          # Supine uses a higher fallen-but-not-standing z-offset than side
+          # resets: the lower side-lying offset penetrates the supine torso/limb
+          # stack and creates an upward contact impulse before policy action.
+          "z": (-0.35, -0.25),
           "roll": (3.14159 - 0.3, 3.14159 + 0.3),
           "pitch": (-0.3, 0.3),
           "yaw": (-3.14159, 3.14159),

@@ -28,10 +28,10 @@ _DEFAULT_PRESETS: tuple[dict[str, object], ...] = (
       "x": (-0.15, 0.15),
       "y": (-0.15, 0.15),
       # reset_root_state_uniform() samples relative to the standing default root state.
-      # Fallen starts therefore need a large negative z-offset to place the body on terrain
-      # rather than spawning in the air at standing height and wasting the first recovery
-      # steps on a passive fall.
-      "z": (-0.7, -0.6),
+      # Supine has the thickest torso/limb contact stack.  The side-lying z offset
+      # penetrates too deeply and creates an upward contact impulse before the
+      # policy acts, so supine uses a higher fallen-but-not-standing placement.
+      "z": (-0.35, -0.25),
       "roll": (math.pi - 0.3, math.pi + 0.3),
       "pitch": (-0.3, 0.3),
       "yaw": (-math.pi, math.pi),
@@ -168,6 +168,68 @@ def _preset_weights_for_step(
   return weights
 
 
+def _ids_from_cfg(ids: list[int] | slice, total_count: int, device: torch.device | str) -> torch.Tensor:
+  if isinstance(ids, slice):
+    return torch.arange(total_count, device=device, dtype=torch.long)[ids]
+  return torch.as_tensor(ids, device=device, dtype=torch.long)
+
+
+def _validate_reset_joint_targets(
+  *,
+  selected_preset_names: Sequence[str],
+  joint_targets: dict[str, dict[str, float]],
+  joint_name_to_index: dict[str, int],
+  active_joint_ids: torch.Tensor,
+) -> None:
+  active_joint_id_set = {int(joint_id) for joint_id in active_joint_ids.detach().cpu().tolist()}
+  for preset_name in selected_preset_names:
+    targets = joint_targets.get(preset_name)
+    if not targets:
+      raise ValueError(f"get-up reset preset {preset_name!r} has no joint targets")
+    unknown = sorted(name for name in targets if name not in joint_name_to_index)
+    if unknown:
+      raise ValueError(f"get-up reset preset {preset_name!r} references unknown joints: {unknown}")
+    inactive = sorted(
+      name
+      for name in targets
+      if int(joint_name_to_index[name]) not in active_joint_id_set
+    )
+    if inactive:
+      raise ValueError(
+        f"get-up reset preset {preset_name!r} references joints outside asset_cfg.joint_ids: {inactive}"
+      )
+
+
+def _stable_getup_success_mask(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  *,
+  asset,
+  body_ids,
+  success_height_threshold: float,
+  upright_alignment_threshold: float,
+  feet_sensor_name: str | None,
+  body_sensor_name: str | None,
+  min_feet_contact_count: float,
+  max_body_support_count: float,
+) -> torch.Tensor:
+  torso_height = _relative_torso_height(env, asset, body_ids, env_ids)
+  height_ok = torso_height > float(success_height_threshold)
+  upright = _upright_alignment(asset.data.projected_gravity_b[env_ids]) >= float(upright_alignment_threshold)
+  support_ok = torch.ones_like(height_ok, dtype=torch.bool, device=env.device)
+  if feet_sensor_name:
+    feet_found = env.scene[feet_sensor_name].data.found
+    assert feet_found is not None
+    feet_count = (feet_found[env_ids] > 0).float().flatten(start_dim=1).sum(dim=1)
+    support_ok &= feet_count >= float(min_feet_contact_count)
+  if body_sensor_name:
+    body_found = env.scene[body_sensor_name].data.found
+    assert body_found is not None
+    body_count = (body_found[env_ids] > 0).float().flatten(start_dim=1).sum(dim=1)
+    support_ok &= body_count <= float(max_body_support_count)
+  return height_ok & upright & support_ok
+
+
 def _mark_recovery_reset(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,
@@ -246,6 +308,12 @@ class apply_host_getup_assist_force:
     self._action_scale_decay = float(cfg.params.get("action_scale_decay", 0.02))
     self._min_force_n = float(cfg.params.get("min_force_n", 0.0))
     self._min_action_scale = float(cfg.params.get("min_action_scale", 0.25))
+    self._stable_success_required = bool(cfg.params.get("stable_success_required", True))
+    self._upright_alignment_threshold = float(cfg.params.get("upright_alignment_threshold", 0.85))
+    self._feet_sensor_name = cfg.params.get("feet_sensor_name")
+    self._body_sensor_name = cfg.params.get("body_sensor_name")
+    self._min_feet_contact_count = float(cfg.params.get("min_feet_contact_count", 1.0))
+    self._max_body_support_count = float(cfg.params.get("max_body_support_count", 1.0))
     get_host_getup_curriculum_state(
       env,
       initial_force_n=self._initial_force_n,
@@ -266,8 +334,22 @@ class apply_host_getup_assist_force:
     unactuated_timesteps: int = 30,
     orientation_projected_gravity_z_max: float = -0.8,
     no_orientation_gate: bool = False,
+    stable_success_required: bool = True,
+    upright_alignment_threshold: float = 0.85,
+    feet_sensor_name: str | None = None,
+    body_sensor_name: str | None = None,
+    min_feet_contact_count: float = 1.0,
+    max_body_support_count: float = 1.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   ) -> None:
+    del (
+      stable_success_required,
+      upright_alignment_threshold,
+      feet_sensor_name,
+      body_sensor_name,
+      min_feet_contact_count,
+      max_body_support_count,
+    )
     if env_ids is None:
       env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
     state = get_host_getup_curriculum_state(
@@ -311,6 +393,19 @@ class apply_host_getup_assist_force:
       return
 
     succeeded = state["max_torso_height"][env_ids_t] > self._success_height_threshold
+    if self._stable_success_required:
+      succeeded &= _stable_getup_success_mask(
+        self._env,
+        env_ids_t,
+        asset=self._asset,
+        body_ids=self._body_ids,
+        success_height_threshold=self._success_height_threshold,
+        upright_alignment_threshold=self._upright_alignment_threshold,
+        feet_sensor_name=self._feet_sensor_name,
+        body_sensor_name=self._body_sensor_name,
+        min_feet_contact_count=self._min_feet_contact_count,
+        max_body_support_count=self._max_body_support_count,
+      )
     if torch.any(succeeded):
       selected = env_ids_t[succeeded]
       state["force_n"][selected] = torch.clamp(
@@ -466,17 +561,33 @@ def reset_joints_from_presets(
   preset_indices: torch.Tensor = state["preset_index"][ids]
   joint_targets = _DEFAULT_JOINT_PRESET_TARGETS if preset_joint_targets is None else preset_joint_targets
   joint_name_to_index = {name: idx for idx, name in enumerate(asset.joint_names)}
+  active_joint_ids = _ids_from_cfg(asset_cfg.joint_ids, len(asset.joint_names), env.device)
+  selected_preset_names = tuple(
+    preset_names[int(preset_idx)]
+    for preset_idx in torch.unique(preset_indices).detach().cpu().tolist()
+    if int(preset_idx) >= 0 and int(preset_idx) < len(preset_names)
+  )
+  if len(selected_preset_names) != int(torch.unique(preset_indices).numel()):
+    raise ValueError(
+      f"get-up reset preset index is outside preset_names: "
+      f"indices={torch.unique(preset_indices).detach().cpu().tolist()}, preset_names={preset_names}"
+    )
+  _validate_reset_joint_targets(
+    selected_preset_names=selected_preset_names,
+    joint_targets=joint_targets,
+    joint_name_to_index=joint_name_to_index,
+    active_joint_ids=active_joint_ids,
+  )
 
+  active_joint_position = {int(joint_id): pos for pos, joint_id in enumerate(active_joint_ids.detach().cpu().tolist())}
   for preset_idx, preset_name in enumerate(preset_names):
     selected_mask = preset_indices == preset_idx
     if not torch.any(selected_mask):
       continue
     selected_rows = selected_mask.nonzero(as_tuple=False).squeeze(-1)
-    for joint_name, target in joint_targets.get(preset_name, {}).items():
-      joint_idx = joint_name_to_index.get(joint_name)
-      if joint_idx is None:
-        continue
-      joint_pos[selected_rows, joint_idx] = target
+    for joint_name, target in joint_targets[preset_name].items():
+      joint_idx = int(joint_name_to_index[joint_name])
+      joint_pos[selected_rows, active_joint_position[joint_idx]] = target
 
   if position_noise_range != (0.0, 0.0):
     joint_pos += envs_mdp.sample_uniform(*position_noise_range, joint_pos.shape, env.device)
