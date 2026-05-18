@@ -36,6 +36,36 @@ class HostRelativeJointPositionAction(JointPositionAction):
 
   cfg: HostRelativeJointPositionActionCfg
 
+  def __init__(self, cfg: HostRelativeJointPositionActionCfg, env: ManagerBasedRlEnv):
+    super().__init__(cfg=cfg, env=env)
+    self._effective_actions = self._processed_actions.clone()
+    self._prev_effective_actions = self._processed_actions.clone()
+    self._prev_prev_effective_actions = self._processed_actions.clone()
+    self._publish_effective_action_history()
+
+  @property
+  def effective_action(self):
+    """Action deltas that are actually applied after HoST get-up gating."""
+
+    return self._effective_actions
+
+  @property
+  def prev_effective_action(self):
+    """Previous applied HoST get-up action deltas."""
+
+    return self._prev_effective_actions
+
+  @property
+  def prev_prev_effective_action(self):
+    """Applied HoST get-up action deltas from two policy steps ago."""
+
+    return self._prev_prev_effective_actions
+
+  def _publish_effective_action_history(self) -> None:
+    setattr(self._env, "_host_getup_effective_action", self._effective_actions)
+    setattr(self._env, "_host_getup_prev_effective_action", self._prev_effective_actions)
+    setattr(self._env, "_host_getup_prev_prev_effective_action", self._prev_prev_effective_actions)
+
   def process_actions(self, actions):
     super().process_actions(actions)
     startup_steps = max(0, int(self.cfg.unactuated_timesteps))
@@ -62,6 +92,10 @@ class HostRelativeJointPositionAction(JointPositionAction):
       if max_delta <= 0.0:
         raise ValueError("HostRelativeJointPositionActionCfg.max_delta must be positive when set")
       self._processed_actions = self._processed_actions.clamp(-max_delta, max_delta)
+    self._prev_prev_effective_actions[:] = self._prev_effective_actions
+    self._prev_effective_actions[:] = self._effective_actions
+    self._effective_actions[:] = self._processed_actions
+    self._publish_effective_action_history()
 
   def apply_actions(self) -> None:
     current_joint_pos = self._entity.data.joint_pos[:, self._target_ids]
@@ -77,3 +111,7 @@ class HostRelativeJointPositionAction(JointPositionAction):
       env_ids = slice(None)
     self._raw_actions[env_ids] = 0.0
     self._processed_actions[env_ids] = 0.0
+    self._effective_actions[env_ids] = 0.0
+    self._prev_effective_actions[env_ids] = 0.0
+    self._prev_prev_effective_actions[env_ids] = 0.0
+    self._publish_effective_action_history()

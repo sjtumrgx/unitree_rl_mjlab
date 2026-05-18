@@ -203,9 +203,13 @@ def host_action_smoothness_penalty(
   action_manager = getattr(env, "action_manager", None)
   if action_manager is None:
     return torch.zeros(env.num_envs, device=env.device)
-  action = action_manager.action
-  prev_action = action_manager.prev_action
-  prev_prev_action = action_manager.prev_prev_action
+  action = getattr(env, "_host_getup_effective_action", None)
+  prev_action = getattr(env, "_host_getup_prev_effective_action", None)
+  prev_prev_action = getattr(env, "_host_getup_prev_prev_effective_action", None)
+  if action is None or prev_action is None or prev_prev_action is None:
+    action = action_manager.action
+    prev_action = action_manager.prev_action
+    prev_prev_action = action_manager.prev_prev_action
   rate = torch.sum(torch.square(action - prev_action), dim=1)
   smoothness = torch.sum(torch.square(action - 2.0 * prev_action + prev_prev_action), dim=1)
   penalty = action_rate_weight * rate + smoothness_weight * smoothness

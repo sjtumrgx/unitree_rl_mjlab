@@ -102,6 +102,25 @@ def test_getup_actor_history_and_unactuated_contract_match_host_ground() -> None
     assert action_cfg.max_delta == 1.0
 
 
+def test_getup_action_observations_use_executed_effective_actions_for_normal_and_amp() -> None:
+  from src.tasks.velocity import mdp
+  from src.tasks.velocity.config.g1_getup.env_cfgs import (
+    unitree_g1_getup_amp_env_cfg,
+    unitree_g1_getup_env_cfg,
+  )
+
+  effective_actions = getattr(mdp, "host_effective_actions", None)
+  assert effective_actions is not None
+
+  cfgs = (
+    unitree_g1_getup_env_cfg("ground"),
+    unitree_g1_getup_amp_env_cfg(demo_data_dir="/tmp/g1_getup_amp_fixture"),
+  )
+  for cfg in cfgs:
+    assert cfg.observations["actor"].terms["actions"].func is effective_actions
+    assert cfg.observations["critic"].terms["actions"].func is effective_actions
+
+
 def test_getup_assist_uses_host_curriculum_not_fixed_force_crutch() -> None:
   from src.tasks.velocity import mdp
   from src.tasks.velocity.config.g1_getup.env_cfgs import unitree_g1_getup_env_cfg
@@ -228,6 +247,41 @@ def test_host_relative_action_zeros_delta_during_unactuated_startup() -> None:
   assert torch.allclose(target[1], raw[1])
 
 
+def test_host_relative_action_records_effective_history_after_warmup_masking() -> None:
+  from src.tasks.velocity.mdp.getup.actions import HostRelativeJointPositionActionCfg
+
+  env = _FakeActionEnv()
+  action = HostRelativeJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=1.0,
+    unactuated_timesteps=30,
+  ).build(env)
+
+  first_raw = torch.tensor([[2.0, -2.0, 0.5], [0.25, -0.25, 0.75]])
+  second_raw = torch.tensor([[-3.0, 1.5, 2.0], [1.0, 0.5, -0.5]])
+  action.process_actions(first_raw)
+  action.process_actions(second_raw)
+
+  effective_action = getattr(action, "effective_action", None)
+  prev_effective_action = getattr(action, "prev_effective_action", None)
+  prev_prev_effective_action = getattr(action, "prev_prev_effective_action", None)
+  assert effective_action is not None
+  assert prev_effective_action is not None
+  assert prev_prev_effective_action is not None
+
+  assert torch.allclose(action.raw_action[0], second_raw[0])
+  assert torch.allclose(effective_action[0], torch.zeros(3))
+  assert torch.allclose(prev_effective_action[0], torch.zeros(3))
+  assert torch.allclose(prev_prev_effective_action[0], torch.zeros(3))
+  assert torch.allclose(effective_action[1], second_raw[1])
+  assert torch.allclose(prev_effective_action[1], first_raw[1])
+  assert torch.allclose(prev_prev_effective_action[1], torch.zeros(3))
+  assert torch.allclose(env._host_getup_effective_action, effective_action)
+  assert torch.allclose(env._host_getup_prev_effective_action, prev_effective_action)
+  assert torch.allclose(env._host_getup_prev_prev_effective_action, prev_prev_effective_action)
+
+
 def test_host_relative_action_clamps_current_pose_delta_after_startup() -> None:
   from src.tasks.velocity.mdp.getup.actions import HostRelativeJointPositionActionCfg
 
@@ -318,3 +372,24 @@ def test_host_task_reward_does_not_pay_upright_torso_without_feet_supported_heig
 
   assert reward[0].item() < 0.05
   assert reward[1].item() > 0.5
+
+
+def test_host_action_smoothness_penalty_ignores_raw_policy_actions_not_executed_in_warmup() -> None:
+  from src.tasks.velocity import mdp
+
+  env = SimpleNamespace(
+    num_envs=1,
+    device="cpu",
+    action_manager=SimpleNamespace(
+      action=torch.tensor([[8.0, -8.0, 4.0]]),
+      prev_action=torch.tensor([[-8.0, 8.0, -4.0]]),
+      prev_prev_action=torch.tensor([[8.0, -8.0, 4.0]]),
+    ),
+    _host_getup_effective_action=torch.zeros(1, 3),
+    _host_getup_prev_effective_action=torch.zeros(1, 3),
+    _host_getup_prev_prev_effective_action=torch.zeros(1, 3),
+  )
+
+  penalty = mdp.host_action_smoothness_penalty(env)
+
+  assert torch.allclose(penalty, torch.zeros(1))

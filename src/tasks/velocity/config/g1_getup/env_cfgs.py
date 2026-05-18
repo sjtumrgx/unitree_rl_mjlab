@@ -344,6 +344,14 @@ def _apply_getup_nan_safety(cfg: ManagerBasedRlEnvCfg) -> None:
   )
 
 
+def _apply_host_effective_action_observations(cfg: ManagerBasedRlEnvCfg) -> None:
+  for group_name in ("actor", "critic"):
+    cfg.observations[group_name].terms["actions"] = replace(
+      cfg.observations[group_name].terms["actions"],
+      func=mdp.host_effective_actions,
+    )
+
+
 def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   """Replace inherited locomotion/recovery shaping with HoST-like get-up terms."""
 
@@ -454,6 +462,7 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
   _add_support_body_contact_sensor(cfg)
   _add_getup_stall_guard(cfg)
   _apply_getup_nan_safety(cfg)
+  _apply_host_effective_action_observations(cfg)
   cfg.episode_length_s = 10.0
   cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 128)
   cfg.events.pop("push_robot", None)

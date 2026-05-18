@@ -85,3 +85,32 @@ def getup_progress_features(
   if feet_sensor_name is not None:
     features = (*features, feet_support_norm)
   return torch.stack(features, dim=1)
+
+
+def host_effective_actions(env: ManagerBasedRlEnv, action_name: str = "joint_pos") -> torch.Tensor:
+  """Return HoST get-up actions after unactuated warmup/curriculum gating.
+
+  MJLab's generic ``last_action`` observation exposes raw policy output.  For
+  HoST get-up, the first warmup steps intentionally do not execute policy
+  deltas, and curriculum scaling/clamping further changes the applied delta.
+  Actor/critic observations should therefore see the effective action that was
+  actually sent to the actuators, not a raw command that never took effect.
+  """
+
+  action_manager = getattr(env, "action_manager", None)
+  if action_manager is not None:
+    try:
+      term = action_manager.get_term(action_name)
+    except (AttributeError, KeyError):
+      term = None
+    effective_action = getattr(term, "effective_action", None)
+    if effective_action is not None:
+      return effective_action
+
+  effective_action = getattr(env, "_host_getup_effective_action", None)
+  if effective_action is not None:
+    return effective_action
+
+  if action_manager is None:
+    return torch.zeros(_batch_size(env), 0, device=getattr(env, "device", None) or "cpu")
+  return action_manager.action
