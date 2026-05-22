@@ -648,6 +648,59 @@ def test_rollout_step_record_reports_reset_and_terrain_cohorts() -> None:
   assert record["cohorts"]["terrain_type"]["type_1"]["standing_rate"] == pytest.approx(0.5)
 
 
+def test_rollout_step_record_attributes_cohorts_to_pre_step_reset_labels() -> None:
+  env = _FakeEnv()
+  asset = env.scene["robot"]
+  env._getup_reset_state = {
+    "preset_index": torch.tensor([3, 3, 3, 3]),
+    "preset_names": ("supine", "left_side", "right_side", "seated_fall"),
+  }
+  env.scene["terrain"] = SimpleNamespace(
+    terrain_levels=torch.tensor([7, 7, 7, 7]),
+    terrain_types=torch.tensor([7, 7, 7, 7]),
+    env_origins=torch.zeros(4, 3),
+  )
+  env.scene["env_origins"] = env.scene["terrain"].env_origins
+  asset.data.root_link_pos_w = torch.tensor([[0.0, 0.0, 0.7], [0.0, 0.0, 0.2], [0.0, 0.0, 0.7], [0.0, 0.0, 0.2]])
+  asset.data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.7]], [[0.0, 0.0, 0.2]], [[0.0, 0.0, 0.7]], [[0.0, 0.0, 0.2]]])
+  asset.data.projected_gravity_b = torch.tensor([[0.0, 0.0, -0.9], [0.0, 0.0, -0.2], [0.0, 0.0, -0.9], [0.0, 0.0, -0.2]])
+  asset.data.root_link_lin_vel_w = torch.zeros(4, 3)
+  asset.data.root_link_ang_vel_w = torch.zeros(4, 3)
+  asset.data.joint_pos = torch.zeros(4, 12)
+  env.scene["feet_ground_contact"].data.found = torch.ones(4, 2, 1)
+  env.scene["support_body_contact"].data.found = torch.zeros(4, 2, 1)
+  env.scene["hand_ground_contact"].data.found = torch.zeros(4, 2, 1)
+  env.scene["foot_geom_ground_contact"].data.found = torch.ones(4, 14, 1)
+  env._host_getup_joint_position_target = torch.zeros(4, 12)
+  env.metrics_manager._term_names = ["getup_success_count", "getup_upright"]
+  env.metrics_manager._step_values = torch.tensor([[1.0, 1.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]])
+
+  record = rollout.build_step_record(
+    env,
+    task_id="Unitree-G1-GetUp",
+    step_index=0,
+    mode="play-like",
+    raw_action=torch.zeros(4, 2),
+    clipped_action=torch.zeros(4, 2),
+    previous_clipped_action=None,
+    rewards=torch.zeros(4),
+    dones=torch.ones(4),
+    extras={},
+    clip_actions=5.0,
+    cohort_context={
+      "reset_preset": ["supine", "supine", "left_side", "left_side"],
+      "terrain_level": ["level_0", "level_0", "level_1", "level_1"],
+      "terrain_type": ["type_0", "type_0", "type_1", "type_1"],
+      "env_origin_z": torch.zeros(4),
+    },
+  )
+
+  assert record["cohorts"]["reset_preset"]["supine"]["success_events"] == pytest.approx(1.0)
+  assert "seated_fall" not in record["cohorts"]["reset_preset"]
+  assert record["cohorts"]["terrain_level"]["level_0"]["success_events"] == pytest.approx(1.0)
+  assert record["cohort_context_timing"] == "pre_step"
+
+
 def test_rollout_summary_reports_final_and_best_cohort_rates() -> None:
   metadata = {"type": "metadata", "num_envs": 4}
   first = {

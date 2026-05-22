@@ -482,6 +482,34 @@ def _tensor_or_zeros(value: torch.Tensor | None, *, like: torch.Tensor) -> torch
   return value.detach().float()
 
 
+def _capture_cohort_context(env: Any) -> dict[str, Any]:
+  """Snapshot per-env cohort labels before ``env.step`` can reset done envs.
+
+  MJLab resets done environments inside ``env.step``.  Metric tensors in the
+  same step still describe the transition that just finished, but reset preset
+  and terrain tensors may already describe the next episode.  Capture labels
+  before stepping so success/upright events are attributed to the episode that
+  produced them.
+  """
+
+  terrain = _terrain_entity(env)
+  env_origins = _scene_get(env.scene, "env_origins")
+  num_envs = int(getattr(env, "num_envs", 0) or 0)
+  if num_envs <= 0:
+    asset = _scene_get(env.scene, "robot")
+    root_pos = getattr(getattr(asset, "data", None), "root_link_pos_w", None)
+    if torch.is_tensor(root_pos):
+      num_envs = int(root_pos.shape[0])
+  context: dict[str, Any] = {
+    "reset_preset": _cohort_labels_from_reset(env, num_envs),
+    "terrain_level": _cohort_labels_from_tensor("level", getattr(terrain, "terrain_levels", None), num_envs),
+    "terrain_type": _cohort_labels_from_tensor("type", getattr(terrain, "terrain_types", None), num_envs),
+  }
+  if torch.is_tensor(env_origins) and env_origins.shape[0] == num_envs and env_origins.shape[-1] >= 3:
+    context["env_origin_z"] = env_origins[:, 2].detach().clone().float()
+  return context
+
+
 def _cohort_stats(
   labels: list[str] | None,
   *,
@@ -523,21 +551,23 @@ def _cohort_stats(
   return out
 
 
-def _cohort_telemetry(env: Any, asset: Any) -> dict[str, dict[str, dict[str, float | int]]]:
+def _cohort_telemetry(
+  env: Any,
+  asset: Any,
+  *,
+  cohort_context: dict[str, Any] | None = None,
+) -> dict[str, dict[str, dict[str, float | int]]]:
   standing = _standing_mask(env, asset).detach().bool()
   num_envs = int(standing.shape[0])
   upright = _tensor_or_zeros(_metric_tensor(env, "getup_upright"), like=standing.float())
   success = _tensor_or_zeros(_metric_tensor(env, "getup_success_count"), like=standing.float())
-  env_origins = _scene_get(env.scene, "env_origins")
-  env_origin_z = None
-  if torch.is_tensor(env_origins) and env_origins.shape[0] == num_envs and env_origins.shape[-1] >= 3:
-    env_origin_z = env_origins[:, 2].detach().float()
-
-  terrain = _terrain_entity(env)
+  if cohort_context is None:
+    cohort_context = _capture_cohort_context(env)
+  env_origin_z = cohort_context.get("env_origin_z")
   labels_by_group = {
-    "reset_preset": _cohort_labels_from_reset(env, num_envs),
-    "terrain_level": _cohort_labels_from_tensor("level", getattr(terrain, "terrain_levels", None), num_envs),
-    "terrain_type": _cohort_labels_from_tensor("type", getattr(terrain, "terrain_types", None), num_envs),
+    "reset_preset": cohort_context.get("reset_preset"),
+    "terrain_level": cohort_context.get("terrain_level"),
+    "terrain_type": cohort_context.get("terrain_type"),
   }
   return {
     group: _cohort_stats(
@@ -727,6 +757,7 @@ def build_step_record(
   extras: dict[str, Any],
   clip_actions: float | None,
   amp_stats: dict[str, float | str | None] | None = None,
+  cohort_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
   """Build one JSON-serializable telemetry row from a live or fake env."""
   asset = _scene_get(env.scene, "robot")
@@ -774,7 +805,8 @@ def build_step_record(
       "time_out_any": bool(torch.as_tensor(extras.get("time_outs", False)).bool().any().item()),
     },
     "metrics": _metric_terms(env),
-    "cohorts": _cohort_telemetry(env, asset),
+    "cohorts": _cohort_telemetry(env, asset, cohort_context=cohort_context),
+    "cohort_context_timing": "pre_step" if cohort_context is not None else "post_step",
   }
   if amp_stats is not None:
     record["amp"] = amp_stats
@@ -1435,6 +1467,7 @@ def _run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
         if agent_cfg.clip_actions is not None
         else raw_action
       )
+      cohort_context = _capture_cohort_context(raw_env)
       next_obs, rewards, dones, extras = env.step(raw_action)
       amp_stats = _amp_step_stats(runner, obs, next_obs) if runner is not None else None
       records.append(
@@ -1451,6 +1484,7 @@ def _run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
           extras=extras,
           clip_actions=agent_cfg.clip_actions,
           amp_stats=amp_stats,
+          cohort_context=cohort_context,
         )
       )
       previous_clipped_action = clipped.detach().clone()
