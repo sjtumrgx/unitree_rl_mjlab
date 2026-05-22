@@ -136,6 +136,14 @@ _HOST_GETUP_UNACTUATED_TIMESTEPS = 30
 _HOST_GETUP_INITIAL_ACTION_SCALE = 1.0
 _HOST_GETUP_MIN_ACTION_SCALE = 0.25
 _HOST_GETUP_MAX_ACTION_DELTA = 1.0
+_GETUP_TRAIN_PRESET_WEIGHT_STAGES = (
+  {"step": 0, "weights": (0.0, 0.25, 0.25, 0.5)},
+  {"step": 48, "weights": (0.15, 0.25, 0.25, 0.35)},
+  {"step": 120, "weights": (0.25, 0.25, 0.25, 0.25)},
+)
+_GETUP_PLAY_PRESET_WEIGHT_STAGES = (
+  {"step": 0, "weights": (0.25, 0.25, 0.25, 0.25)},
+)
 _HOST_GETUP_TARGET_JOINT_ANGLES = {
   "left_hip_yaw_joint": 0.0,
   "left_hip_roll_joint": 0.0,
@@ -948,11 +956,7 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
         },
       },
     ),
-    "preset_weight_stages": (
-      {"step": 0, "weights": (0.0, 0.25, 0.25, 0.5)},
-      {"step": 48, "weights": (0.15, 0.25, 0.25, 0.35)},
-      {"step": 120, "weights": (0.25, 0.25, 0.25, 0.25)},
-    ),
+    "preset_weight_stages": _GETUP_PLAY_PRESET_WEIGHT_STAGES if play else _GETUP_TRAIN_PRESET_WEIGHT_STAGES,
     "velocity_range": _GETUP_HARD_VELOCITY_RANGE,
   }
   _apply_host_getup_reward_stack(cfg)

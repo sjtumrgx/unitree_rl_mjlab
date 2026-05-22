@@ -102,6 +102,23 @@ def test_play_randomizes_terrain_before_fallen_root_reset() -> None:
   assert reset_terms.index("randomize_terrain") < reset_terms.index("reset_robot_joints")
 
 
+def test_play_reset_samples_all_fallen_presets_from_first_episode() -> None:
+  cfg = unitree_g1_getup_env_cfg("platform", play=True)
+  stages = cfg.events["reset_base"].params["preset_weight_stages"]
+
+  assert len(stages) == 1
+  assert stages[0]["step"] == 0
+  assert stages[0]["weights"] == pytest.approx((0.25, 0.25, 0.25, 0.25))
+
+
+def test_train_reset_keeps_gradual_supine_curriculum() -> None:
+  cfg = unitree_g1_getup_env_cfg("platform", play=False)
+  stages = cfg.events["reset_base"].params["preset_weight_stages"]
+
+  assert stages[0]["weights"][0] == pytest.approx(0.0)
+  assert stages[-1]["weights"][0] == pytest.approx(0.25)
+
+
 def test_assist_curriculum_does_not_decay_on_ballistic_height_without_stable_support() -> None:
   env = _FakeEnv()
   cfg = SimpleNamespace(params={"asset_cfg": SceneEntityCfg("robot", body_ids=[0])})
