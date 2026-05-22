@@ -39,10 +39,10 @@ def test_antifall_getup_env_combines_walking_push_and_fallen_recovery_contracts(
   reset_params = cfg.events["reset_base"].params
   assert reset_params["hard_reset_prob"] == 0.0
   schedule = reset_params["hard_reset_prob_schedule"]
-  assert schedule[0] == {"step": 0, "prob": 0.0}
+  assert schedule[0] == {"step": 0, "prob": 0.02}
   assert 0.05 <= schedule[-1]["prob"] <= 0.2
-  assert reset_params["hard_pose_range"]["roll"][0] <= -2.0
-  assert reset_params["hard_pose_range"]["pitch"][1] >= 2.0
+  assert reset_params["presets"][1]["pose_range"]["z"] == (-0.55, -0.45)
+  assert reset_params["preset_weight_stages"][0]["weights"][-1] > 0.0
 
   assert cfg.actions["joint_pos"].__class__.__name__ == "RecoveryHybridJointPositionActionCfg"
   assert cfg.actions["joint_pos"].max_delta <= 1.0
@@ -77,10 +77,101 @@ def test_antifall_getup_training_hard_resets_ramp_after_walking_warm_start() -> 
   cfg = load_env_cfg(TASK_ID)
   reset_params = cfg.events["reset_base"].params
 
+  assert cfg.events["reset_base"].func is mdp.reset_root_state_mixed_from_presets
   assert reset_params["hard_reset_prob"] == 0.0
-  assert reset_params["hard_reset_prob_schedule"][0]["prob"] == 0.0
-  assert reset_params["hard_reset_prob_schedule"][1]["step"] >= 1500
+  assert reset_params["hard_reset_prob_schedule"][0] == {"step": 0, "prob": 0.02}
+  assert reset_params["hard_reset_prob_schedule"][1]["step"] == 300
   assert reset_params["hard_reset_prob_schedule"][-1]["prob"] <= 0.15
+
+
+def test_antifall_getup_hard_resets_pair_fallen_root_with_getup_joint_presets() -> None:
+  cfg = load_env_cfg(TASK_ID)
+
+  reset_base = cfg.events["reset_base"]
+  reset_joints = cfg.events["reset_robot_joints"]
+
+  assert reset_base.func is mdp.reset_root_state_mixed_from_presets
+  assert "hard_pose_range" not in reset_base.params
+  assert reset_base.params["preset_weight_stages"][0]["weights"][-1] > 0.0
+  assert reset_joints.func is mdp.reset_joints_mixed_by_antifall_state
+  assert reset_joints.params["nominal_position_range"] == (-0.0, 0.0)
+  assert reset_joints.params["nominal_velocity_range"] == (-0.0, 0.0)
+  assert reset_joints.params["preset_position_noise_range"] == (-0.05, 0.05)
+
+
+
+
+def test_antifall_getup_uses_getup_safe_recovery_regularizers() -> None:
+  cfg = load_env_cfg(TASK_ID)
+
+  assert cfg.rewards["body_ang_vel"].func is mdp.bounded_body_angular_velocity_penalty
+  assert cfg.rewards["angular_momentum"].func is mdp.bounded_angular_momentum_penalty
+  assert cfg.rewards["joint_acc_l2"].func is mdp.bounded_joint_acc_l2
+  assert cfg.rewards["action_rate_l2"].func is mdp.bounded_action_rate_after_lift
+  assert cfg.rewards["joint_pos_limits"].func is mdp.joint_pos_limits_after_support
+  assert cfg.rewards["joint_pos_limits"].params["body_sensor_name"] == "support_body_contact"
+  assert cfg.rewards["self_collisions"].func is mdp.self_collision_cost_after_support
+  assert "support_body_contact_penalty_after_lift" in cfg.rewards
+  assert "pelvis_clearance_penalty" in cfg.rewards
+
+def test_antifall_getup_training_has_mid_episode_paired_forced_fall_exposure() -> None:
+  cfg = load_env_cfg(TASK_ID)
+
+  event = cfg.events["mid_episode_forced_fall"]
+
+  assert event.mode == "interval"
+  assert event.func is mdp.reset_paired_fallen_state_from_presets
+  assert event.interval_range_s[0] >= 5.0
+  assert event.params["presets"][1]["pose_range"]["z"] == (-0.55, -0.45)
+  assert event.params["preset_weight_stages"][0]["weights"][-1] > 0.0
+  assert event.params["joint_position_noise_range"] == (-0.05, 0.05)
+  assert event.params["reset_actions"] is True
+
+
+def test_antifall_getup_play_does_not_add_training_forced_fall_curriculum() -> None:
+  cfg = load_env_cfg(TASK_ID, play=True)
+
+  assert "mid_episode_forced_fall" not in cfg.events
+
+
+def test_paired_fallen_state_reset_synchronizes_root_joints_and_action_history(monkeypatch) -> None:
+  calls = []
+
+  def fake_reset_root(env, env_ids, **kwargs):
+    calls.append(("root", env_ids.tolist(), kwargs))
+
+  def fake_reset_joints(env, env_ids, **kwargs):
+    calls.append(("joints", env_ids.tolist(), kwargs))
+
+  monkeypatch.setattr(mdp, "reset_root_state_from_presets", fake_reset_root)
+  monkeypatch.setattr(mdp, "reset_joints_from_presets", fake_reset_joints)
+
+  import src.tasks.velocity.mdp.getup.events as getup_events
+  import torch
+  from types import SimpleNamespace
+
+  monkeypatch.setattr(getup_events, "reset_root_state_from_presets", fake_reset_root)
+  monkeypatch.setattr(getup_events, "reset_joints_from_presets", fake_reset_joints)
+  action_resets = []
+  env_ids = torch.tensor([0, 2], dtype=torch.long)
+  env = SimpleNamespace(action_manager=SimpleNamespace(reset=lambda env_ids=None: action_resets.append(env_ids.clone())))
+
+  mdp.reset_paired_fallen_state_from_presets(
+    env,
+    env_ids,
+    presets=("preset",),
+    preset_weight_stages=({"step": 0, "weights": (1.0,)},),
+    velocity_range={"x": (0.0, 0.0)},
+    joint_position_noise_range=(0.0, 0.0),
+    joint_velocity_range=(0.0, 0.0),
+  )
+
+  assert [name for name, _, _ in calls] == ["root", "joints"]
+  assert calls[0][1] == [0, 2]
+  assert calls[0][2]["presets"] == ("preset",)
+  assert calls[1][2]["position_noise_range"] == (0.0, 0.0)
+  assert len(action_resets) == 1
+  assert action_resets[0].tolist() == [0, 2]
 
 
 def test_scheduled_hard_reset_probability_uses_latest_elapsed_step() -> None:

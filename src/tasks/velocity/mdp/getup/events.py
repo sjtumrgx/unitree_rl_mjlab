@@ -13,6 +13,8 @@ from src.tasks.velocity.mdp.anti_fall.events import (
   DISTURBANCE_NEAR_FAILURE_RESET,
   get_antifall_state,
   reset_antifall_state,
+  reset_root_state_mixed,
+  scheduled_hard_reset_prob,
 )
 from src.tasks.velocity.mdp.anti_fall.rewards import recovery_phase_mask
 from .metrics import _upright_alignment, stable_getup_success_mask
@@ -573,7 +575,6 @@ class apply_host_getup_assist_force:
       )
     else:
       succeeded_now = torso_height > float(success_height_threshold)
-    state["episode_success"][env_ids] |= succeeded_now
 
     episode_length = getattr(env, "episode_length_buf", torch.zeros(env.num_envs, device=env.device))
     past_startup = episode_length[env_ids] > int(unactuated_timesteps)
@@ -603,7 +604,10 @@ class apply_host_getup_assist_force:
         include_near_failure_reset_window=include_near_failure_reset_window,
         asset_cfg=asset_cfg,
       )[env_ids]
+      succeeded_now = succeeded_now & phase_mask
       active = active & phase_mask
+    state["episode_success"][env_ids] |= succeeded_now
+    active = active & ~state["episode_success"][env_ids]
     taper_span = max(float(taper_end_height) - float(taper_start_height), 1e-6)
     assist_fraction = torch.clamp(
       (float(taper_end_height) - torso_height) / taper_span,
@@ -616,6 +620,22 @@ class apply_host_getup_assist_force:
     forces[active, :, 2] = (
       state["force_n"][env_ids][active] * episode_force_scale[active] * assist_fraction[active]
     ).unsqueeze(1)
+    force_z = forces[:, :, 2].amax(dim=1) if forces.numel() else torch.zeros(0, device=env.device)
+    latest_assist = {
+      "active_rate": active.float().mean() if active.numel() else torch.tensor(0.0, device=env.device),
+      "phase_active_rate": phase_mask.float().mean()
+      if recovery_phase_only and "phase_mask" in locals() and phase_mask.numel()
+      else None,
+      "episode_force_scale_mean": episode_force_scale.float().mean()
+      if episode_force_scale.numel()
+      else torch.tensor(0.0, device=env.device),
+      "assist_fraction_mean": assist_fraction.float().mean()
+      if assist_fraction.numel()
+      else torch.tensor(0.0, device=env.device),
+      "force_z_mean": force_z.float().mean() if force_z.numel() else torch.tensor(0.0, device=env.device),
+      "force_z_max": force_z.float().amax() if force_z.numel() else torch.tensor(0.0, device=env.device),
+    }
+    setattr(env, "_host_getup_latest_assist", latest_assist)
     asset.write_external_wrench_to_sim(forces, torques, env_ids=env_ids, body_ids=asset_cfg.body_ids)
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
@@ -811,6 +831,126 @@ def reset_root_state_from_presets(
     _mark_recovery_reset(env, selected)
 
 
+def reset_action_history(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+) -> None:
+  """Clear policy/action buffers after an artificial mid-episode state reset."""
+
+  action_manager = getattr(env, "action_manager", None)
+  reset = getattr(action_manager, "reset", None)
+  if callable(reset):
+    reset(env_ids=env_ids)
+
+
+def reset_paired_fallen_state_from_presets(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  presets: Sequence[dict[str, object]] | None = None,
+  preset_weight_stages: Sequence[dict[str, object]] | None = None,
+  velocity_range: dict[str, tuple[float, float]] | None = None,
+  joint_position_noise_range: tuple[float, float] = (-0.05, 0.05),
+  joint_velocity_range: tuple[float, float] = (-0.5, 0.5),
+  reset_actions: bool = True,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+  """Apply a synchronized mid-episode fallen root, joint preset, and action reset."""
+
+  reset_root_state_from_presets(
+    env,
+    env_ids,
+    presets=presets,
+    preset_weight_stages=preset_weight_stages,
+    velocity_range=velocity_range,
+    asset_cfg=asset_cfg,
+  )
+  reset_joints_from_presets(
+    env,
+    env_ids,
+    position_noise_range=joint_position_noise_range,
+    velocity_range=joint_velocity_range,
+    asset_cfg=asset_cfg,
+  )
+  if reset_actions:
+    reset_action_history(env, env_ids)
+
+
+def reset_root_state_mixed_from_presets(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  nominal_pose_range: dict[str, tuple[float, float]],
+  nominal_velocity_range: dict[str, tuple[float, float]] | None = None,
+  hard_reset_prob: float = 0.0,
+  hard_reset_prob_schedule: tuple[dict[str, float], ...] | list[dict[str, float]] | None = None,
+  presets: Sequence[dict[str, object]] | None = None,
+  preset_weight_stages: Sequence[dict[str, object]] | None = None,
+  hard_velocity_range: dict[str, tuple[float, float]] | None = None,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+  """Reset nominal episodes like walking and hard episodes from GetUp presets.
+
+  AntiFall-GetUp mixes two contracts in one task: most resets must preserve the
+  warm-start walking actor's default standing joint state, while hard/fallen
+  resets need the same root+joint-preset pairing that made the regular GetUp
+  policy learn actual floor recovery.  Sampling only a fallen root pose with
+  standing joints creates unrealistic side/torso states and gives PPO poor
+  recovery exposure.
+  """
+
+  ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long) if env_ids is None else env_ids.to(device=env.device, dtype=torch.long)
+  if ids.numel() == 0:
+    return
+
+  prob = scheduled_hard_reset_prob(
+    hard_reset_prob,
+    hard_reset_prob_schedule,
+    common_step_counter=int(getattr(env, "common_step_counter", 0)),
+  )
+  reset_antifall_state(env, ids)
+  state = get_getup_reset_state(
+    env,
+    preset_names=tuple(str(preset["name"]) for preset in tuple(_DEFAULT_PRESETS if presets is None else presets)),
+  )
+  state["preset_index"][ids] = -1
+  if prob <= 0.0:
+    reset_root_state_mixed(
+      env,
+      ids,
+      nominal_pose_range=nominal_pose_range,
+      nominal_velocity_range=nominal_velocity_range,
+      hard_pose_range=None,
+      hard_velocity_range=None,
+      hard_reset_prob=0.0,
+      asset_cfg=asset_cfg,
+    )
+    return
+
+  hard_mask = torch.rand(ids.numel(), device=env.device) < float(prob)
+  hard_ids = ids[hard_mask]
+  nominal_ids = ids[~hard_mask]
+
+  if nominal_ids.numel() > 0:
+    reset_root_state_mixed(
+      env,
+      nominal_ids,
+      nominal_pose_range=nominal_pose_range,
+      nominal_velocity_range=nominal_velocity_range,
+      hard_pose_range=None,
+      hard_velocity_range=None,
+      hard_reset_prob=0.0,
+      asset_cfg=asset_cfg,
+    )
+  if hard_ids.numel() > 0:
+    reset_root_state_from_presets(
+      env,
+      hard_ids,
+      presets=presets,
+      preset_weight_stages=preset_weight_stages,
+      velocity_range=hard_velocity_range,
+      asset_cfg=asset_cfg,
+    )
+
+
 def reset_joints_from_presets(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | None,
@@ -883,3 +1023,43 @@ def reset_joints_from_presets(
     joint_ids = torch.tensor(joint_ids, device=env.device)
 
   asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=ids, joint_ids=joint_ids)
+
+
+def reset_joints_mixed_by_antifall_state(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  nominal_position_range: tuple[float, float] = (0.0, 0.0),
+  nominal_velocity_range: tuple[float, float] = (0.0, 0.0),
+  preset_position_noise_range: tuple[float, float] = (-0.05, 0.05),
+  preset_velocity_range: tuple[float, float] = (-0.5, 0.5),
+  preset_joint_targets: dict[str, dict[str, float]] | None = None,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+  """Use default walking joints for nominal resets and GetUp presets for hard resets."""
+
+  ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long) if env_ids is None else env_ids.to(device=env.device, dtype=torch.long)
+  if ids.numel() == 0:
+    return
+
+  state = get_antifall_state(env)
+  hard_mask = state["disturbance_kind"][ids] == DISTURBANCE_NEAR_FAILURE_RESET
+  hard_ids = ids[hard_mask]
+  nominal_ids = ids[~hard_mask]
+
+  if nominal_ids.numel() > 0:
+    envs_mdp.reset_joints_by_offset(
+      env,
+      nominal_ids,
+      position_range=nominal_position_range,
+      velocity_range=nominal_velocity_range,
+      asset_cfg=asset_cfg,
+    )
+  if hard_ids.numel() > 0:
+    reset_joints_from_presets(
+      env,
+      hard_ids,
+      position_noise_range=preset_position_noise_range,
+      velocity_range=preset_velocity_range,
+      preset_joint_targets=preset_joint_targets,
+      asset_cfg=asset_cfg,
+    )

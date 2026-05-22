@@ -7,6 +7,7 @@ import sys
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Literal
 
 import tyro
@@ -21,6 +22,63 @@ from mjlab.utils.os import dump_yaml, get_checkpoint_path
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
 from src.tasks.velocity.rl.safety import FiniteActionRslRlVecEnvWrapper
+
+_G1_23DOF_ACTION_JOINT_NAMES = (
+  "left_hip_pitch_joint",
+  "left_hip_roll_joint",
+  "left_hip_yaw_joint",
+  "left_knee_joint",
+  "left_ankle_pitch_joint",
+  "left_ankle_roll_joint",
+  "right_hip_pitch_joint",
+  "right_hip_roll_joint",
+  "right_hip_yaw_joint",
+  "right_knee_joint",
+  "right_ankle_pitch_joint",
+  "right_ankle_roll_joint",
+  "waist_yaw_joint",
+  "left_shoulder_pitch_joint",
+  "left_shoulder_roll_joint",
+  "left_shoulder_yaw_joint",
+  "left_elbow_joint",
+  "left_wrist_roll_joint",
+  "right_shoulder_pitch_joint",
+  "right_shoulder_roll_joint",
+  "right_shoulder_yaw_joint",
+  "right_elbow_joint",
+  "right_wrist_roll_joint",
+)
+_G1_ACTION_JOINT_NAMES = (
+  "left_hip_pitch_joint",
+  "left_hip_roll_joint",
+  "left_hip_yaw_joint",
+  "left_knee_joint",
+  "left_ankle_pitch_joint",
+  "left_ankle_roll_joint",
+  "right_hip_pitch_joint",
+  "right_hip_roll_joint",
+  "right_hip_yaw_joint",
+  "right_knee_joint",
+  "right_ankle_pitch_joint",
+  "right_ankle_roll_joint",
+  "waist_yaw_joint",
+  "waist_roll_joint",
+  "waist_pitch_joint",
+  "left_shoulder_pitch_joint",
+  "left_shoulder_roll_joint",
+  "left_shoulder_yaw_joint",
+  "left_elbow_joint",
+  "left_wrist_roll_joint",
+  "left_wrist_pitch_joint",
+  "left_wrist_yaw_joint",
+  "right_shoulder_pitch_joint",
+  "right_shoulder_roll_joint",
+  "right_shoulder_yaw_joint",
+  "right_elbow_joint",
+  "right_wrist_roll_joint",
+  "right_wrist_pitch_joint",
+  "right_wrist_yaw_joint",
+)
 
 
 @dataclass(frozen=True)
@@ -289,9 +347,141 @@ def _expand_first_linear_weight(old: torch.Tensor, target: torch.Tensor) -> torc
   return expanded
 
 
+def _infer_g1_target_action_names(target_rows: int) -> tuple[str, ...] | None:
+  if target_rows == len(_G1_23DOF_ACTION_JOINT_NAMES):
+    return _G1_23DOF_ACTION_JOINT_NAMES
+  if target_rows == len(_G1_ACTION_JOINT_NAMES):
+    return _G1_ACTION_JOINT_NAMES
+  return None
+
+
+def _expand_action_vector_by_name(
+  old: torch.Tensor,
+  target: torch.Tensor,
+  *,
+  source_action_names: Sequence[str],
+  target_action_names: Sequence[str],
+  fill_new_from_target: bool,
+) -> torch.Tensor | None:
+  if old.shape == target.shape:
+    return old
+  if old.ndim != 1 or target.ndim != 1:
+    return None
+  if old.shape[0] != len(source_action_names) or target.shape[0] != len(target_action_names):
+    return None
+
+  expanded = target.detach().clone() if fill_new_from_target else torch.zeros_like(target)
+  source_by_name = {str(name): idx for idx, name in enumerate(source_action_names)}
+  copied = False
+  for target_idx, name in enumerate(target_action_names):
+    source_idx = source_by_name.get(str(name))
+    if source_idx is None:
+      continue
+    expanded[target_idx] = old[source_idx]
+    copied = True
+  return expanded if copied else None
+
+
+def _expand_output_head_by_name(
+  old: torch.Tensor,
+  target: torch.Tensor,
+  *,
+  source_action_names: Sequence[str],
+  target_action_names: Sequence[str],
+) -> torch.Tensor | None:
+  if old.shape == target.shape:
+    return old
+  if old.ndim != 2 or target.ndim != 2:
+    return None
+  if old.shape[1] != target.shape[1]:
+    return None
+  if old.shape[0] != len(source_action_names) or target.shape[0] != len(target_action_names):
+    return None
+
+  expanded = torch.zeros_like(target)
+  source_by_name = {str(name): idx for idx, name in enumerate(source_action_names)}
+  copied = False
+  for target_idx, name in enumerate(target_action_names):
+    source_idx = source_by_name.get(str(name))
+    if source_idx is None:
+      continue
+    expanded[target_idx] = old[source_idx]
+    copied = True
+  return expanded if copied else None
+
+
+def _expand_action_output_state(
+  checkpoint_state: dict[str, torch.Tensor],
+  target_state: dict[str, torch.Tensor],
+  *,
+  source_action_names: Sequence[str] | None = None,
+  target_action_names: Sequence[str] | None = None,
+) -> bool:
+  old_head = checkpoint_state.get("mlp.6.weight")
+  target_head = target_state.get("mlp.6.weight")
+  if old_head is None or target_head is None or old_head.shape == target_head.shape:
+    return False
+
+  source_names = (
+    tuple(source_action_names)
+    if source_action_names is not None
+    else _infer_g1_target_action_names(int(old_head.shape[0]))
+  )
+  target_names = (
+    tuple(target_action_names)
+    if target_action_names is not None
+    else _infer_g1_target_action_names(int(target_head.shape[0]))
+  )
+  if source_names is None or target_names is None:
+    return False
+
+  expanded_head = _expand_output_head_by_name(
+    old_head,
+    target_head,
+    source_action_names=source_names,
+    target_action_names=target_names,
+  )
+  if expanded_head is None:
+    return False
+  checkpoint_state["mlp.6.weight"] = expanded_head
+
+  old_bias = checkpoint_state.get("mlp.6.bias")
+  target_bias = target_state.get("mlp.6.bias")
+  if old_bias is not None and target_bias is not None:
+    expanded_bias = _expand_action_vector_by_name(
+      old_bias,
+      target_bias,
+      source_action_names=source_names,
+      target_action_names=target_names,
+      fill_new_from_target=False,
+    )
+    if expanded_bias is None:
+      return False
+    checkpoint_state["mlp.6.bias"] = expanded_bias
+
+  old_std = checkpoint_state.get("distribution.std_param")
+  target_std = target_state.get("distribution.std_param")
+  if old_std is not None and target_std is not None:
+    expanded_std = _expand_action_vector_by_name(
+      old_std,
+      target_std,
+      source_action_names=source_names,
+      target_action_names=target_names,
+      fill_new_from_target=True,
+    )
+    if expanded_std is None:
+      return False
+    checkpoint_state["distribution.std_param"] = expanded_std
+
+  return True
+
+
 def _expand_model_input_state(
   checkpoint_state: dict[str, torch.Tensor],
   target_state: dict[str, torch.Tensor],
+  *,
+  source_action_names: Sequence[str] | None = None,
+  target_action_names: Sequence[str] | None = None,
 ) -> bool:
   """Expand legacy actor/critic input tensors when observation dims grow.
 
@@ -329,6 +519,14 @@ def _expand_model_input_state(
       if expanded_weight.shape != old_weight.shape:
         changed = True
       checkpoint_state["mlp.0.weight"] = expanded_weight
+
+  if _expand_action_output_state(
+    checkpoint_state,
+    target_state,
+    source_action_names=source_action_names,
+    target_action_names=target_action_names,
+  ):
+    changed = True
 
   return changed
 

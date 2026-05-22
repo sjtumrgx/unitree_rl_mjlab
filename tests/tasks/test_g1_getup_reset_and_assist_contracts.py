@@ -441,3 +441,51 @@ def test_assist_force_can_pull_fallen_postures_after_startup_when_orientation_ga
   forces, _, env_ids, _ = env.scene["robot"].wrench_writes[-1]
   assert env_ids.tolist() == [0]
   assert forces[0, 0, 2].item() == pytest.approx(100.0)
+  telemetry = env._host_getup_latest_assist
+  assert telemetry["active_rate"].item() == pytest.approx(1.0)
+  assert telemetry["force_z_max"].item() == pytest.approx(100.0)
+  assert telemetry["force_z_mean"].item() == pytest.approx(100.0)
+  assert telemetry["assist_fraction_mean"].item() == pytest.approx(1.0)
+
+
+def test_recovery_phase_only_assist_does_not_latch_nominal_walking_success(monkeypatch) -> None:
+  env = _FakeEnv()
+  env.scene["robot"].data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.82]]])
+  env.scene["robot"].data.projected_gravity_b = torch.tensor([[0.0, 0.0, -1.0]])
+  cfg = SimpleNamespace(params={"asset_cfg": SceneEntityCfg("robot", body_ids=[0])})
+  assist = events.apply_host_getup_assist_force(cfg, env)
+  state = events.get_host_getup_curriculum_state(env, initial_force_n=100.0, initial_action_scale=1.0)
+
+  monkeypatch.setattr(events, "recovery_phase_mask", lambda *args, **kwargs: torch.tensor([False]))
+  assist(
+    env,
+    None,
+    initial_force_n=100.0,
+    success_height_threshold=0.75,
+    stable_success_required=True,
+    upright_alignment_threshold=0.85,
+    no_orientation_gate=True,
+    recovery_phase_only=True,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  assert state["episode_success"].item() is False
+  forces, _, _, _ = env.scene["robot"].wrench_writes[-1]
+  assert forces[0, 0, 2].item() == pytest.approx(0.0)
+
+  env.scene["robot"].data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.20]]])
+  env.scene["robot"].data.projected_gravity_b = torch.tensor([[0.8, 0.0, -0.1]])
+  monkeypatch.setattr(events, "recovery_phase_mask", lambda *args, **kwargs: torch.tensor([True]))
+  assist(
+    env,
+    None,
+    initial_force_n=100.0,
+    unactuated_timesteps=30,
+    no_orientation_gate=True,
+    recovery_phase_only=True,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  forces, _, env_ids, _ = env.scene["robot"].wrench_writes[-1]
+  assert env_ids.tolist() == [0]
+  assert forces[0, 0, 2].item() == pytest.approx(100.0)

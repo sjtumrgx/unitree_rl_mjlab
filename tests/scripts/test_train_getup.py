@@ -348,3 +348,124 @@ def test_expand_actor_checkpoint_input_preserves_old_policy_and_zeroes_new_bfm_i
   torch.testing.assert_close(checkpoint_state["obs_normalizer._var"][:, 492:], torch.ones(1, 358))
   torch.testing.assert_close(checkpoint_state["obs_normalizer._std"][:, :492], torch.full((1, 492), 3.0))
   torch.testing.assert_close(checkpoint_state["obs_normalizer._std"][:, 492:], torch.ones(1, 358))
+
+
+def test_expand_getup_actor_output_maps_23dof_common_joints_into_29dof_policy() -> None:
+  from scripts.train import _expand_model_input_state
+
+  source_joints = (
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+  )
+  target_joints = (
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+  )
+  old_head = torch.arange(23 * 4, dtype=torch.float32).reshape(23, 4)
+  old_bias = torch.arange(23, dtype=torch.float32)
+  checkpoint_state = {
+    "distribution.std_param": torch.full((23,), 0.25),
+    "mlp.6.weight": old_head.clone(),
+    "mlp.6.bias": old_bias.clone(),
+  }
+  target_state = {
+    "distribution.std_param": torch.full((29,), 0.5),
+    "mlp.6.weight": torch.full((29, 4), -9.0),
+    "mlp.6.bias": torch.full((29,), -3.0),
+  }
+
+  expanded = _expand_model_input_state(
+    checkpoint_state,
+    target_state,
+    source_action_names=source_joints,
+    target_action_names=target_joints,
+  )
+
+  assert expanded is True
+  source_by_name = {name: idx for idx, name in enumerate(source_joints)}
+  for target_idx, name in enumerate(target_joints):
+    if name in source_by_name:
+      source_idx = source_by_name[name]
+      torch.testing.assert_close(checkpoint_state["mlp.6.weight"][target_idx], old_head[source_idx])
+      assert checkpoint_state["mlp.6.bias"][target_idx] == old_bias[source_idx]
+      assert checkpoint_state["distribution.std_param"][target_idx] == pytest.approx(0.25)
+    else:
+      torch.testing.assert_close(checkpoint_state["mlp.6.weight"][target_idx], torch.zeros(4))
+      assert checkpoint_state["mlp.6.bias"][target_idx] == pytest.approx(0.0)
+      assert checkpoint_state["distribution.std_param"][target_idx] == pytest.approx(0.5)
+
+
+def test_expand_getup_actor_output_infers_g1_23_to_29dof_joint_names() -> None:
+  from scripts.train import _expand_model_input_state
+
+  old_head = torch.arange(23 * 4, dtype=torch.float32).reshape(23, 4)
+  checkpoint_state = {
+    "distribution.std_param": torch.full((23,), 0.25),
+    "mlp.6.weight": old_head.clone(),
+    "mlp.6.bias": torch.arange(23, dtype=torch.float32),
+  }
+  target_state = {
+    "distribution.std_param": torch.full((29,), 0.5),
+    "mlp.6.weight": torch.full((29, 4), -9.0),
+    "mlp.6.bias": torch.full((29,), -3.0),
+  }
+
+  expanded = _expand_model_input_state(checkpoint_state, target_state)
+
+  assert expanded is True
+  torch.testing.assert_close(checkpoint_state["mlp.6.weight"][0], old_head[0])
+  torch.testing.assert_close(checkpoint_state["mlp.6.weight"][12], old_head[12])
+  torch.testing.assert_close(checkpoint_state["mlp.6.weight"][13], torch.zeros(4))
+  torch.testing.assert_close(checkpoint_state["mlp.6.weight"][14], torch.zeros(4))
+  torch.testing.assert_close(checkpoint_state["mlp.6.weight"][15], old_head[13])
+  torch.testing.assert_close(checkpoint_state["mlp.6.weight"][22], old_head[18])
+  assert checkpoint_state["distribution.std_param"][13] == pytest.approx(0.5)
+  assert checkpoint_state["mlp.6.bias"][13] == pytest.approx(0.0)

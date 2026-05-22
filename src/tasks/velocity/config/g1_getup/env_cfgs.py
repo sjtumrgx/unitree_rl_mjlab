@@ -144,6 +144,63 @@ _GETUP_TRAIN_PRESET_WEIGHT_STAGES = (
 _GETUP_PLAY_PRESET_WEIGHT_STAGES = (
   {"step": 0, "weights": (0.25, 0.25, 0.25, 0.25)},
 )
+
+GETUP_FALLEN_ROOT_PRESETS = (
+  {
+    "name": "supine",
+    "pose_range": {
+      "x": (-0.15, 0.15),
+      "y": (-0.15, 0.15),
+      # reset_root_state_uniform() is relative to the standing default root pose.
+      # Supine uses a higher fallen-but-not-standing z-offset than side resets:
+      # the lower side-lying offset penetrates the supine torso/limb stack and
+      # creates an upward contact impulse before policy action.
+      "z": (-0.35, -0.25),
+      "roll": (3.14159 - 0.3, 3.14159 + 0.3),
+      "pitch": (-0.3, 0.3),
+      "yaw": (-3.14159, 3.14159),
+    },
+  },
+  {
+    "name": "left_side",
+    "pose_range": {
+      "x": (-0.10, 0.10),
+      "y": (-0.10, 0.10),
+      # The old lower side-lying offset penetrated platform stair geometry and
+      # produced a reset-time upward contact impulse before the policy could
+      # act.  Keep this fallen and away from stair edges while aligning it with
+      # seated_fall height.
+      "z": (-0.55, -0.45),
+      "roll": (1.5708 - 0.25, 1.5708 + 0.25),
+      "pitch": (-0.35, 0.35),
+      "yaw": (-3.14159, 3.14159),
+    },
+  },
+  {
+    "name": "right_side",
+    "pose_range": {
+      "x": (-0.10, 0.10),
+      "y": (-0.10, 0.10),
+      # See left_side: avoid platform reset-time contact launch while keeping
+      # the root below the standing default height.
+      "z": (-0.55, -0.45),
+      "roll": (-1.5708 - 0.25, -1.5708 + 0.25),
+      "pitch": (-0.35, 0.35),
+      "yaw": (-3.14159, 3.14159),
+    },
+  },
+  {
+    "name": "seated_fall",
+    "pose_range": {
+      "x": (-0.15, 0.15),
+      "y": (-0.15, 0.15),
+      "z": (-0.5, -0.4),
+      "roll": (-0.2, 0.2),
+      "pitch": (1.5708 - 0.35, 1.5708 + 0.35),
+      "yaw": (-3.14159, 3.14159),
+    },
+  },
+)
 _HOST_GETUP_TARGET_JOINT_ANGLES = {
   "left_hip_yaw_joint": 0.0,
   "left_hip_roll_joint": 0.0,
@@ -752,6 +809,71 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
 
 
+def _apply_host_getup_safe_regularizers(cfg: ManagerBasedRlEnvCfg) -> None:
+  """Use bounded/recovery-gated regularizers that do not swamp fallen recovery."""
+
+  cfg.rewards["body_ang_vel"].func = mdp.bounded_body_angular_velocity_penalty
+  cfg.rewards["body_ang_vel"].params.update(
+    {
+      "max_penalty": 400.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    }
+  )
+  cfg.rewards["angular_momentum"].func = mdp.bounded_angular_momentum_penalty
+  cfg.rewards["angular_momentum"].params["max_penalty"] = 1000.0
+  cfg.rewards["joint_acc_l2"].func = mdp.bounded_joint_acc_l2
+  cfg.rewards["joint_acc_l2"].params = {
+    "max_penalty": 1_000_000.0,
+    "asset_cfg": SceneEntityCfg("robot"),
+  }
+  cfg.rewards["action_rate_l2"] = RewardTermCfg(
+    func=mdp.bounded_action_rate_after_lift,
+    weight=-0.05,
+    params={
+      "activation_height": 0.25,
+      "max_penalty": 250.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["joint_pos_limits"] = RewardTermCfg(
+    func=mdp.joint_pos_limits_after_support,
+    weight=-10.0,
+    params={
+      "feet_sensor_name": "feet_ground_contact",
+      "body_sensor_name": "support_body_contact",
+      "max_penalty": 10.0,
+      "asset_cfg": SceneEntityCfg("robot"),
+    },
+  )
+  cfg.rewards["self_collisions"] = RewardTermCfg(
+    func=mdp.self_collision_cost_after_support,
+    weight=-1.0,
+    params={
+      "sensor_name": "self_collision",
+      "feet_sensor_name": "feet_ground_contact",
+      "body_sensor_name": "support_body_contact",
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["support_body_contact_penalty_after_lift"] = RewardTermCfg(
+    func=mdp.support_body_contact_penalty_after_lift,
+    weight=-0.75,
+    params={
+      "sensor_name": "support_body_contact",
+      "hand_sensor_name": "hand_ground_contact",
+      "activation_height": 0.2,
+      "hand_release_height": 0.55,
+      "normalize_count": 2.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["pelvis_clearance_penalty"] = RewardTermCfg(
+    func=mdp.pelvis_clearance_penalty,
+    weight=-1.0,
+  )
+
+
+
 def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_23dof_rough_env_cfg(play=play)
   if not play:
@@ -844,124 +966,11 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
     hard_pose_range=_GETUP_HARD_POSE_RANGE,
     hard_velocity_range=_GETUP_HARD_VELOCITY_RANGE,
   )
-  cfg.rewards["body_ang_vel"].func = mdp.bounded_body_angular_velocity_penalty
-  cfg.rewards["body_ang_vel"].params.update(
-    {
-      "max_penalty": 400.0,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    }
-  )
-  cfg.rewards["angular_momentum"].func = mdp.bounded_angular_momentum_penalty
-  cfg.rewards["angular_momentum"].params["max_penalty"] = 1000.0
-  cfg.rewards["joint_acc_l2"].func = mdp.bounded_joint_acc_l2
-  cfg.rewards["joint_acc_l2"].params = {
-    "max_penalty": 1_000_000.0,
-    "asset_cfg": SceneEntityCfg("robot"),
-  }
-  cfg.rewards["action_rate_l2"] = RewardTermCfg(
-    func=mdp.bounded_action_rate_after_lift,
-    weight=-0.05,
-    params={
-      "activation_height": 0.25,
-      "max_penalty": 250.0,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
-  )
-  cfg.rewards["joint_pos_limits"] = RewardTermCfg(
-    func=mdp.joint_pos_limits_after_support,
-    weight=-10.0,
-    params={
-      "feet_sensor_name": "feet_ground_contact",
-      "body_sensor_name": "support_body_contact",
-      "max_penalty": 10.0,
-      "asset_cfg": SceneEntityCfg("robot"),
-    },
-  )
-  cfg.rewards["self_collisions"] = RewardTermCfg(
-    func=mdp.self_collision_cost_after_support,
-    weight=-1.0,
-    params={
-      "sensor_name": "self_collision",
-      "feet_sensor_name": "feet_ground_contact",
-      "body_sensor_name": "support_body_contact",
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
-  )
-  cfg.rewards["support_body_contact_penalty_after_lift"] = RewardTermCfg(
-    func=mdp.support_body_contact_penalty_after_lift,
-    weight=-0.75,
-    params={
-      "sensor_name": "support_body_contact",
-      "hand_sensor_name": "hand_ground_contact",
-      "activation_height": 0.2,
-      "hand_release_height": 0.55,
-      "normalize_count": 2.0,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
-  )
-  cfg.rewards["pelvis_clearance_penalty"] = RewardTermCfg(
-    func=mdp.pelvis_clearance_penalty,
-    weight=-1.0,
-  )
+  _apply_host_getup_safe_regularizers(cfg)
   cfg.rewards.pop("is_terminated", None)
   cfg.events["reset_base"].func = mdp.reset_root_state_from_presets
   cfg.events["reset_base"].params = {
-    "presets": (
-      {
-        "name": "supine",
-        "pose_range": {
-          "x": (-0.15, 0.15),
-          "y": (-0.15, 0.15),
-          # reset_root_state_uniform() is relative to the standing default root pose.
-          # Supine uses a higher fallen-but-not-standing z-offset than side
-          # resets: the lower side-lying offset penetrates the supine torso/limb
-          # stack and creates an upward contact impulse before policy action.
-          "z": (-0.35, -0.25),
-          "roll": (3.14159 - 0.3, 3.14159 + 0.3),
-          "pitch": (-0.3, 0.3),
-          "yaw": (-3.14159, 3.14159),
-        },
-      },
-      {
-        "name": "left_side",
-        "pose_range": {
-          "x": (-0.10, 0.10),
-          "y": (-0.10, 0.10),
-          # The old lower side-lying offset penetrated platform stair geometry
-          # and produced a reset-time upward contact impulse before the policy
-          # could act.  Keep this fallen and away from stair edges while
-          # aligning it with seated_fall height.
-          "z": (-0.55, -0.45),
-          "roll": (1.5708 - 0.25, 1.5708 + 0.25),
-          "pitch": (-0.35, 0.35),
-          "yaw": (-3.14159, 3.14159),
-        },
-      },
-      {
-        "name": "right_side",
-        "pose_range": {
-          "x": (-0.10, 0.10),
-          "y": (-0.10, 0.10),
-          # See left_side: avoid platform reset-time contact launch while
-          # keeping the root below the standing default height.
-          "z": (-0.55, -0.45),
-          "roll": (-1.5708 - 0.25, -1.5708 + 0.25),
-          "pitch": (-0.35, 0.35),
-          "yaw": (-3.14159, 3.14159),
-        },
-      },
-      {
-        "name": "seated_fall",
-        "pose_range": {
-          "x": (-0.15, 0.15),
-          "y": (-0.15, 0.15),
-          "z": (-0.5, -0.4),
-          "roll": (-0.2, 0.2),
-          "pitch": (1.5708 - 0.35, 1.5708 + 0.35),
-          "yaw": (-3.14159, 3.14159),
-        },
-      },
-    ),
+    "presets": GETUP_FALLEN_ROOT_PRESETS,
     "preset_weight_stages": _GETUP_PLAY_PRESET_WEIGHT_STAGES if play else _GETUP_TRAIN_PRESET_WEIGHT_STAGES,
     "velocity_range": _GETUP_HARD_VELOCITY_RANGE,
   }

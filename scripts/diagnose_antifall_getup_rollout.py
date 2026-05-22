@@ -59,6 +59,19 @@ def _scalar(value: Any, default: float | None = None) -> float | None:
   return out if math.isfinite(out) else default
 
 
+def _max_abs(value: torch.Tensor | None) -> float | None:
+  if value is None or value.numel() == 0:
+    return None
+  return _scalar(torch.max(torch.abs(value.detach())))
+
+
+def _l2_max(value: torch.Tensor | None) -> float | None:
+  if value is None or value.numel() == 0:
+    return None
+  flat = value.detach().flatten(start_dim=1) if value.ndim > 1 else value.detach().reshape(1, -1)
+  return _scalar(torch.linalg.norm(flat, dim=1).amax())
+
+
 def _scene_get(scene: Any, name: str, default: Any = None) -> Any:
   if name == "env_origins" and hasattr(scene, "env_origins"):
     return scene.env_origins
@@ -102,6 +115,44 @@ def _metric_terms(env: Any) -> dict[str, float]:
     value = _scalar(values[:, idx].mean())
     if value is not None:
       out[str(name)] = float(value)
+  return out
+
+
+def _reward_terms(env: Any) -> dict[str, float]:
+  manager = getattr(env, "reward_manager", None)
+  names = list(getattr(manager, "_term_names", ()))
+  values = getattr(manager, "_step_reward", None)
+  if values is None:
+    return {}
+  out: dict[str, float] = {}
+  for idx, name in enumerate(names):
+    value = _scalar(values[:, idx].mean())
+    if value is not None:
+      out[str(name)] = float(value)
+  return out
+
+
+def _assist_state(env: Any) -> dict[str, float | None]:
+  telemetry = getattr(env, "_host_getup_latest_assist", None)
+  if not isinstance(telemetry, dict):
+    return {
+      "active_rate": None,
+      "phase_active_rate": None,
+      "episode_force_scale_mean": None,
+      "assist_fraction_mean": None,
+      "force_z_mean": None,
+      "force_z_max": None,
+    }
+  out: dict[str, float | None] = {}
+  for key in (
+    "active_rate",
+    "phase_active_rate",
+    "episode_force_scale_mean",
+    "assist_fraction_mean",
+    "force_z_mean",
+    "force_z_max",
+  ):
+    out[key] = _scalar(telemetry.get(key))
   return out
 
 
@@ -153,17 +204,78 @@ def _root_stats(env: Any, asset: Any) -> dict[str, float | None]:
   }
 
 
-def build_step_record(env: Any, *, step_index: int, rewards: torch.Tensor, dones: torch.Tensor, extras: dict[str, Any]) -> dict[str, Any]:
+def _action_term_tensors(env: Any) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+  action_manager = getattr(env, "action_manager", None)
+  terms = getattr(action_manager, "_terms", {})
+  term = terms.get("joint_pos") if isinstance(terms, dict) else None
+  processed = getattr(term, "_processed_actions", None)
+  raw = getattr(term, "_raw_actions", None)
+  return processed, raw
+
+
+def _joint_target_delta(env: Any, asset: Any) -> dict[str, float | None]:
+  target = getattr(env, "_host_getup_joint_position_target", None)
+  written_delta = getattr(env, "_host_getup_joint_position_delta", None)
+  if target is None:
+    return {"joint_target_delta_max": None, "joint_target_abs_max": None}
+  if written_delta is not None:
+    return {
+      "joint_target_delta_max": _max_abs(written_delta),
+      "joint_target_abs_max": _max_abs(target),
+    }
+  target_ids = getattr(env, "_host_getup_joint_target_ids", None)
+  if target_ids is None:
+    current = asset.data.joint_pos[:, : target.shape[1]]
+  elif target.shape[1] == len(target_ids):
+    current = asset.data.joint_pos[:, target_ids]
+  else:
+    current = asset.data.joint_pos[:, : target.shape[1]]
+  return {
+    "joint_target_delta_max": _max_abs(target - current),
+    "joint_target_abs_max": _max_abs(target),
+  }
+
+
+def build_step_record(
+  env: Any,
+  *,
+  step_index: int,
+  raw_action: torch.Tensor,
+  clipped_action: torch.Tensor,
+  previous_clipped_action: torch.Tensor | None,
+  clip_actions: float | None,
+  rewards: torch.Tensor,
+  dones: torch.Tensor,
+  extras: dict[str, Any],
+) -> dict[str, Any]:
   asset = _scene_get(env.scene, "robot")
+  processed_actions, term_raw_actions = _action_term_tensors(env)
+  action_rate = None
+  if previous_clipped_action is not None:
+    action_rate = clipped_action - previous_clipped_action
   return {
     "schema_version": SCHEMA_VERSION,
     "type": "step",
     "status": "ok",
     "task_id": TASK_ID,
     "step": int(step_index),
+    "action": {
+      "clip_actions": clip_actions,
+      "raw_max_abs": _max_abs(raw_action),
+      "raw_l2_max": _l2_max(raw_action),
+      "clipped_max_abs": _max_abs(clipped_action),
+      "clipped_l2_max": _l2_max(clipped_action),
+      "action_rate_max_abs": _max_abs(action_rate),
+      "term_raw_max_abs": _max_abs(term_raw_actions),
+      "processed_max_abs": _max_abs(processed_actions),
+      "processed_l2_max": _l2_max(processed_actions),
+    },
+    "target": _joint_target_delta(env, asset),
     "command": _command_stats(env, asset),
     "root": _root_stats(env, asset),
     "metrics": _metric_terms(env),
+    "rewards": _reward_terms(env),
+    "assist": _assist_state(env),
     "reward_mean": _scalar(rewards.mean()),
     "done_any": bool(torch.as_tensor(dones).bool().any().item()),
     "time_out_any": bool(torch.as_tensor(extras.get("time_outs", False)).bool().any().item()),
@@ -179,15 +291,51 @@ def summarize_records(records: list[dict[str, Any]], *, success_threshold: float
   controllable_rates = [float(r.get("metrics", {}).get("controllable_locomotion") or 0.0) for r in step_records]
   tracking_rates = [float(r.get("command", {}).get("tracking_rate") or 0.0) for r in step_records]
   fallen_rates = [float(r.get("root", {}).get("fallen_rate") or 0.0) for r in step_records]
+  max_action_raw_abs = max(
+    (float(r.get("action", {}).get("raw_max_abs") or 0.0) for r in step_records),
+    default=0.0,
+  )
+  max_action_clipped_abs = max(
+    (float(r.get("action", {}).get("clipped_max_abs") or 0.0) for r in step_records),
+    default=0.0,
+  )
+  max_action_processed_abs = max(
+    (float(r.get("action", {}).get("processed_max_abs") or 0.0) for r in step_records),
+    default=0.0,
+  )
+  max_joint_target_delta = max(
+    (float(r.get("target", {}).get("joint_target_delta_max") or 0.0) for r in step_records),
+    default=0.0,
+  )
+  max_joint_target_abs = max(
+    (float(r.get("target", {}).get("joint_target_abs_max") or 0.0) for r in step_records),
+    default=0.0,
+  )
+  max_assist_force_z = max(
+    (float(r.get("assist", {}).get("force_z_max") or 0.0) for r in step_records),
+    default=0.0,
+  )
+  max_assist_active_rate = max(
+    (float(r.get("assist", {}).get("active_rate") or 0.0) for r in step_records),
+    default=0.0,
+  )
   recovery_latencies = [
     float(r.get("metrics", {}).get("recovery_latency") or 0.0)
     for r in step_records
     if float(r.get("metrics", {}).get("recovery_latency") or 0.0) > 0.0
   ]
-  first_disturbance_index = next(
-    (idx for idx, r in enumerate(step_records) if float(r.get("metrics", {}).get("disturbance_count") or 0.0) > 0.0),
-    None,
-  )
+  forced_fall_step = metadata.get("forced_fall_step")
+  first_disturbance_index = None
+  if forced_fall_step is not None:
+    first_disturbance_index = next(
+      (idx for idx, r in enumerate(step_records) if int(r.get("step", idx)) >= int(forced_fall_step)),
+      None,
+    )
+  if first_disturbance_index is None:
+    first_disturbance_index = next(
+      (idx for idx, r in enumerate(step_records) if float(r.get("metrics", {}).get("disturbance_count") or 0.0) > 0.0),
+      None,
+    )
   pre_disturbance_tracking = max(tracking_rates[:first_disturbance_index], default=max(tracking_rates, default=0.0)) if first_disturbance_index is not None else max(tracking_rates, default=0.0)
   post_disturbance_tracking = max(tracking_rates[first_disturbance_index + 1 :], default=tracking_rates[-1] if tracking_rates else 0.0) if first_disturbance_index is not None else 0.0
   post_disturbance_controllable = max(controllable_rates[first_disturbance_index + 1 :], default=controllable_rates[-1] if controllable_rates else 0.0) if first_disturbance_index is not None else 0.0
@@ -211,12 +359,24 @@ def summarize_records(records: list[dict[str, Any]], *, success_threshold: float
     "steps_recorded": len(step_records),
     "num_envs": num_envs or None,
     "success_threshold": float(success_threshold),
+    "disturbance_boundary_step": (
+      int(step_records[first_disturbance_index].get("step", first_disturbance_index))
+      if first_disturbance_index is not None
+      else None
+    ),
     "pre_disturbance_tracking_rate": pre_disturbance_tracking,
     "post_disturbance_tracking_rate": post_disturbance_tracking,
     "post_disturbance_controllable_rate": post_disturbance_controllable,
     "final_tracking_rate": final_tracking_rate,
     "final_controllable_rate": final_controllable_rate,
     "max_fallen_rate": max_fallen_rate,
+    "max_action_raw_abs": max_action_raw_abs,
+    "max_action_clipped_abs": max_action_clipped_abs,
+    "max_action_processed_abs": max_action_processed_abs,
+    "max_joint_target_delta": max_joint_target_delta,
+    "max_joint_target_abs": max_joint_target_abs,
+    "max_assist_force_z": max_assist_force_z,
+    "max_assist_active_rate": max_assist_active_rate,
     "disturbance_events_per_env": disturbance_events_per_env,
     "disturbance_count_estimate": int(round(disturbance_events_per_env * num_envs)) if num_envs > 0 else None,
     "recovery_events_per_env": recovery_events_per_env,
@@ -227,6 +387,7 @@ def summarize_records(records: list[dict[str, Any]], *, success_threshold: float
       "no_disturbance_seen": disturbance_events_per_env <= 0.0,
       "no_fallen_phase_seen": max_fallen_rate <= 0.0,
       "no_recovery_success_seen": recovery_events_per_env <= 0.0,
+      "assist_active_but_no_recovery_success": max_assist_force_z > 0.0 and recovery_events_per_env <= 0.0,
       "post_disturbance_tracking_below_threshold": post_disturbance_tracking < success_threshold,
       "final_tracking_below_threshold": final_tracking_rate < success_threshold,
       "final_controllable_below_threshold": final_controllable_rate < success_threshold,
@@ -248,18 +409,46 @@ def _make_dummy_policy(agent: str, env) -> Any:
 
 
 def force_fall_reset(env: Any, *, prob: float = 1.0) -> None:
-  """Inject a deterministic near-failure reset during gate diagnostics."""
+  """Inject a near-failure reset during gate diagnostics.
+
+  Keep this diagnostic aligned with the AntiFall-GetUp training contract: a
+  forced fallen episode must pair the fallen root preset with the matching
+  GetUp joint preset.  Resetting only the root creates an out-of-distribution
+  "fallen root + standing joints" state and measures a different task from the
+  one used by hard-reset training.
+  """
 
   env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
-  mdp.reset_root_state_mixed(
+  prob = max(0.0, min(float(prob), 1.0))
+  if prob <= 0.0:
+    return
+  if prob < 1.0:
+    env_ids = env_ids[torch.rand(env_ids.numel(), device=env.device) < prob]
+    if env_ids.numel() == 0:
+      return
+
+  from src.tasks.velocity.config.g1_getup.env_cfgs import (
+    GETUP_FALLEN_ROOT_PRESETS,
+    _GETUP_TRAIN_PRESET_WEIGHT_STAGES,
+  )
+
+  mdp.reset_root_state_from_presets(
     env,
     env_ids,
-    nominal_pose_range=FORCED_FALL_POSE_RANGE,
-    nominal_velocity_range=FORCED_FALL_VELOCITY_RANGE,
-    hard_pose_range=FORCED_FALL_POSE_RANGE,
-    hard_velocity_range=FORCED_FALL_VELOCITY_RANGE,
-    hard_reset_prob=float(prob),
+    presets=GETUP_FALLEN_ROOT_PRESETS,
+    preset_weight_stages=_GETUP_TRAIN_PRESET_WEIGHT_STAGES,
+    velocity_range=FORCED_FALL_VELOCITY_RANGE,
   )
+  mdp.reset_joints_from_presets(
+    env,
+    env_ids,
+    position_noise_range=(-0.05, 0.05),
+    velocity_range=(-0.5, 0.5),
+  )
+  action_manager = getattr(env, "action_manager", None)
+  reset_actions = getattr(action_manager, "reset", None)
+  if callable(reset_actions):
+    reset_actions(env_ids=env_ids)
 
 
 def build_metadata_record(args: argparse.Namespace, *, num_envs: int, clip_actions: float) -> dict[str, Any]:
@@ -276,7 +465,15 @@ def build_metadata_record(args: argparse.Namespace, *, num_envs: int, clip_actio
     "clip_actions": clip_actions,
     "forced_fall_step": int(args.force_fall_step) if args.force_fall_step is not None else None,
     "forced_fall_prob": float(args.force_fall_prob),
+    "disable_interval_push": bool(args.disable_interval_push),
   }
+
+
+def apply_diagnostic_overrides(env_cfg: Any, args: argparse.Namespace) -> None:
+  """Apply rollout-only switches that make gate evidence easier to interpret."""
+
+  if bool(getattr(args, "disable_interval_push", False)):
+    env_cfg.events.pop("push_robot", None)
 
 
 def _make_trained_policy(args: argparse.Namespace, env, agent_cfg):
@@ -324,6 +521,7 @@ def run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
     play=not bool(args.train_like),
     hard_reset_prob=None if bool(args.train_like) else 0.0,
   )
+  apply_diagnostic_overrides(env_cfg, args)
   agent_cfg = load_rl_cfg(TASK_ID)
   env_cfg.scene.num_envs = int(args.num_envs)
   raw_env = ManagerBasedRlEnv(cfg=env_cfg, device=args.device, render_mode=None)
@@ -334,14 +532,33 @@ def run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
       build_metadata_record(args, num_envs=int(args.num_envs), clip_actions=agent_cfg.clip_actions)
     ]
     obs = env.get_observations()
+    previous_clipped_action: torch.Tensor | None = None
     for step_index in range(int(args.steps)):
       if args.force_fall_step is not None and step_index == int(args.force_fall_step):
         force_fall_reset(raw_env, prob=float(args.force_fall_prob))
         obs = env.get_observations()
       with torch.no_grad():
         action = policy(obs)
+      clipped_action = (
+        torch.clamp(action, -agent_cfg.clip_actions, agent_cfg.clip_actions)
+        if agent_cfg.clip_actions is not None
+        else action
+      )
       obs, rewards, dones, extras = env.step(action)
-      records.append(build_step_record(raw_env, step_index=step_index, rewards=rewards.detach(), dones=dones.detach(), extras=extras))
+      records.append(
+        build_step_record(
+          raw_env,
+          step_index=step_index,
+          raw_action=action.detach(),
+          clipped_action=clipped_action.detach(),
+          previous_clipped_action=previous_clipped_action,
+          clip_actions=agent_cfg.clip_actions,
+          rewards=rewards.detach(),
+          dones=dones.detach(),
+          extras=extras,
+        )
+      )
+      previous_clipped_action = clipped_action.detach().clone()
       if bool(args.stop_on_done) and torch.as_tensor(dones).bool().any().item():
         break
     records.append(summarize_records(records, success_threshold=args.success_threshold))
@@ -362,6 +579,7 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--success-threshold", type=float, default=0.8)
   parser.add_argument("--force-fall-step", type=int, default=None)
   parser.add_argument("--force-fall-prob", type=float, default=1.0)
+  parser.add_argument("--disable-interval-push", action="store_true")
   parser.add_argument("--output", type=Path, default=None)
   return parser
 

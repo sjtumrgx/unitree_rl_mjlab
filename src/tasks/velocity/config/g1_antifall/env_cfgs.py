@@ -29,10 +29,15 @@ _TRACKING_THRESHOLD = 0.35
 _YAW_THRESHOLD = 0.35
 _TILT_THRESHOLD = 0.30
 _ANTIFALL_GETUP_HARD_RESET_SCHEDULE = (
-  {"step": 0, "prob": 0.0},
-  {"step": 1500, "prob": 0.05},
-  {"step": 3000, "prob": 0.10},
-  {"step": 4500, "prob": 0.15},
+  # Expose recoveries early instead of waiting until the policy has already
+  # specialized on walking-only tracking.  A tiny hard-reset rate from the
+  # start gives PPO a stable stream of fallen-start episodes while the warm
+  # start is still intact, then ramps as the policy becomes ready for more
+  # recovery burden.
+  {"step": 0, "prob": 0.02},
+  {"step": 300, "prob": 0.05},
+  {"step": 900, "prob": 0.10},
+  {"step": 1800, "prob": 0.15},
 )
 _STAGE2_HARD_POSE_RANGE = {
   "x": (-0.5, 0.5),
@@ -538,10 +543,13 @@ def unitree_g1_antifall_getup_env_cfg(
 
   ``hard_reset_prob`` is exposed so diagnostics can enforce the BFM-style
   lifecycle order: start from nominal walking, then evaluate recovery after an
-  explicit disturbance.  The default remains the training/play task contract.
+  explicit disturbance.  The default training contract now injects a small
+  hard-reset rate from the beginning so the warm-started walking actor sees
+  fallen recovery early instead of only after it has over-specialized.
   """
 
   from src.tasks.velocity.config.g1_getup.env_cfgs import (
+    GETUP_FALLEN_ROOT_PRESETS,
     GETUP_SUCCESS_TORSO_HEIGHT,
     _GETUP_HARD_POSE_RANGE,
     _GETUP_HARD_VELOCITY_RANGE,
@@ -549,12 +557,14 @@ def unitree_g1_antifall_getup_env_cfg(
     _HOST_GETUP_MAX_ACTION_DELTA,
     _HOST_GETUP_MIN_ACTION_SCALE,
     _HOST_GETUP_UNACTUATED_TIMESTEPS,
+    _GETUP_TRAIN_PRESET_WEIGHT_STAGES,
     _add_getup_stall_guard,
     _add_support_body_contact_sensor,
     _add_support_depth_camera,
     _apply_getup_nan_safety,
     _apply_host_effective_action_observations,
     _apply_host_getup_reward_stack,
+    _apply_host_getup_safe_regularizers,
     _host_getup_stable_success_params,
   )
 
@@ -639,6 +649,11 @@ def unitree_g1_antifall_getup_env_cfg(
     hard_pose_range=_GETUP_HARD_POSE_RANGE,
     hard_velocity_range=_GETUP_HARD_VELOCITY_RANGE,
   )
+  cfg.events["reset_base"].func = mdp.reset_root_state_mixed_from_presets
+  cfg.events["reset_base"].params.pop("hard_pose_range", None)
+  cfg.events["reset_base"].params["presets"] = GETUP_FALLEN_ROOT_PRESETS
+  cfg.events["reset_base"].params["preset_weight_stages"] = _GETUP_TRAIN_PRESET_WEIGHT_STAGES
+  _apply_host_getup_safe_regularizers(cfg)
   _apply_host_getup_reward_stack(cfg)
   _add_antifall_rewards_after_getup_stack(cfg, locomotion_reward_source)
   cfg.rewards["recovery_quality"].params.update(
@@ -718,4 +733,27 @@ def unitree_g1_antifall_getup_env_cfg(
       func=mdp.getup_action_rescale,
       params={"initial_action_scale": _HOST_GETUP_INITIAL_ACTION_SCALE},
     )
+    paired_forced_fall_interval_s = (5.0, 7.0)
+    cfg.events["mid_episode_forced_fall"] = EventTermCfg(
+      func=mdp.reset_paired_fallen_state_from_presets,
+      mode="interval",
+      interval_range_s=paired_forced_fall_interval_s,
+      params={
+        "presets": GETUP_FALLEN_ROOT_PRESETS,
+        "preset_weight_stages": _GETUP_TRAIN_PRESET_WEIGHT_STAGES,
+        "velocity_range": _GETUP_HARD_VELOCITY_RANGE,
+        "joint_position_noise_range": (-0.05, 0.05),
+        "joint_velocity_range": (-0.5, 0.5),
+        "reset_actions": True,
+        "asset_cfg": SceneEntityCfg("robot"),
+      },
+    )
+  cfg.events["reset_robot_joints"].func = mdp.reset_joints_mixed_by_antifall_state
+  cfg.events["reset_robot_joints"].params = {
+    "nominal_position_range": (-0.0, 0.0),
+    "nominal_velocity_range": (-0.0, 0.0),
+    "preset_position_noise_range": (-0.05, 0.05),
+    "preset_velocity_range": (-0.5, 0.5),
+    "asset_cfg": SceneEntityCfg("robot"),
+  }
   return cfg
