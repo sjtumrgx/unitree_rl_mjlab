@@ -37,6 +37,13 @@ def _actor_term_dim(term_name: str, *, joint_dim: int) -> int:
     return 3
   if term_name in ("joint_pos", "joint_vel", "actions"):
     return joint_dim
+  if term_name == "getup_progress":
+    return 8
+  if term_name == "bfm_local_body_state":
+    # Current 29-DoF G1 body-state layout: root height (1), root-relative
+    # positions without root (28*3), 6D rotations (29*6), local linear
+    # velocities (29*3), and local angular velocities (29*3).
+    return 1 + 28 * 3 + 29 * 6 + 29 * 3 + 29 * 3
   raise KeyError(f"Unsupported anti-fall actor term: {term_name}")
 
 

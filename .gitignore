@@ -37,6 +37,7 @@ tests/tasks/*
 !tests/tasks/test_g1_getup_amp_algorithm.py
 !tests/tasks/test_g1_getup_reset_and_assist_contracts.py
 !tests/tasks/test_g1_antifall_getup_contract.py
+!tests/tasks/test_g1_antifall_getup_deploy_contract.py
 !tests/scripts/
 tests/scripts/*
 !tests/scripts/test_prepare_g1_getup_amp_data.py
