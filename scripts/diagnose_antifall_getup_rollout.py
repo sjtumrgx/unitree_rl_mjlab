@@ -171,15 +171,18 @@ def summarize_records(records: list[dict[str, Any]], *, success_threshold: float
     None,
   )
   pre_disturbance_tracking = max(tracking_rates[:first_disturbance_index], default=max(tracking_rates, default=0.0)) if first_disturbance_index is not None else max(tracking_rates, default=0.0)
+  post_disturbance_tracking = max(tracking_rates[first_disturbance_index + 1 :], default=tracking_rates[-1] if tracking_rates else 0.0) if first_disturbance_index is not None else 0.0
   post_disturbance_controllable = max(controllable_rates[first_disturbance_index + 1 :], default=controllable_rates[-1] if controllable_rates else 0.0) if first_disturbance_index is not None else 0.0
   max_fallen_rate = max(fallen_rates, default=0.0)
   final_controllable_rate = controllable_rates[-1] if controllable_rates else 0.0
+  final_tracking_rate = tracking_rates[-1] if tracking_rates else 0.0
   gate = (
     pre_disturbance_tracking >= success_threshold
     and disturbance_events_per_env > 0.0
     and max_fallen_rate > 0.0
     and recovery_events_per_env > 0.0
-    and post_disturbance_controllable >= success_threshold
+    and post_disturbance_tracking >= success_threshold
+    and final_tracking_rate >= success_threshold
   )
   return {
     "schema_version": SCHEMA_VERSION,
@@ -191,7 +194,9 @@ def summarize_records(records: list[dict[str, Any]], *, success_threshold: float
     "num_envs": num_envs or None,
     "success_threshold": float(success_threshold),
     "pre_disturbance_tracking_rate": pre_disturbance_tracking,
+    "post_disturbance_tracking_rate": post_disturbance_tracking,
     "post_disturbance_controllable_rate": post_disturbance_controllable,
+    "final_tracking_rate": final_tracking_rate,
     "final_controllable_rate": final_controllable_rate,
     "max_fallen_rate": max_fallen_rate,
     "disturbance_events_per_env": disturbance_events_per_env,
@@ -204,6 +209,8 @@ def summarize_records(records: list[dict[str, Any]], *, success_threshold: float
       "no_disturbance_seen": disturbance_events_per_env <= 0.0,
       "no_fallen_phase_seen": max_fallen_rate <= 0.0,
       "no_recovery_success_seen": recovery_events_per_env <= 0.0,
+      "post_disturbance_tracking_below_threshold": post_disturbance_tracking < success_threshold,
+      "final_tracking_below_threshold": final_tracking_rate < success_threshold,
       "final_controllable_below_threshold": final_controllable_rate < success_threshold,
     },
   }

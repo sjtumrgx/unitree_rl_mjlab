@@ -107,8 +107,14 @@ def test_antifall_getup_gates_host_getup_rewards_to_recovery_phase() -> None:
     "host_lift_progress",
     "host_upright_progress",
     "host_support_relief",
+    "host_action_smoothness",
+    "host_joint_tracking",
+    "host_style_pose",
     "host_feet_support",
     "getup_completion_bonus",
+    "host_hand_contact_after_stand",
+    "host_foot_orientation_penalty",
+    "host_ankle_deviation_penalty",
   ):
     term = cfg.rewards[reward_name]
     assert term.func is mdp.recovery_phase_reward
@@ -118,6 +124,19 @@ def test_antifall_getup_gates_host_getup_rewards_to_recovery_phase() -> None:
     assert term.params["include_disturbance_window"] is False
     assert term.params["window_s"] == 0.0
 
+
+
+def test_antifall_getup_trains_post_recovery_resume_locomotion() -> None:
+  cfg = load_env_cfg(TASK_ID)
+
+  resume = cfg.rewards["post_recovery_resume_locomotion"]
+  assert resume.func is mdp.post_recovery_resume_locomotion
+  assert resume.weight >= 1.0
+  assert resume.params["resume_window_s"] > resume.params["recovery_window_s"]
+  assert resume.params["fallen_height_threshold"] <= 0.4
+  assert resume.params["fallen_tilt_threshold"] >= 0.7
+
+  assert "post_recovery_resume_locomotion" in cfg.metrics
 
 def test_antifall_getup_recovery_rewards_ignore_plain_push_windows() -> None:
   cfg = load_env_cfg(TASK_ID)

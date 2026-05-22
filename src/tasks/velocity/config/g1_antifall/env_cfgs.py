@@ -490,13 +490,19 @@ def _gate_getup_rewards_to_recovery_phase(cfg: ManagerBasedRlEnvCfg) -> None:
     "host_lift_progress",
     "host_upright_progress",
     "host_support_relief",
+    "host_action_smoothness",
+    "host_joint_tracking",
+    "host_style_pose",
     "host_feet_support",
     "host_hand_support_progress",
     "host_hand_push",
+    "host_hand_contact_after_stand",
     "host_foot_contact_spread",
     "host_foot_flat",
     "host_foot_heading",
     "host_natural_stand_pose",
+    "host_foot_orientation_penalty",
+    "host_ankle_deviation_penalty",
     "host_target_standing",
     "getup_completion_bonus",
   )
@@ -648,6 +654,27 @@ def unitree_g1_antifall_getup_env_cfg(
       "fallen_height_threshold": 0.35,
       "fallen_tilt_threshold": 0.75,
     }
+  )
+  cfg.rewards["post_recovery_resume_locomotion"] = RewardTermCfg(
+    func=mdp.post_recovery_resume_locomotion,
+    weight=1.0,
+    params={
+      "command_name": "twist",
+      "recovery_window_s": _RECOVERY_WINDOW_S,
+      "resume_window_s": 8.0,
+      "fallen_height_threshold": 0.35,
+      "fallen_tilt_threshold": 0.75,
+    },
+  )
+  cfg.metrics["post_recovery_resume_locomotion"] = MetricsTermCfg(
+    func=mdp.post_recovery_resume_locomotion,
+    params={
+      "command_name": "twist",
+      "recovery_window_s": _RECOVERY_WINDOW_S,
+      "resume_window_s": 8.0,
+      "fallen_height_threshold": 0.35,
+      "fallen_tilt_threshold": 0.75,
+    },
   )
   _gate_getup_rewards_to_recovery_phase(cfg)
   if not play:

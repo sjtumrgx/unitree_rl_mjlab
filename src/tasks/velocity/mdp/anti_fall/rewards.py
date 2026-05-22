@@ -127,6 +127,71 @@ def recovery_quality(
   return reward
 
 
+def post_recovery_resume_locomotion(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  recovery_window_s: float = 2.0,
+  resume_window_s: float = 8.0,
+  lin_vel_std: float = 0.5,
+  ang_vel_std: float = 0.75,
+  tilt_std: float = 0.35,
+  fallen_height_threshold: float = 0.35,
+  fallen_tilt_threshold: float = 0.75,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward command tracking after a fall/push recovery returns upright.
+
+  AntiFall-GetUp is not complete at the instant the robot is no longer fallen:
+  the policy must switch back to the warm-start walking contract and resume
+  tracking velocity commands.  This term starts after the immediate recovery
+  window and remains active for a short post-recovery horizon, but only while the
+  robot is upright, so it does not compete with dense GetUp shaping on the floor.
+  """
+
+  state = get_antifall_state(env)
+  age_s = torch.clamp(
+    (int(getattr(env, "common_step_counter", 0)) - state["last_disturbance_step"]).float()
+    * env.step_dt,
+    min=0.0,
+  )
+  post_window = (state["disturbance_count"] > 0) & (age_s > float(recovery_window_s)) & (
+    age_s <= float(resume_window_s)
+  )
+  active = post_window & ~recovery_phase_mask(
+    env,
+    fallen_height_threshold=fallen_height_threshold,
+    fallen_tilt_threshold=fallen_tilt_threshold,
+    window_s=recovery_window_s,
+    include_disturbance_window=False,
+    include_near_failure_reset_window=True,
+    asset_cfg=asset_cfg,
+  )
+  if not active.any():
+    return torch.zeros(env.num_envs, device=env.device)
+
+  reward = track_linear_velocity(
+    env,
+    std=lin_vel_std,
+    command_name=command_name,
+    asset_cfg=asset_cfg,
+  )
+  reward *= track_angular_velocity(
+    env,
+    std=ang_vel_std,
+    command_name=command_name,
+    asset_cfg=asset_cfg,
+  )
+  reward *= upright_recoverability(
+    env,
+    tilt_std=tilt_std,
+    ang_vel_std=ang_vel_std,
+    asset_cfg=asset_cfg,
+  )
+  reward *= active.to(dtype=reward.dtype)
+  _log_scalar(env, "Metrics/post_recovery_resume_locomotion", reward)
+  return reward
+
+
 def standing_stability(
   env: ManagerBasedRlEnv,
   command_name: str,
