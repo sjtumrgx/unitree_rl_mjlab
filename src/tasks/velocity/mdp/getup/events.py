@@ -249,6 +249,62 @@ def _stable_getup_success_mask(
   )
 
 
+def _contact_count_tensor(
+  env: ManagerBasedRlEnv,
+  sensor_name: str | None,
+  *,
+  num_envs: int,
+  device: torch.device,
+) -> torch.Tensor | None:
+  if sensor_name is None:
+    return None
+  sensor = env.scene.get(sensor_name) if isinstance(getattr(env, "scene", None), dict) else env.scene[sensor_name]
+  if sensor is None:
+    return None
+  found = getattr(getattr(sensor, "data", None), "found", None)
+  if found is None:
+    return None
+  return (found > 0).float().reshape(num_envs, -1).sum(dim=1).to(device=device)
+
+
+def _assist_decay_milestone_mask(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  *,
+  asset,
+  body_ids,
+  success_height_threshold: float,
+  upright_alignment_threshold: float,
+  feet_sensor_name: str | None,
+  body_sensor_name: str | None,
+  hand_sensor_name: str | None = None,
+  min_feet_contact_count: float,
+  max_body_support_count: float,
+  max_hand_contact_count: float | None = None,
+) -> torch.Tensor:
+  torso_height = _relative_torso_height(env, asset, body_ids, env_ids)
+  alignment = _upright_alignment(asset.data.projected_gravity_b)[env_ids]
+  success = (torso_height >= float(success_height_threshold)) & (
+    alignment >= float(upright_alignment_threshold)
+  )
+  device = torso_height.device
+  num_envs = int(asset.data.projected_gravity_b.shape[0])
+
+  feet_count = _contact_count_tensor(env, feet_sensor_name, num_envs=num_envs, device=device)
+  if feet_count is not None:
+    success &= feet_count[env_ids] >= float(min_feet_contact_count)
+
+  body_count = _contact_count_tensor(env, body_sensor_name, num_envs=num_envs, device=device)
+  if body_count is not None:
+    success &= body_count[env_ids] <= float(max_body_support_count)
+
+  hand_count = _contact_count_tensor(env, hand_sensor_name, num_envs=num_envs, device=device)
+  if hand_count is not None and max_hand_contact_count is not None:
+    success &= hand_count[env_ids] <= float(max_hand_contact_count)
+
+  return success
+
+
 def _mark_recovery_reset(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,
@@ -375,6 +431,9 @@ class apply_host_getup_assist_force:
     self._min_force_n = float(cfg.params.get("min_force_n", 0.0))
     self._min_action_scale = float(cfg.params.get("min_action_scale", 0.25))
     self._stable_success_required = bool(cfg.params.get("stable_success_required", True))
+    self._assist_decay_requires_strict_success = bool(
+      cfg.params.get("assist_decay_requires_strict_success", False)
+    )
     self._upright_alignment_threshold = float(cfg.params.get("upright_alignment_threshold", 0.85))
     self._feet_sensor_name = cfg.params.get("feet_sensor_name")
     self._body_sensor_name = cfg.params.get("body_sensor_name")
@@ -467,7 +526,10 @@ class apply_host_getup_assist_force:
       state["max_torso_height"][env_ids],
       torso_height,
     )
-    if stable_success_required:
+    assist_decay_requires_strict_success = bool(
+      getattr(self, "_assist_decay_requires_strict_success", False)
+    )
+    if stable_success_required and assist_decay_requires_strict_success:
       succeeded_now = _stable_getup_success_mask(
         env,
         env_ids,
@@ -486,6 +548,21 @@ class apply_host_getup_assist_force:
         min_foot_heading_alignment=min_foot_heading_alignment,
         min_foot_geom_contact_spread=min_foot_geom_contact_spread,
         foot_asset_cfg=foot_asset_cfg,
+      )
+    elif stable_success_required:
+      succeeded_now = _assist_decay_milestone_mask(
+        env,
+        env_ids,
+        asset=asset,
+        body_ids=asset_cfg.body_ids,
+        success_height_threshold=success_height_threshold,
+        upright_alignment_threshold=upright_alignment_threshold,
+        feet_sensor_name=feet_sensor_name,
+        body_sensor_name=body_sensor_name,
+        hand_sensor_name=hand_sensor_name,
+        min_feet_contact_count=min_feet_contact_count,
+        max_body_support_count=max_body_support_count,
+        max_hand_contact_count=max_hand_contact_count,
       )
     else:
       succeeded_now = torso_height > float(success_height_threshold)
@@ -540,7 +617,7 @@ class apply_host_getup_assist_force:
 
     height_success = state["max_torso_height"][env_ids_t] > self._success_height_threshold
     succeeded = height_success
-    if self._stable_success_required:
+    if self._stable_success_required and self._assist_decay_requires_strict_success:
       current_stable_success = height_success & _stable_getup_success_mask(
         self._env,
         env_ids_t,
@@ -561,6 +638,22 @@ class apply_host_getup_assist_force:
         foot_asset_cfg=self._foot_asset_cfg,
       )
       succeeded = state["episode_success"][env_ids_t] | current_stable_success
+    elif self._stable_success_required:
+      current_milestone_success = height_success & _assist_decay_milestone_mask(
+        self._env,
+        env_ids_t,
+        asset=self._asset,
+        body_ids=self._body_ids,
+        success_height_threshold=self._success_height_threshold,
+        upright_alignment_threshold=self._upright_alignment_threshold,
+        feet_sensor_name=self._feet_sensor_name,
+        body_sensor_name=self._body_sensor_name,
+        hand_sensor_name=self._hand_sensor_name,
+        min_feet_contact_count=self._min_feet_contact_count,
+        max_body_support_count=self._max_body_support_count,
+        max_hand_contact_count=self._max_hand_contact_count,
+      )
+      succeeded = state["episode_success"][env_ids_t] | current_milestone_success
     if torch.any(succeeded):
       selected = env_ids_t[succeeded]
       state["force_n"][selected] = torch.clamp(

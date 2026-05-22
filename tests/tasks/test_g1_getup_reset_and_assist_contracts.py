@@ -106,6 +106,46 @@ def test_assist_curriculum_does_not_decay_on_ballistic_height_without_stable_sup
   assert state["action_rescale"].item() == 1.0
 
 
+
+def test_assist_curriculum_decays_on_reachable_support_milestone_before_strict_foot_posture() -> None:
+  env = _FakeEnv()
+  env.scene["robot"].data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.58]]])
+  env.scene["robot"].data.projected_gravity_b = torch.tensor([[0.0, 0.0, -0.90]])
+  env.scene["feet_ground_contact"] = _FakeContactSensor(torch.tensor([[[1.0], [1.0]]]))
+  env.scene["support_body_contact"] = _FakeContactSensor(torch.tensor([[[0.0]]]))
+  env.scene["hand_ground_contact"] = _FakeContactSensor(torch.tensor([[[0.0], [0.0]]]))
+  env.scene["foot_geom_ground_contact"] = _FakeContactSensor(torch.zeros(1, 14, 1))
+  cfg = SimpleNamespace(
+    params={
+      "asset_cfg": SceneEntityCfg("robot", body_ids=[0]),
+      "success_height_threshold": 0.55,
+      "stable_success_required": True,
+      "assist_decay_requires_strict_success": False,
+      "upright_alignment_threshold": 0.85,
+      "feet_sensor_name": "feet_ground_contact",
+      "body_sensor_name": "support_body_contact",
+      "hand_sensor_name": "hand_ground_contact",
+      "foot_geom_sensor_name": "foot_geom_ground_contact",
+      "min_feet_contact_count": 2.0,
+      "max_body_support_count": 0.0,
+      "max_hand_contact_count": 0.0,
+      "min_foot_flatness": 0.6,
+      "min_foot_heading_alignment": 0.6,
+      "min_foot_geom_contact_spread": 0.5,
+      "force_decay_n": 20.0,
+      "action_scale_decay": 0.02,
+    }
+  )
+  assist = events.apply_host_getup_assist_force(cfg, env)
+  state = events.get_host_getup_curriculum_state(env, initial_force_n=100.0, initial_action_scale=1.0)
+  state["max_torso_height"][:] = 0.58
+
+  assist.reset(torch.tensor([0]))
+
+  assert state["force_n"].item() == pytest.approx(80.0)
+  assert state["action_rescale"].item() == pytest.approx(0.98)
+
+
 def test_assist_curriculum_decays_when_stable_success_reaches_reachable_height() -> None:
   env = _FakeEnv()
   env.scene["robot"].data.projected_gravity_b = torch.tensor([[0.0, 0.0, -1.0]])
