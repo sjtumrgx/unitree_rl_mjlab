@@ -403,6 +403,7 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
     terrain_agent_cfg.max_iterations = args.agent.max_iterations
     terrain_agent_cfg.num_steps_per_env = args.agent.num_steps_per_env
     terrain_agent_cfg.save_interval = args.agent.save_interval
+    terrain_agent_cfg.obs_groups = args.agent.obs_groups
     terrain_agent_cfg.logger = args.agent.logger
     terrain_agent_cfg.upload_model = args.agent.upload_model
     terrain_agent_cfg.seed = args.agent.seed
@@ -410,6 +411,9 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
     terrain_agent_cfg.load_run = args.agent.load_run
     terrain_agent_cfg.load_checkpoint = args.agent.load_checkpoint
     terrain_agent_cfg.clip_actions = args.agent.clip_actions
+    terrain_agent_cfg.actor = args.agent.actor
+    terrain_agent_cfg.critic = args.agent.critic
+    terrain_agent_cfg.algorithm = args.agent.algorithm
     args = replace(args, env=terrain_env_cfg, agent=terrain_agent_cfg)
 
   # Create log directory once before launching workers.

@@ -92,6 +92,15 @@ def test_antifall_getup_play_cfg_preserves_evaluation_disturbances_and_contact_h
   assert cfg.events["reset_base"].params["hard_reset_prob"] >= 0.05
 
 
+def test_antifall_getup_can_disable_hard_resets_for_walk_then_recover_gate() -> None:
+  from src.tasks.velocity.config.g1_antifall.env_cfgs import unitree_g1_antifall_getup_env_cfg
+
+  cfg = unitree_g1_antifall_getup_env_cfg(play=True, hard_reset_prob=0.0)
+
+  assert cfg.events["reset_base"].params["hard_reset_prob"] == 0.0
+  assert "push_robot" in cfg.events
+
+
 def test_antifall_getup_play_randomizes_terrain_before_root_reset() -> None:
   cfg = load_env_cfg(TASK_ID, play=True)
   reset_terms = [name for name, term in cfg.events.items() if term.mode == "reset"]

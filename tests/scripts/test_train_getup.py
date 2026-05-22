@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
 import torch
 from mjlab.rl import RslRlOnPolicyRunnerCfg
 
@@ -22,6 +23,10 @@ def test_getup_terrain_launch_preserves_cli_resource_overrides(monkeypatch) -> N
     load_run="2026-05-18_14-27-39_ground",
     load_checkpoint="model_9999.pt",
     clip_actions=3.0,
+    obs_groups={"actor": ("actor",), "critic": ("critic",)},
+    actor=object(),
+    critic=object(),
+    algorithm=object(),
     experiment_name="g1_getup",
     run_name="ground",
   )
@@ -37,6 +42,10 @@ def test_getup_terrain_launch_preserves_cli_resource_overrides(monkeypatch) -> N
     load_run=".*",
     load_checkpoint="model_.*.pt",
     clip_actions=5.0,
+    obs_groups={},
+    actor=object(),
+    critic=object(),
+    algorithm=object(),
     experiment_name="g1_getup",
     run_name="ground",
   )
@@ -82,6 +91,39 @@ def test_getup_terrain_launch_preserves_cli_resource_overrides(monkeypatch) -> N
   assert launched.agent.load_run == "2026-05-18_14-27-39_ground"
   assert launched.agent.load_checkpoint == "model_9999.pt"
   assert launched.agent.clip_actions == 3.0
+  assert launched.agent.obs_groups is base_agent.obs_groups
+  assert launched.agent.actor is base_agent.actor
+  assert launched.agent.critic is base_agent.critic
+  assert launched.agent.algorithm is base_agent.algorithm
+
+
+def test_getup_terrain_launch_preserves_nested_ppo_overrides(monkeypatch) -> None:
+  from scripts import train
+
+  captured = {}
+
+  monkeypatch.setattr(train, "select_gpus", lambda gpu_ids: (None, 0))
+  monkeypatch.setattr(
+    train,
+    "run_train",
+    lambda task_id, args, log_dir: captured.update(task_id=task_id, args=args, log_dir=log_dir),
+  )
+
+  args = replace(
+    train.TrainConfig.from_task("Unitree-G1-GetUp"),
+    gpu_ids="cpu",
+    getup_terrain="platform",
+  )
+  args.agent.algorithm.learning_rate = 1.0e-4
+  args.agent.algorithm.desired_kl = 0.003
+  args.agent.actor.distribution_cfg["init_std"] = 0.2
+
+  train.launch_training("Unitree-G1-GetUp", args)
+
+  launched = captured["args"]
+  assert launched.agent.algorithm.learning_rate == pytest.approx(1.0e-4)
+  assert launched.agent.algorithm.desired_kl == pytest.approx(0.003)
+  assert launched.agent.actor.distribution_cfg["init_std"] == pytest.approx(0.2)
 
 
 def test_run_train_actor_only_resume_loads_only_actor(monkeypatch, tmp_path) -> None:

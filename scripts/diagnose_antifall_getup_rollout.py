@@ -251,11 +251,22 @@ def run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
   import src.tasks  # noqa: F401
   from mjlab.envs import ManagerBasedRlEnv
   from mjlab.rl import RslRlVecEnvWrapper
-  from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
+  from mjlab.tasks.registry import load_rl_cfg
   from mjlab.utils.torch import configure_torch_backends
+  from src.tasks.velocity.config.g1_antifall.env_cfgs import unitree_g1_antifall_getup_env_cfg
 
   configure_torch_backends()
-  env_cfg = load_env_cfg(TASK_ID, play=not bool(args.train_like))
+  # Gate rollouts should prove the BFM-style lifecycle:
+  # nominal walking first, explicit push/fall disturbance, then recovery.
+  # The registered play config keeps a small hard-reset probability to preserve
+  # the task's fallen-start evaluation coverage, but using it here marks a
+  # near-failure reset at t=0 and poisons "pre-disturbance tracking".  Build the
+  # env directly with hard resets disabled unless the caller explicitly asks for
+  # train-like curriculum coverage.
+  env_cfg = unitree_g1_antifall_getup_env_cfg(
+    play=not bool(args.train_like),
+    hard_reset_prob=None if bool(args.train_like) else 0.0,
+  )
   agent_cfg = load_rl_cfg(TASK_ID)
   env_cfg.scene.num_envs = int(args.num_envs)
   raw_env = ManagerBasedRlEnv(cfg=env_cfg, device=args.device, render_mode=None)

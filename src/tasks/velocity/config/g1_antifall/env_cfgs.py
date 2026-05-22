@@ -472,13 +472,21 @@ def _add_antifall_rewards_after_getup_stack(cfg: ManagerBasedRlEnvCfg, source_re
   _apply_antifall_rewards(cfg)
 
 
-def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def unitree_g1_antifall_getup_env_cfg(
+  play: bool = False,
+  *,
+  hard_reset_prob: float | None = None,
+) -> ManagerBasedRlEnvCfg:
   """Create walking anti-fall plus fallen GetUp recovery scaffold.
 
   This task intentionally combines the late anti-fall walking/push ladder with
   the repaired HoST-style GetUp action/reset/reward contract.  It trains one
   actor to track velocity commands, absorb disturbances, recover from hard
   fallen resets, and resume controllable locomotion.
+
+  ``hard_reset_prob`` is exposed so diagnostics can enforce the BFM-style
+  lifecycle order: start from nominal walking, then evaluate recovery after an
+  explicit disturbance.  The default remains the training/play task contract.
   """
 
   from src.tasks.velocity.config.g1_getup.env_cfgs import (
@@ -556,7 +564,7 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
   _apply_host_effective_action_observations(cfg)
   _apply_antifall_helpers(
     cfg,
-    hard_reset_prob=0.15,
+    hard_reset_prob=0.15 if hard_reset_prob is None else float(hard_reset_prob),
     hard_pose_range=_GETUP_HARD_POSE_RANGE,
     hard_velocity_range=_GETUP_HARD_VELOCITY_RANGE,
   )
