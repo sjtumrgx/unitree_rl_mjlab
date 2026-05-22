@@ -92,6 +92,15 @@ def test_antifall_getup_play_cfg_preserves_evaluation_disturbances_and_contact_h
   assert cfg.events["reset_base"].params["hard_reset_prob"] >= 0.05
 
 
+def test_antifall_getup_play_randomizes_terrain_before_root_reset() -> None:
+  cfg = load_env_cfg(TASK_ID, play=True)
+  reset_terms = [name for name, term in cfg.events.items() if term.mode == "reset"]
+
+  assert "randomize_terrain" in reset_terms
+  assert reset_terms.index("randomize_terrain") < reset_terms.index("reset_base")
+  assert reset_terms.index("randomize_terrain") < reset_terms.index("reset_robot_joints")
+
+
 def test_antifall_getup_uses_hybrid_action_to_preserve_warmstart_walking() -> None:
   from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
 

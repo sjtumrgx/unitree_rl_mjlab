@@ -93,6 +93,15 @@ def test_supine_reset_uses_higher_fallen_z_offset_to_avoid_contact_pop() -> None
   assert presets["supine"]["z"][1] < -0.2
 
 
+def test_play_randomizes_terrain_before_fallen_root_reset() -> None:
+  cfg = unitree_g1_getup_env_cfg("slope", play=True)
+  reset_terms = [name for name, term in cfg.events.items() if term.mode == "reset"]
+
+  assert "randomize_terrain" in reset_terms
+  assert reset_terms.index("randomize_terrain") < reset_terms.index("reset_base")
+  assert reset_terms.index("randomize_terrain") < reset_terms.index("reset_robot_joints")
+
+
 def test_assist_curriculum_does_not_decay_on_ballistic_height_without_stable_support() -> None:
   env = _FakeEnv()
   cfg = SimpleNamespace(params={"asset_cfg": SceneEntityCfg("robot", body_ids=[0])})

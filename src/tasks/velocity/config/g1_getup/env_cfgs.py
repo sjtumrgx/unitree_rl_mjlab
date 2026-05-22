@@ -6,6 +6,7 @@ new HoST get-up work does not change current training task behavior.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -428,6 +429,29 @@ def _restore_getup_actor_height_scan(cfg: ManagerBasedRlEnvCfg, *, history_lengt
 
 
 
+def _move_randomize_terrain_before_root_reset(cfg: ManagerBasedRlEnvCfg) -> None:
+  """Ensure play-mode terrain origin changes happen before fallen root reset.
+
+  The base velocity play config appends ``randomize_terrain`` after robot reset
+  events. For GetUp on generated terrain that places the fallen robot using the
+  previous ``env_origin`` and only then swaps to a new terrain origin, slope and
+  wall resets can start meters above or below the sampled patch. BFM-style
+  recovery assumes the initial fall state is coherent with the current terrain.
+  """
+
+  randomize = cfg.events.get("randomize_terrain")
+  if randomize is None or getattr(randomize, "mode", None) != "reset":
+    return
+
+  ordered = OrderedDict()
+  ordered["randomize_terrain"] = randomize
+  for name, term in cfg.events.items():
+    if name != "randomize_terrain":
+      ordered[name] = term
+  cfg.events = ordered
+
+
+
 def _add_getup_stall_guard(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.terminations.pop("fell_over", None)
   cfg.terminations.pop("head_contact", None)
@@ -739,6 +763,7 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
     unactuated_timesteps=_HOST_GETUP_UNACTUATED_TIMESTEPS,
     max_delta=_HOST_GETUP_MAX_ACTION_DELTA,
   )
+  _move_randomize_terrain_before_root_reset(cfg)
   _apply_zero_command_profile(cfg)
   _apply_host_terrain_variant(cfg, terrain)
   cfg.curriculum.pop("command_vel", None)

@@ -1,5 +1,7 @@
 """Stage-configured Unitree G1 anti-fall velocity environment scaffolds."""
 
+from collections import OrderedDict
+
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.metrics_manager import MetricsTermCfg
@@ -245,6 +247,19 @@ def _apply_antifall_helpers(
   _configure_antifall_push_tracking(cfg)
 
 
+def _move_randomize_terrain_before_root_reset(cfg: ManagerBasedRlEnvCfg) -> None:
+  randomize = cfg.events.get("randomize_terrain")
+  if randomize is None or getattr(randomize, "mode", None) != "reset":
+    return
+
+  ordered = OrderedDict()
+  ordered["randomize_terrain"] = randomize
+  for name, term in cfg.events.items():
+    if name != "randomize_terrain":
+      ordered[name] = term
+  cfg.events = ordered
+
+
 def _make_antifall_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_flat_env_cfg(play=play)
   _apply_antifall_actor_contract(cfg)
@@ -484,6 +499,7 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
   )
 
   cfg = unitree_g1_antifall_stage4b_env_cfg(play=play)
+  _move_randomize_terrain_before_root_reset(cfg)
   locomotion_reward_source = dict(cfg.rewards)
   if not play:
     cfg.scene.num_envs = 4096
