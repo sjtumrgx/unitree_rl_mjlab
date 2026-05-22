@@ -599,6 +599,92 @@ def test_rollout_summary_distinguishes_downward_fall_from_upward_pop() -> None:
   assert summary["risk_flags"]["vertical_speed_gt_2mps"] is True
 
 
+
+def test_rollout_step_record_reports_reset_and_terrain_cohorts() -> None:
+  env = _FakeEnv()
+  asset = env.scene["robot"]
+  env._getup_reset_state = {
+    "preset_index": torch.tensor([0, 1, 1, 3]),
+    "preset_names": ("supine", "left_side", "right_side", "seated_fall"),
+  }
+  env.scene["terrain"] = SimpleNamespace(
+    terrain_levels=torch.tensor([0, 2, 2, 3]),
+    terrain_types=torch.tensor([0, 0, 1, 1]),
+    env_origins=torch.zeros(4, 3),
+  )
+  env.scene["env_origins"] = env.scene["terrain"].env_origins
+  asset.data.root_link_pos_w = torch.tensor([[0.0, 0.0, 0.2], [0.0, 0.0, 0.7], [0.0, 0.0, 0.2], [0.0, 0.0, 0.75]])
+  asset.data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.2]], [[0.0, 0.0, 0.7]], [[0.0, 0.0, 0.2]], [[0.0, 0.0, 0.75]]])
+  asset.data.projected_gravity_b = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, -0.9], [0.0, 0.0, -0.2], [0.0, 0.0, -0.95]])
+  asset.data.root_link_lin_vel_w = torch.zeros(4, 3)
+  asset.data.root_link_ang_vel_w = torch.zeros(4, 3)
+  asset.data.joint_pos = torch.zeros(4, 12)
+  env.scene["feet_ground_contact"].data.found = torch.ones(4, 2, 1)
+  env.scene["support_body_contact"].data.found = torch.zeros(4, 2, 1)
+  env.scene["hand_ground_contact"].data.found = torch.zeros(4, 2, 1)
+  env.scene["foot_geom_ground_contact"].data.found = torch.ones(4, 14, 1)
+  env._host_getup_joint_position_target = torch.zeros(4, 12)
+  env.metrics_manager._term_names = ["getup_success_count", "getup_upright"]
+  env.metrics_manager._step_values = torch.tensor([[0.0, 0.0], [1.0, 1.0], [0.0, 0.0], [1.0, 1.0]])
+
+  record = rollout.build_step_record(
+    env,
+    task_id="Unitree-G1-GetUp",
+    step_index=0,
+    mode="play-like",
+    raw_action=torch.zeros(4, 2),
+    clipped_action=torch.zeros(4, 2),
+    previous_clipped_action=None,
+    rewards=torch.zeros(4),
+    dones=torch.zeros(4),
+    extras={},
+    clip_actions=5.0,
+  )
+
+  assert record["cohorts"]["reset_preset"]["left_side"]["env_count"] == 2
+  assert record["cohorts"]["reset_preset"]["left_side"]["standing_rate"] == pytest.approx(0.5)
+  assert record["cohorts"]["reset_preset"]["left_side"]["success_events"] == pytest.approx(1.0)
+  assert record["cohorts"]["terrain_level"]["level_2"]["env_count"] == 2
+  assert record["cohorts"]["terrain_type"]["type_1"]["standing_rate"] == pytest.approx(0.5)
+
+
+def test_rollout_summary_reports_final_and_best_cohort_rates() -> None:
+  metadata = {"type": "metadata", "num_envs": 4}
+  first = {
+    "type": "step",
+    "step": 0,
+    "target": {"joint_target_delta_max": 0.0},
+    "root": {"root_vertical_velocity": 0.0, "torso_height": 0.2, "supportless_height_spike": False},
+    "support": {"feet_contact_count": 2.0, "hand_contact_count": 0.0},
+    "metrics": {"getup_success_count": 0.25, "getup_upright": 0.25},
+    "posture": {},
+    "termination": {"done_any": False},
+    "curriculum_assist": {},
+    "cohorts": {
+      "terrain_level": {
+        "level_0": {"env_count": 2, "standing_rate": 0.5, "upright_rate": 0.5, "success_events": 1.0},
+        "level_2": {"env_count": 2, "standing_rate": 0.0, "upright_rate": 0.0, "success_events": 0.0},
+      }
+    },
+  }
+  final = {
+    **first,
+    "step": 1,
+    "metrics": {"getup_success_count": 0.5, "getup_upright": 0.5},
+    "cohorts": {
+      "terrain_level": {
+        "level_0": {"env_count": 2, "standing_rate": 1.0, "upright_rate": 1.0, "success_events": 2.0},
+        "level_2": {"env_count": 2, "standing_rate": 0.5, "upright_rate": 0.5, "success_events": 1.0},
+      }
+    },
+  }
+
+  summary = rollout.summarize_records([metadata, first, final])
+
+  assert summary["cohorts"]["terrain_level"]["final"]["level_2"]["standing_rate"] == pytest.approx(0.5)
+  assert summary["cohorts"]["terrain_level"]["best_standing_rate"]["level_2"] == pytest.approx(0.5)
+  assert summary["cohorts"]["terrain_level"]["total_success_events"]["level_2"] == pytest.approx(1.0)
+
 def test_rollout_main_writes_structured_blocker_json(monkeypatch, tmp_path: Path) -> None:
   def _raise(_args):
     raise RuntimeError("sim unavailable")

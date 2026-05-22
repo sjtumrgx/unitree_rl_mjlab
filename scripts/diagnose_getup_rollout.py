@@ -445,6 +445,113 @@ def _metric_tensor(env: Any, metric_name: str) -> torch.Tensor | None:
   return values[:, names.index(metric_name)].detach().float()
 
 
+def _terrain_entity(env: Any) -> Any:
+  terrain = _scene_get(env.scene, "terrain")
+  if terrain is not None:
+    return terrain
+  return getattr(getattr(env, "scene", None), "terrain", None)
+
+
+def _cohort_labels_from_reset(env: Any, num_envs: int) -> list[str] | None:
+  state = getattr(env, "_getup_reset_state", None)
+  if not isinstance(state, dict):
+    return None
+  preset_index = state.get("preset_index")
+  if not torch.is_tensor(preset_index) or preset_index.numel() != num_envs:
+    return None
+  preset_names = tuple(state.get("preset_names") or ())
+  labels: list[str] = []
+  for raw_index in preset_index.detach().cpu().tolist():
+    index = int(raw_index)
+    if 0 <= index < len(preset_names):
+      labels.append(str(preset_names[index]))
+    else:
+      labels.append(f"preset_{index}")
+  return labels
+
+
+def _cohort_labels_from_tensor(prefix: str, tensor: Any, num_envs: int) -> list[str] | None:
+  if not torch.is_tensor(tensor) or tensor.numel() != num_envs:
+    return None
+  return [f"{prefix}_{int(value)}" for value in tensor.detach().cpu().tolist()]
+
+
+def _tensor_or_zeros(value: torch.Tensor | None, *, like: torch.Tensor) -> torch.Tensor:
+  if value is None or value.shape[0] != like.shape[0]:
+    return torch.zeros_like(like, dtype=torch.float)
+  return value.detach().float()
+
+
+def _cohort_stats(
+  labels: list[str] | None,
+  *,
+  standing: torch.Tensor,
+  upright: torch.Tensor,
+  success: torch.Tensor,
+  env_origin_z: torch.Tensor | None,
+) -> dict[str, dict[str, float | int]]:
+  if labels is None or len(labels) != standing.shape[0]:
+    return {}
+  out: dict[str, dict[str, float | int]] = {}
+  for label in sorted(set(labels)):
+    mask = torch.tensor([item == label for item in labels], device=standing.device, dtype=torch.bool)
+    env_count = int(mask.sum().item())
+    if env_count <= 0:
+      continue
+    group_standing = standing[mask].float()
+    group_upright = upright[mask].float()
+    group_success = success[mask].float()
+    row: dict[str, float | int] = {
+      "env_count": env_count,
+      "standing_count": float(group_standing.sum().item()),
+      "standing_rate": float(group_standing.mean().item()),
+      "upright_count": float(group_upright.sum().item()),
+      "upright_rate": float(group_upright.mean().item()),
+      "success_events": float(group_success.sum().item()),
+      "success_events_per_env": float(group_success.sum().item() / env_count),
+    }
+    if env_origin_z is not None and env_origin_z.shape[0] == standing.shape[0]:
+      z = env_origin_z[mask].detach().float()
+      row.update(
+        {
+          "env_origin_z_min": float(z.amin().item()),
+          "env_origin_z_mean": float(z.mean().item()),
+          "env_origin_z_max": float(z.amax().item()),
+        }
+      )
+    out[label] = row
+  return out
+
+
+def _cohort_telemetry(env: Any, asset: Any) -> dict[str, dict[str, dict[str, float | int]]]:
+  standing = _standing_mask(env, asset).detach().bool()
+  num_envs = int(standing.shape[0])
+  upright = _tensor_or_zeros(_metric_tensor(env, "getup_upright"), like=standing.float())
+  success = _tensor_or_zeros(_metric_tensor(env, "getup_success_count"), like=standing.float())
+  env_origins = _scene_get(env.scene, "env_origins")
+  env_origin_z = None
+  if torch.is_tensor(env_origins) and env_origins.shape[0] == num_envs and env_origins.shape[-1] >= 3:
+    env_origin_z = env_origins[:, 2].detach().float()
+
+  terrain = _terrain_entity(env)
+  labels_by_group = {
+    "reset_preset": _cohort_labels_from_reset(env, num_envs),
+    "terrain_level": _cohort_labels_from_tensor("level", getattr(terrain, "terrain_levels", None), num_envs),
+    "terrain_type": _cohort_labels_from_tensor("type", getattr(terrain, "terrain_types", None), num_envs),
+  }
+  return {
+    group: _cohort_stats(
+      labels,
+      standing=standing,
+      upright=upright,
+      success=success,
+      env_origin_z=env_origin_z,
+    )
+    for group, labels in labels_by_group.items()
+    if labels is not None
+  }
+
+
 def _action_term_tensors(env: Any) -> tuple[torch.Tensor | None, torch.Tensor | None]:
   action_manager = getattr(env, "action_manager", None)
   terms = getattr(action_manager, "_terms", {})
@@ -667,6 +774,7 @@ def build_step_record(
       "time_out_any": bool(torch.as_tensor(extras.get("time_outs", False)).bool().any().item()),
     },
     "metrics": _metric_terms(env),
+    "cohorts": _cohort_telemetry(env, asset),
   }
   if amp_stats is not None:
     record["amp"] = amp_stats
@@ -1013,6 +1121,45 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
       "max_getup_upright_rate": max(upright_rates, default=0.0),
       "final_getup_upright_rate": upright_rates[-1] if upright_rates else 0.0,
     }
+
+  def _cohort_summary(group_name: str) -> dict[str, Any]:
+    group_records = [
+      record.get("cohorts", {}).get(group_name, {})
+      for record in step_records
+      if isinstance(record.get("cohorts", {}).get(group_name, {}), dict)
+    ]
+    if not group_records:
+      return {}
+    labels = sorted({label for group in group_records for label in group})
+    final = {label: group_records[-1][label] for label in labels if label in group_records[-1]}
+
+    def _best_rate(key: str) -> dict[str, float]:
+      out: dict[str, float] = {}
+      for label in labels:
+        out[label] = max(
+          (float(group.get(label, {}).get(key) or 0.0) for group in group_records),
+          default=0.0,
+        )
+      return out
+
+    def _total_success() -> dict[str, float]:
+      out: dict[str, float] = {}
+      for label in labels:
+        out[label] = sum(float(group.get(label, {}).get("success_events") or 0.0) for group in group_records)
+      return out
+
+    return {
+      "final": final,
+      "best_standing_rate": _best_rate("standing_rate"),
+      "best_upright_rate": _best_rate("upright_rate"),
+      "total_success_events": _total_success(),
+    }
+
+  cohort_summary = {
+    group_name: summary
+    for group_name in ("reset_preset", "terrain_level", "terrain_type")
+    if (summary := _cohort_summary(group_name))
+  }
   return {
     "schema_version": SCHEMA_VERSION,
     "type": "summary",
@@ -1031,6 +1178,7 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
       "assisted": assisted_success,
       "no_assist": no_assist_success,
     },
+    "cohorts": cohort_summary,
     "posture": {
       "min_foot_flatness": min_foot_flatness,
       "min_foot_heading_alignment": min_foot_heading_alignment,
