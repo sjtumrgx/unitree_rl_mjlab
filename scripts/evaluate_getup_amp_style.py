@@ -42,7 +42,10 @@ def _flatten_obs_group(value: Any) -> torch.Tensor:
 def _get_obs_group(obs: Any, group_name: str) -> Any:
   if isinstance(obs, dict):
     return obs[group_name]
-  return getattr(obs, group_name)
+  try:
+    return obs[group_name]
+  except (KeyError, TypeError, AttributeError):
+    return getattr(obs, group_name)
 
 
 def nearest_neighbor_style_distance(policy_obs: torch.Tensor, expert_obs: torch.Tensor) -> dict[str, float | int]:

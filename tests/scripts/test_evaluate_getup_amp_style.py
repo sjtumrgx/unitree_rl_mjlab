@@ -49,3 +49,20 @@ def test_compare_style_reports_positive_improvement_when_candidate_is_closer() -
   assert report["style_distance_improved"] is True
   assert report["candidate_success_rate"] == pytest.approx(1.0)
   assert report["style_gate_pass"] is True
+
+
+class _MappingOnlyObs:
+  """Mimic TensorDict-like objects that support key lookup but not attributes."""
+
+  def __init__(self, values):
+    self._values = values
+
+  def __getitem__(self, key):
+    return self._values[key]
+
+
+def test_get_obs_group_supports_mapping_only_tensordict() -> None:
+  amp = torch.ones(2, 51)
+  obs = _MappingOnlyObs({"amp": amp})
+
+  assert style._get_obs_group(obs, "amp") is amp
