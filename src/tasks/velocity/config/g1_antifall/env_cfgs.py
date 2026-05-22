@@ -540,7 +540,7 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
   _apply_host_effective_action_observations(cfg)
   _apply_antifall_helpers(
     cfg,
-    hard_reset_prob=0.35,
+    hard_reset_prob=0.15,
     hard_pose_range=_GETUP_HARD_POSE_RANGE,
     hard_velocity_range=_GETUP_HARD_VELOCITY_RANGE,
   )

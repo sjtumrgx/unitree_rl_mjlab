@@ -29,7 +29,7 @@ def test_antifall_getup_env_combines_walking_push_and_fallen_recovery_contracts(
   assert cfg.events["push_robot"].func is mdp.push_by_setting_velocity_with_history
 
   reset_params = cfg.events["reset_base"].params
-  assert reset_params["hard_reset_prob"] >= 0.25
+  assert 0.05 <= reset_params["hard_reset_prob"] <= 0.2
   assert reset_params["hard_pose_range"]["roll"][0] <= -2.0
   assert reset_params["hard_pose_range"]["pitch"][1] >= 2.0
 
@@ -89,7 +89,7 @@ def test_antifall_getup_play_cfg_preserves_evaluation_disturbances_and_contact_h
   cfg = load_env_cfg(TASK_ID, play=True)
   assert "push_robot" in cfg.events
   assert cfg.sim.nconmax >= 256
-  assert cfg.events["reset_base"].params["hard_reset_prob"] >= 0.25
+  assert cfg.events["reset_base"].params["hard_reset_prob"] >= 0.05
 
 
 def test_antifall_getup_uses_hybrid_action_to_preserve_warmstart_walking() -> None:

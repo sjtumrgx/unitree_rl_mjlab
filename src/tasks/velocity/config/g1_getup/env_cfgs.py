@@ -42,6 +42,12 @@ HOST_SOURCE_TASKS = {
   "slope": "g1_slope",
 }
 
+def _getup_initial_assist_force(terrain: str) -> float:
+  """Small bootstrap force; play-like no-assist episodes remain the main path."""
+
+  return min(float(HOST_TERRAIN_PARITY[terrain]["pull_force_n"]), 80.0)
+
+
 HOST_TERRAIN_PARITY = {
   "mixed": {
     "num_rows": 10,
@@ -750,13 +756,13 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
       func=mdp.apply_host_getup_assist_force,
       mode="step",
       params={
-        "initial_force_n": HOST_TERRAIN_PARITY[terrain]["pull_force_n"],
+        "initial_force_n": _getup_initial_assist_force(terrain),
         "initial_action_scale": _HOST_GETUP_INITIAL_ACTION_SCALE,
         "success_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
         "force_decay_n": 20.0,
-        "action_scale_decay": 0.02,
+        "action_scale_decay": 0.0,
         "min_force_n": 0.0,
-        "min_action_scale": _HOST_GETUP_MIN_ACTION_SCALE,
+        "min_action_scale": _HOST_GETUP_INITIAL_ACTION_SCALE,
         "unactuated_timesteps": _HOST_GETUP_UNACTUATED_TIMESTEPS,
         "orientation_projected_gravity_z_max": -0.8,
         # The assist is a get-up curriculum crutch: it must pull during fallen
@@ -773,21 +779,21 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
         # force from carrying the policy through the actual upright success.
         "taper_start_height": 0.35,
         "taper_end_height": GETUP_SUCCESS_TORSO_HEIGHT,
-        # Keep early training mostly assisted, then push envs toward exact
-        # play/no-assist dynamics after the force curriculum has actually
-        # decayed.  In live A/B training on 2026-05-21 this schedule produced
-        # 127/128 play-like success by model_599, while a 25% initial
-        # no-assist schedule stalled around 9/128 at the same checkpoint range.
-        "no_assist_probability_initial": 0.05,
-        "no_assist_probability": 0.80,
-        "no_assist_ramp_start_progress": 0.5,
-        "no_assist_ramp_end_progress": 1.0,
+        # Keep the final fine-tune close to evaluation dynamics.  The previous
+        # assist-heavy schedule made train-like diagnostics succeed on complex
+        # terrain while play-like/no-assist rollouts stayed around 0.6 success.
+        # Bias episodes toward BFM-style unassisted recovery and keep the action
+        # scale identical to play mode.
+        "no_assist_probability_initial": 0.60,
+        "no_assist_probability": 1.0,
+        "no_assist_ramp_start_progress": 0.0,
+        "no_assist_ramp_end_progress": 0.5,
         "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
       },
     )
     cfg.metrics["getup_assist_force_n"] = MetricsTermCfg(
       func=mdp.getup_assist_force_n,
-      params={"initial_force_n": HOST_TERRAIN_PARITY[terrain]["pull_force_n"]},
+      params={"initial_force_n": _getup_initial_assist_force(terrain)},
     )
     cfg.metrics["getup_action_rescale"] = MetricsTermCfg(
       func=mdp.getup_action_rescale,

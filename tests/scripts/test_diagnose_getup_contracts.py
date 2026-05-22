@@ -50,15 +50,15 @@ def test_diagnose_getup_contracts_reports_train_play_assist_mismatch_explicitly(
   assert assist["train_play_mismatch_expected"] is True
   assert set(assist["metrics"]) == {"getup_assist_force_n", "getup_action_rescale"}
   assert assist["stable_success_required"] is True
-  assert assist["initial_force_n"] == 120
+  assert assist["initial_force_n"] == 80.0
   assert assist["force_decay_n"] == 20.0
-  assert assist["action_scale_decay"] == 0.02
+  assert assist["action_scale_decay"] == 0.0
   assert assist["params"]["taper_start_height"] == 0.35
   assert assist["params"]["taper_end_height"] == 0.55
-  assert assist["params"]["no_assist_probability_initial"] == 0.05
-  assert assist["params"]["no_assist_probability"] == 0.8
-  assert assist["params"]["no_assist_ramp_start_progress"] == 0.5
-  assert assist["params"]["no_assist_ramp_end_progress"] == 1.0
+  assert assist["params"]["no_assist_probability_initial"] == 0.6
+  assert assist["params"]["no_assist_probability"] == 1.0
+  assert assist["params"]["no_assist_ramp_start_progress"] == 0.0
+  assert assist["params"]["no_assist_ramp_end_progress"] == 0.5
 
 
 def test_diagnose_getup_contracts_reports_reset_and_amp_contracts(tmp_path: Path) -> None:
