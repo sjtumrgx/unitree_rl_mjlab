@@ -148,6 +148,62 @@ def test_run_train_actor_only_resume_loads_only_actor(monkeypatch, tmp_path) -> 
   assert captured["closed"] is True
 
 
+def test_run_train_can_resume_from_explicit_checkpoint_path(monkeypatch, tmp_path) -> None:
+  from scripts import train
+
+  captured = {}
+
+  class _FakeEnv:
+    def close(self):
+      captured["closed"] = True
+
+  class _FakeRunner:
+    def __init__(self, *args, **kwargs):
+      del args, kwargs
+
+    def add_git_repo_to_log(self, path):
+      del path
+
+    def load(self, path, load_cfg=None):
+      captured["load"] = {"path": path, "load_cfg": load_cfg}
+
+    def learn(self, num_learning_iterations, init_at_random_ep_len):
+      captured["learn"] = (num_learning_iterations, init_at_random_ep_len)
+
+  checkpoint = tmp_path / "logs" / "rsl_rl" / "g1_getup" / "good" / "model_1000.pt"
+  checkpoint.parent.mkdir(parents=True)
+  checkpoint.write_bytes(b"checkpoint")
+  agent = RslRlOnPolicyRunnerCfg(
+    resume=True,
+    load_run="should-not-be-used",
+    load_checkpoint="should-not-be-used.pt",
+    max_iterations=1,
+  )
+  cfg = replace(
+    train.TrainConfig.from_task("Unitree-G1-GetUp"),
+    agent=agent,
+    gpu_ids="cpu",
+    resume_checkpoint_path=str(checkpoint),
+    actor_only_resume=True,
+  )
+
+  monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+  monkeypatch.setattr(train, "configure_torch_backends", lambda: None)
+  monkeypatch.setattr(train, "ManagerBasedRlEnv", lambda **kwargs: _FakeEnv())
+  monkeypatch.setattr(train, "FiniteActionRslRlVecEnvWrapper", lambda env, clip_actions: env)
+  monkeypatch.setattr(train, "load_runner_cls", lambda task_id: _FakeRunner)
+  monkeypatch.setattr(train, "get_checkpoint_path", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected regex checkpoint lookup")))
+  monkeypatch.setattr(train, "dump_yaml", lambda *args, **kwargs: None)
+
+  train.run_train("Unitree-G1-GetUp", cfg, tmp_path / "logs" / "rsl_rl" / "g1_getup" / "new_run")
+
+  assert captured["load"] == {
+    "path": str(checkpoint),
+    "load_cfg": {"actor": True},
+  }
+  assert captured["closed"] is True
+
+
 def test_run_train_can_reset_actor_std_after_actor_only_resume(monkeypatch, tmp_path) -> None:
   from scripts import train
 

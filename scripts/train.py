@@ -28,6 +28,7 @@ class TrainConfig:
   env: ManagerBasedRlEnvCfg
   agent: RslRlBaseRunnerCfg
   motion_file: str | None = None
+  resume_checkpoint_path: str | None = None
   video: bool = False
   video_length: int = 200
   video_interval: int = 2000
@@ -186,6 +187,17 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
 
   resume_path: Path | None = None
   if cfg.agent.resume:
+    if cfg.resume_checkpoint_path is not None:
+      # Load an explicit local checkpoint path.  This is intentionally separate
+      # from get_checkpoint_path(), whose run/checkpoint regex lookup is scoped
+      # to the current experiment log root and cannot warm-start from another
+      # experiment such as g1_getup -> g1_getup_amp.
+      resume_path = Path(cfg.resume_checkpoint_path).expanduser()
+      if not resume_path.is_absolute():
+        resume_path = Path.cwd() / resume_path
+      if not resume_path.exists():
+        raise FileNotFoundError(f"Resume checkpoint does not exist: {resume_path}")
+    else:
       # Load checkpoint from local filesystem.
       resume_path = get_checkpoint_path(
         log_root_path, cfg.agent.load_run, cfg.agent.load_checkpoint

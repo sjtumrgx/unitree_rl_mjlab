@@ -14,6 +14,8 @@ def test_train_getup_amp_short_args_map_to_real_tyro_overrides() -> None:
     max_iterations=1,
     num_envs=4,
     headless_smoke=True,
+    warm_start_checkpoint=None,
+    reset_actor_std_on_warm_start=False,
     extra_args=["--", "--agent.num-steps-per-env=2"],
   )
 
@@ -26,6 +28,41 @@ def test_train_getup_amp_short_args_map_to_real_tyro_overrides() -> None:
   assert "--agent.logger=tensorboard" in forwarded
   assert "--agent.upload-model=False" in forwarded
   assert "--agent.num-steps-per-env=2" in forwarded
+
+
+def test_train_getup_amp_warm_start_checkpoint_forwards_actor_only_resume() -> None:
+  forwarded = build_forwarded_args(
+    demo_data_dir="data/motions/g1_getup_amp",
+    manifest_path="data/motions/g1_getup_amp/selected_manifest.json",
+    max_iterations=500,
+    num_envs=128,
+    headless_smoke=False,
+    warm_start_checkpoint="logs/rsl_rl/g1_getup/good/model_1000.pt",
+    reset_actor_std_on_warm_start=False,
+    extra_args=["--", "--gpu-ids", "[0]"],
+  )
+
+  assert "--agent.resume=True" in forwarded
+  assert "--resume-checkpoint-path=logs/rsl_rl/g1_getup/good/model_1000.pt" in forwarded
+  assert "--actor-only-resume=True" in forwarded
+  assert "--reset-actor-std-on-resume=True" not in forwarded
+  assert "--gpu-ids" in forwarded
+  assert "[0]" in forwarded
+
+
+def test_train_getup_amp_can_opt_into_resetting_warm_start_std() -> None:
+  forwarded = build_forwarded_args(
+    demo_data_dir="data/motions/g1_getup_amp",
+    manifest_path=None,
+    max_iterations=1,
+    num_envs=2,
+    headless_smoke=False,
+    warm_start_checkpoint="logs/rsl_rl/g1_getup/good/model_1000.pt",
+    reset_actor_std_on_warm_start=True,
+    extra_args=[],
+  )
+
+  assert "--reset-actor-std-on-resume=True" in forwarded
 
 
 def test_train_getup_amp_missing_manifest_fails_before_training(tmp_path: Path) -> None:

@@ -31,6 +31,7 @@ class TrainSettings:
   npz_files: tuple[str, ...]
   max_iterations: int | None
   num_envs: int | None
+  warm_start_checkpoint: str | None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,6 +49,26 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--manifest-path", default=None)
   parser.add_argument("--max-iterations", type=int, default=None)
   parser.add_argument("--num-envs", type=int, default=None)
+  parser.add_argument(
+    "--warm-start-checkpoint",
+    default=None,
+    help=(
+      "Optional normal GetUp checkpoint used to initialize the AMP actor. "
+      "Forwarded as actor-only resume so critic, optimizer, and AMP "
+      "discriminator are trained fresh."
+    ),
+  )
+  parser.add_argument(
+    "--reset-actor-std-on-warm-start",
+    dest="reset_actor_std_on_warm_start",
+    action="store_true",
+    help=(
+      "Reset actor std to the current AMP config after --warm-start-checkpoint. "
+      "By default the source checkpoint std is kept to preserve the verified "
+      "GetUp behavior at iteration 0."
+    ),
+  )
+  parser.set_defaults(reset_actor_std_on_warm_start=False)
   parser.add_argument(
     "--headless-smoke",
     action="store_true",
@@ -68,6 +89,7 @@ def resolve_train_settings(
   manifest_path: str | None,
   max_iterations: int | None,
   num_envs: int | None,
+  warm_start_checkpoint: str | None = None,
 ) -> TrainSettings:
   config = load_workflow_config(config_path)
   train_cfg = section(config, "train")
@@ -102,6 +124,9 @@ def resolve_train_settings(
     if resolved_max_iterations is not None
     else None,
     num_envs=int(resolved_num_envs) if resolved_num_envs is not None else None,
+    warm_start_checkpoint=str(repo_path(warm_start_checkpoint))
+    if warm_start_checkpoint is not None
+    else None,
   )
 
 
@@ -184,6 +209,8 @@ def build_forwarded_args(
   max_iterations: int | None,
   num_envs: int | None,
   headless_smoke: bool,
+  warm_start_checkpoint: str | None,
+  reset_actor_std_on_warm_start: bool,
   extra_args: list[str],
 ) -> list[str]:
   forwarded = [
@@ -203,6 +230,14 @@ def build_forwarded_args(
       "--agent.upload-model=False",
       "--agent.save-interval=1000000",
     ])
+  if warm_start_checkpoint is not None:
+    forwarded.extend([
+      "--agent.resume=True",
+      f"--resume-checkpoint-path={warm_start_checkpoint}",
+      "--actor-only-resume=True",
+    ])
+    if reset_actor_std_on_warm_start:
+      forwarded.append("--reset-actor-std-on-resume=True")
   forwarded.extend(_strip_remainder_separator(extra_args))
   return forwarded
 
@@ -215,6 +250,7 @@ def main(argv: list[str] | None = None) -> None:
     manifest_path=args.manifest_path,
     max_iterations=args.max_iterations,
     num_envs=args.num_envs,
+    warm_start_checkpoint=args.warm_start_checkpoint,
   )
   manifest_path = settings.manifest_path
   if manifest_path is None and settings.npz_files:
@@ -235,6 +271,8 @@ def main(argv: list[str] | None = None) -> None:
       max_iterations=settings.max_iterations,
       num_envs=settings.num_envs,
       headless_smoke=args.headless_smoke,
+      warm_start_checkpoint=settings.warm_start_checkpoint,
+      reset_actor_std_on_warm_start=args.reset_actor_std_on_warm_start,
       extra_args=args.extra_args,
     ),
   ]
