@@ -113,6 +113,16 @@ def _body_quat_w(asset: Entity) -> torch.Tensor:
   raise AttributeError("robot data must expose body_link_quat_w or body_quat_w")
 
 
+def _body_lin_vel_w(asset: Entity) -> torch.Tensor:
+  vel = getattr(asset.data, "body_link_lin_vel_w", None)
+  if vel is not None:
+    return vel
+  vel = getattr(asset.data, "body_lin_vel_w", None)
+  if vel is not None:
+    return vel
+  raise AttributeError("robot data must expose body_link_lin_vel_w or body_lin_vel_w")
+
+
 def _foot_contact_weights(
   env: ManagerBasedRlEnv,
   feet_sensor_name: str | None,
@@ -420,6 +430,9 @@ def host_style_pose_reward(
   target_joint_angles: dict[str, float],
   std: float = 0.75,
   asset_cfg: SceneEntityCfg = _JOINT_ASSET_CFG,
+  min_height: float | None = None,
+  min_alignment: float = 0.75,
+  torso_asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
 ) -> torch.Tensor:
   asset: Entity = env.scene[asset_cfg.name]
   joint_ids = _select_existing_joint_ids(asset, joint_names)
@@ -431,7 +444,15 @@ def host_style_pose_reward(
     device=asset.data.joint_pos.device,
   )
   error = asset.data.joint_pos[:, joint_ids] - targets.unsqueeze(0)
-  return torch.exp(-torch.mean(torch.square(error), dim=1) / max(std**2, 1e-6))
+  reward = torch.exp(-torch.mean(torch.square(error), dim=1) / max(std**2, 1e-6))
+  if min_height is None:
+    return reward
+  return reward * _standing_gate(
+    env,
+    min_height=min_height,
+    min_alignment=min_alignment,
+    asset_cfg=torso_asset_cfg,
+  )
 
 
 def host_feet_support_reward(
@@ -500,6 +521,31 @@ def host_hand_contact_after_stand_penalty(
   return _contact_norm(env, hand_sensor_name, normalize_count) * standing.float()
 
 
+def host_hand_push_reward(
+  env: ManagerBasedRlEnv,
+  hand_sensor_name: str,
+  min_height: float = 0.18,
+  release_height: float = 0.55,
+  vertical_velocity_scale: float = 0.5,
+  normalize_count: float = 2.0,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward hand contact only when it helps lift the torso."""
+
+  asset: Entity = env.scene[asset_cfg.name]
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
+  torso_vel_z = _body_lin_vel_w(asset)[:, asset_cfg.body_ids, 2].amax(dim=1)
+  hand_support = _contact_norm(env, hand_sensor_name, normalize_count)
+  height_progress = torch.clamp(
+    (torso_height - min_height) / max(release_height - min_height, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  height_band = (torso_height >= min_height).float() * (torso_height < release_height).float()
+  upward = torch.clamp(torso_vel_z / max(vertical_velocity_scale, 1e-6), min=0.0, max=1.0)
+  return hand_support * height_band * (0.5 + 0.5 * height_progress) * upward
+
+
 def host_foot_flat_reward(
   env: ManagerBasedRlEnv,
   feet_sensor_name: str | None = "feet_ground_contact",
@@ -523,6 +569,31 @@ def host_foot_flat_reward(
   contacted_flatness = torch.where(contact > 0.0, flatness, torch.ones_like(flatness))
   both_feet_flat = contacted_flatness.amin(dim=1)
   return both_feet_flat * contact_gate * _standing_gate(
+    env,
+    min_height=min_height,
+    min_alignment=min_alignment,
+    asset_cfg=torso_asset_cfg,
+  )
+
+
+def host_foot_orientation_penalty(
+  env: ManagerBasedRlEnv,
+  feet_sensor_name: str | None = "feet_ground_contact",
+  min_height: float = 0.50,
+  min_alignment: float = 0.75,
+  foot_asset_cfg: SceneEntityCfg = _FOOT_ASSET_CFG,
+  torso_asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """BFM-style contacted-foot orientation penalty for toe-tip/rolled stance."""
+
+  asset: Entity = env.scene[foot_asset_cfg.name]
+  foot_quat = _body_quat_w(asset)[:, foot_asset_cfg.body_ids, :]
+  flatness = _foot_flatness_from_quat(foot_quat)
+  contact = _foot_contact_weights(env, feet_sensor_name, num_feet=flatness.shape[1])
+  contact_sum = torch.clamp(contact.sum(dim=1), min=1.0)
+  contacted_tilt = (1.0 - flatness) * contact
+  penalty = contacted_tilt.sum(dim=1) / contact_sum
+  return penalty * _standing_gate(
     env,
     min_height=min_height,
     min_alignment=min_alignment,
@@ -577,7 +648,39 @@ def host_foot_contact_spread_reward(
   spread = torch.clamp(foot_contacts / max(target_contacts_per_foot, 1e-6), min=0.0, max=1.0)
   both_feet_gate = torch.clamp(_contact_count(env, feet_sensor_name) / 2.0, min=0.0, max=1.0)
   height_gate = torch.clamp((_torso_height(env, asset_cfg=asset_cfg) - min_height) / 0.25, min=0.0, max=1.0)
-  return spread.mean(dim=1) * both_feet_gate * height_gate
+  both_feet_spread = 0.5 * spread.mean(dim=1) + 0.5 * spread.amin(dim=1)
+  return both_feet_spread * both_feet_gate * height_gate
+
+
+def host_ankle_deviation_penalty(
+  env: ManagerBasedRlEnv,
+  joint_names: tuple[str, ...],
+  target_joint_angles: dict[str, float],
+  std: float = 0.35,
+  min_height: float = 0.50,
+  min_alignment: float = 0.75,
+  asset_cfg: SceneEntityCfg = _JOINT_ASSET_CFG,
+  torso_asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize final-stance ankle pitch/roll deviations that create toe stands."""
+
+  asset: Entity = env.scene[asset_cfg.name]
+  joint_ids = _select_existing_joint_ids(asset, joint_names)
+  if joint_ids.numel() == 0:
+    return torch.zeros(asset.data.joint_pos.shape[0], device=asset.data.joint_pos.device)
+  targets = torch.tensor(
+    [target_joint_angles[asset.joint_names[int(joint_id)]] for joint_id in joint_ids],
+    dtype=asset.data.joint_pos.dtype,
+    device=asset.data.joint_pos.device,
+  )
+  error = torch.mean(torch.abs(asset.data.joint_pos[:, joint_ids] - targets.unsqueeze(0)), dim=1)
+  penalty = torch.clamp(error / max(std, 1e-6), min=0.0, max=1.0)
+  return penalty * _standing_gate(
+    env,
+    min_height=min_height,
+    min_alignment=min_alignment,
+    asset_cfg=torso_asset_cfg,
+  )
 
 
 def host_natural_stand_pose_reward(

@@ -40,6 +40,7 @@ class _FakeAsset:
       joint_pos=torch.zeros(1, 12),
       joint_vel=torch.zeros(1, 12),
       joint_acc=torch.zeros(1, 12),
+      body_link_lin_vel_w=torch.zeros(1, 3, 3),
     )
 
 
@@ -138,6 +139,34 @@ def test_rollout_step_record_contains_required_debug_fields() -> None:
   assert record["reward"]["terms"]["host_task_reward"] == pytest.approx(0.7)
   assert record["termination"]["terms"]["unstable_state"] is True
   assert record["amp"]["obs_dim"] == 51.0
+
+
+def test_rollout_step_record_computes_mid_getup_hand_push_fields() -> None:
+  env = _FakeEnv()
+  asset = env.scene["robot"]
+  asset.data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.32], [0.1, 0.1, 0.0], [0.1, -0.1, 0.0]]])
+  asset.data.body_link_lin_vel_w = torch.tensor([[[0.0, 0.0, 0.25], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]])
+  asset.data.projected_gravity_b = torch.tensor([[0.3, 0.0, -0.35]])
+  env.scene["hand_ground_contact"].data.found = torch.tensor([[[1.0], [0.0]]])
+
+  record = rollout.build_step_record(
+    env,
+    task_id="Unitree-G1-GetUp",
+    step_index=3,
+    mode="play-like",
+    raw_action=torch.tensor([[0.0, 0.0]]),
+    clipped_action=torch.tensor([[0.0, 0.0]]),
+    previous_clipped_action=None,
+    rewards=torch.tensor([0.0]),
+    dones=torch.tensor([0]),
+    extras={},
+    clip_actions=5.0,
+  )
+
+  assert record["posture"]["mid_getup_env_count"] == 1.0
+  assert record["posture"]["mid_getup_hand_contact_rate"] == pytest.approx(1.0)
+  assert record["posture"]["mid_getup_hand_push_rate"] == pytest.approx(1.0)
+  assert record["posture"]["mid_getup_torso_upward_velocity_mean"] == pytest.approx(0.25)
 
 
 def test_rollout_summary_flags_action_spike_and_ballistic_supportless_height() -> None:
@@ -362,6 +391,58 @@ def test_rollout_summary_uses_last_standing_frame_before_timeout_reset() -> None
   assert summary["posture"]["last_standing_foot_flatness_min"] == pytest.approx(0.7)
   assert summary["risk_flags"]["final_hand_contact_gt_0"] is True
   assert summary["risk_flags"]["last_standing_hand_contact_gt_0"] is False
+
+
+def test_rollout_summary_reports_mid_getup_hand_push_phase() -> None:
+  metadata = {"type": "metadata", "num_envs": 4}
+  mid_push = rollout.build_step_record(
+    _FakeEnv(),
+    task_id="Unitree-G1-GetUp",
+    step_index=10,
+    mode="play-like",
+    raw_action=torch.tensor([[0.0, 0.0]]),
+    clipped_action=torch.tensor([[0.0, 0.0]]),
+    previous_clipped_action=None,
+    rewards=torch.tensor([0.0]),
+    dones=torch.tensor([0]),
+    extras={},
+    clip_actions=5.0,
+  )
+  standing = rollout.build_step_record(
+    _FakeEnv(),
+    task_id="Unitree-G1-GetUp",
+    step_index=100,
+    mode="play-like",
+    raw_action=torch.tensor([[0.0, 0.0]]),
+    clipped_action=torch.tensor([[0.0, 0.0]]),
+    previous_clipped_action=None,
+    rewards=torch.tensor([0.0]),
+    dones=torch.tensor([0]),
+    extras={},
+    clip_actions=5.0,
+  )
+  mid_push["root"]["torso_height_mean"] = 0.32
+  mid_push["root"]["upright_alignment_mean"] = 0.35
+  mid_push["support"]["hand_contact_count"] = 2.0
+  mid_push["posture"]["mid_getup_env_count"] = 4.0
+  mid_push["posture"]["mid_getup_hand_contact_rate"] = 0.75
+  mid_push["posture"]["mid_getup_hand_push_rate"] = 0.5
+  mid_push["posture"]["mid_getup_torso_upward_velocity_mean"] = 0.2
+  standing["root"]["torso_height_mean"] = 0.7
+  standing["root"]["upright_alignment_mean"] = 0.95
+  standing["support"]["hand_contact_count"] = 0.0
+  standing["posture"]["mid_getup_env_count"] = 0.0
+
+  summary = rollout.summarize_records([metadata, mid_push, standing])
+
+  assert summary["posture"]["mid_getup_record_count"] == 1
+  assert summary["posture"]["mid_getup_env_max_count"] == 4.0
+  assert summary["posture"]["mean_mid_getup_hand_contact_rate"] == pytest.approx(0.75)
+  assert summary["posture"]["mean_mid_getup_hand_push_rate"] == pytest.approx(0.5)
+  assert summary["posture"]["max_mid_getup_hand_push_rate"] == pytest.approx(0.5)
+  assert summary["posture"]["mean_mid_getup_torso_upward_velocity"] == pytest.approx(0.2)
+  assert summary["risk_flags"]["mean_mid_getup_hand_contact_rate_lt_0_2"] is False
+  assert summary["risk_flags"]["mean_mid_getup_hand_push_rate_lt_0_2"] is False
 
 
 def test_rollout_summary_splits_train_success_by_assist_episode_scale() -> None:

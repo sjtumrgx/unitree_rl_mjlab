@@ -892,3 +892,108 @@ def test_host_action_smoothness_penalty_ignores_raw_policy_actions_not_executed_
   penalty = mdp.host_action_smoothness_penalty(env)
 
   assert torch.allclose(penalty, torch.zeros(1))
+
+def test_hand_push_reward_prefers_contact_while_torso_rises() -> None:
+  from types import SimpleNamespace
+
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+  from src.tasks.velocity.mdp.getup import rewards
+
+  robot = SimpleNamespace(
+    data=SimpleNamespace(
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 0.32]], [[0.0, 0.0, 0.32]], [[0.0, 0.0, 0.72]]]),
+      body_link_lin_vel_w=torch.tensor([[[0.0, 0.0, 0.9]], [[0.0, 0.0, -0.2]], [[0.0, 0.0, 0.9]]]),
+      projected_gravity_b=torch.tensor([[0.3, 0.0, -0.35], [0.3, 0.0, -0.35], [0.0, 0.0, -1.0]]),
+    )
+  )
+  env = SimpleNamespace(
+    num_envs=3,
+    device="cpu",
+    scene={
+      "robot": robot,
+      "env_origins": torch.zeros(3, 3),
+      "hand_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.ones(3, 2, 1))),
+    },
+  )
+
+  reward = rewards.host_hand_push_reward(
+    env,
+    hand_sensor_name="hand_ground_contact",
+    min_height=0.18,
+    release_height=0.55,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  assert reward[0].item() > 0.5
+  assert reward[1].item() < reward[0].item() * 0.25
+  assert reward[2].item() == pytest.approx(0.0)
+
+
+def test_final_pose_reward_is_gated_to_standing_so_it_does_not_suppress_hand_push() -> None:
+  from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_SUCCESS_TORSO_HEIGHT, unitree_g1_getup_env_cfg
+
+  cfg = unitree_g1_getup_env_cfg("ground")
+
+  assert cfg.rewards["host_style_pose"].params["min_height"] >= GETUP_SUCCESS_TORSO_HEIGHT
+  assert cfg.rewards["host_style_pose"].params["min_alignment"] >= 0.75
+  assert cfg.rewards["host_hand_push"].func.__name__ == "host_hand_push_reward"
+  assert cfg.rewards["host_hand_push"].weight >= cfg.rewards["host_hand_support_progress"].weight
+
+
+def test_bfm_penalty_terms_are_negative_and_stronger_for_toe_tip_final_stance() -> None:
+  from types import SimpleNamespace
+
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+  from mjlab.utils.lab_api.math import quat_from_euler_xyz
+  from src.tasks.velocity.mdp.getup import rewards
+
+  identity = quat_from_euler_xyz(torch.tensor([0.0]), torch.tensor([0.0]), torch.tensor([0.0]))[0]
+  pitched = quat_from_euler_xyz(torch.tensor([0.0]), torch.tensor([torch.pi / 2]), torch.tensor([0.0]))[0]
+  robot = SimpleNamespace(
+    data=SimpleNamespace(
+      root_link_quat_w=identity.reshape(1, 4).repeat(2, 1),
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 0.72]], [[0.0, 0.0, 0.72]]]),
+      body_link_quat_w=torch.stack(
+        [torch.stack([identity, identity]), torch.stack([pitched, pitched])],
+        dim=0,
+      ),
+      projected_gravity_b=torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]),
+      joint_pos=torch.tensor([[0.0, 0.0, -0.1, 0.3, -0.2, 0.0], [0.0, 0.0, -0.1, 0.3, 0.45, 0.24]]),
+    )
+  )
+  robot.joint_names = [
+    "left_hip_yaw_joint",
+    "left_hip_roll_joint",
+    "left_hip_pitch_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+  ]
+  env = SimpleNamespace(
+    num_envs=2,
+    device="cpu",
+    scene={
+      "robot": robot,
+      "env_origins": torch.zeros(2, 3),
+      "feet_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.ones(2, 2, 1))),
+    },
+  )
+
+  foot_penalty = rewards.host_foot_orientation_penalty(
+    env,
+    feet_sensor_name="feet_ground_contact",
+    foot_asset_cfg=SceneEntityCfg("robot", body_ids=[0, 1]),
+    torso_asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+  ankle_penalty = rewards.host_ankle_deviation_penalty(
+    env,
+    joint_names=("left_ankle_pitch_joint", "left_ankle_roll_joint"),
+    target_joint_angles={"left_ankle_pitch_joint": -0.2, "left_ankle_roll_joint": 0.0},
+    asset_cfg=SceneEntityCfg("robot"),
+    torso_asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  assert foot_penalty[0].item() < 0.05
+  assert foot_penalty[1].item() > 0.8
+  assert ankle_penalty[0].item() < 0.05
+  assert ankle_penalty[1].item() > 0.5

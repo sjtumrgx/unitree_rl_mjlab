@@ -501,12 +501,15 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_style_pose"] = RewardTermCfg(
     func=mdp.host_style_pose_reward,
-    weight=1.0,
+    weight=0.8,
     params={
       "joint_names": _HOST_GETUP_STYLE_JOINT_NAMES,
       "target_joint_angles": dict(_HOST_GETUP_TARGET_JOINT_ANGLES),
-      "std": 0.75,
+      "std": 0.6,
+      "min_height": GETUP_SUCCESS_TORSO_HEIGHT,
+      "min_alignment": 0.75,
       "asset_cfg": SceneEntityCfg("robot"),
+      "torso_asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
   cfg.rewards["host_feet_support"] = RewardTermCfg(
@@ -521,12 +524,23 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_hand_support_progress"] = RewardTermCfg(
     func=mdp.host_hand_support_progress_reward,
-    weight=0.8,
+    weight=1.0,
     params={
       "hand_sensor_name": "hand_ground_contact",
       "min_height": 0.18,
       "release_height": 0.55,
       "final_upright_threshold": 0.9,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_hand_push"] = RewardTermCfg(
+    func=mdp.host_hand_push_reward,
+    weight=1.2,
+    params={
+      "hand_sensor_name": "hand_ground_contact",
+      "min_height": 0.18,
+      "release_height": 0.55,
+      "vertical_velocity_scale": 0.5,
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
@@ -542,7 +556,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_foot_contact_spread"] = RewardTermCfg(
     func=mdp.host_foot_contact_spread_reward,
-    weight=0.8,
+    weight=1.4,
     params={
       "foot_geom_sensor_name": "foot_geom_ground_contact",
       "feet_sensor_name": "feet_ground_contact",
@@ -553,7 +567,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_foot_flat"] = RewardTermCfg(
     func=mdp.host_foot_flat_reward,
-    weight=1.2,
+    weight=2.0,
     params={
       "feet_sensor_name": "feet_ground_contact",
       "min_height": 0.45,
@@ -567,7 +581,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_foot_heading"] = RewardTermCfg(
     func=mdp.host_foot_heading_reward,
-    weight=0.8,
+    weight=0.6,
     params={
       "feet_sensor_name": "feet_ground_contact",
       "min_height": 0.45,
@@ -581,12 +595,49 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_natural_stand_pose"] = RewardTermCfg(
     func=mdp.host_natural_stand_pose_reward,
-    weight=1.5,
+    weight=2.0,
     params={
       "joint_names": _HOST_GETUP_STYLE_JOINT_NAMES,
       "target_joint_angles": dict(_HOST_GETUP_TARGET_JOINT_ANGLES),
       "std": 0.35,
       "min_height": GETUP_SUCCESS_TORSO_HEIGHT,
+      "min_alignment": 0.75,
+      "asset_cfg": SceneEntityCfg("robot"),
+      "torso_asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_foot_orientation_penalty"] = RewardTermCfg(
+    func=mdp.host_foot_orientation_penalty,
+    weight=-0.8,
+    params={
+      "feet_sensor_name": "feet_ground_contact",
+      "min_height": 0.50,
+      "min_alignment": 0.75,
+      "foot_asset_cfg": SceneEntityCfg(
+        "robot",
+        body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
+      ),
+      "torso_asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_ankle_deviation_penalty"] = RewardTermCfg(
+    func=mdp.host_ankle_deviation_penalty,
+    weight=-1.0,
+    params={
+      "joint_names": (
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+      ),
+      "target_joint_angles": {
+        "left_ankle_pitch_joint": _HOST_GETUP_TARGET_JOINT_ANGLES["left_ankle_pitch_joint"],
+        "left_ankle_roll_joint": _HOST_GETUP_TARGET_JOINT_ANGLES["left_ankle_roll_joint"],
+        "right_ankle_pitch_joint": _HOST_GETUP_TARGET_JOINT_ANGLES["right_ankle_pitch_joint"],
+        "right_ankle_roll_joint": _HOST_GETUP_TARGET_JOINT_ANGLES["right_ankle_roll_joint"],
+      },
+      "std": 0.35,
+      "min_height": 0.50,
       "min_alignment": 0.75,
       "asset_cfg": SceneEntityCfg("robot"),
       "torso_asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),

@@ -28,6 +28,9 @@ SCHEMA_VERSION = "g1-getup-rollout-v1"
 GETUP_TASKS = ("Unitree-G1-GetUp", "Unitree-G1-GetUp-AMP")
 STANDING_POSTURE_HEIGHT = 0.55
 STANDING_POSTURE_ALIGNMENT = 0.75
+MID_GETUP_HAND_MIN_HEIGHT = 0.18
+MID_GETUP_HAND_RELEASE_HEIGHT = 0.55
+MID_GETUP_HAND_PUSH_VELOCITY = 0.05
 _TRACKED_REWARD_TERMS = {
   "host_lift_progress",
   "host_upright_progress",
@@ -37,10 +40,13 @@ _TRACKED_REWARD_TERMS = {
   "host_feet_support",
   "host_hand_support_progress",
   "host_hand_contact_after_stand",
+  "host_hand_push",
   "host_foot_contact_spread",
   "host_foot_flat",
+  "host_foot_orientation_penalty",
   "host_foot_heading",
   "host_natural_stand_pose",
+  "host_ankle_deviation_penalty",
   "getup_completion_bonus",
   "host_action_smoothness",
   "action_rate_l2",
@@ -178,6 +184,13 @@ def _body_quat(asset: Any) -> torch.Tensor | None:
   return getattr(asset.data, "body_quat_w", None)
 
 
+def _body_lin_vel(asset: Any) -> torch.Tensor | None:
+  vel = getattr(asset.data, "body_link_lin_vel_w", None)
+  if vel is not None:
+    return vel
+  return getattr(asset.data, "body_lin_vel_w", None)
+
+
 def _body_ids(asset: Any, body_names: tuple[str, ...]) -> list[int]:
   return [idx for name in body_names if (idx := _body_id(asset, name)) is not None]
 
@@ -266,6 +279,18 @@ def _posture_terms(env: Any, asset: Any) -> dict[str, float | None]:
   natural_error = _natural_leg_pose_error(asset)
   standing = _standing_mask(env, asset)
   hand_count = _contact_count_tensor(env, "hand_ground_contact")
+  torso_height = _torso_height_tensor(env, asset)
+  upright_alignment = -asset.data.projected_gravity_b[:, 2]
+  mid_getup = (
+    (torso_height >= MID_GETUP_HAND_MIN_HEIGHT)
+    & (torso_height < MID_GETUP_HAND_RELEASE_HEIGHT)
+    & (upright_alignment < 0.9)
+  )
+  body_vel = _body_lin_vel(asset)
+  torso_id = _body_id(asset, "torso_link")
+  torso_vel_z = None
+  if body_vel is not None and torso_id is not None and torso_id < body_vel.shape[1]:
+    torso_vel_z = body_vel[:, torso_id, 2].detach().float()
 
   def _per_env_min(value: torch.Tensor | None) -> torch.Tensor | None:
     if value is None:
@@ -317,6 +342,17 @@ def _posture_terms(env: Any, asset: Any) -> dict[str, float | None]:
   standing_hand_rate = None
   if standing_count > 0 and hand_count is not None and hand_count.shape[0] == standing.shape[0]:
     standing_hand_rate = _scalar((hand_count[standing] > 0.0).float().mean())
+  mid_getup_count = int(mid_getup.sum().item())
+  mid_getup_hand_rate = None
+  mid_getup_hand_push_rate = None
+  mid_getup_upward_velocity_mean = None
+  if mid_getup_count > 0 and hand_count is not None and hand_count.shape[0] == mid_getup.shape[0]:
+    mid_hand_contact = hand_count[mid_getup] > 0.0
+    mid_getup_hand_rate = _scalar(mid_hand_contact.float().mean())
+    if torso_vel_z is not None and torso_vel_z.shape[0] == mid_getup.shape[0]:
+      mid_upward = torso_vel_z[mid_getup] > MID_GETUP_HAND_PUSH_VELOCITY
+      mid_getup_hand_push_rate = _scalar((mid_hand_contact & mid_upward).float().mean())
+      mid_getup_upward_velocity_mean = _scalar(torch.clamp(torso_vel_z[mid_getup], min=0.0).mean())
   return {
     "foot_flatness_min": _tensor_stat(flatness.amin(dim=1) if flatness is not None else None, "min"),
     "foot_flatness_mean": _tensor_stat(flatness.mean(dim=1) if flatness is not None else None, "mean"),
@@ -344,6 +380,10 @@ def _posture_terms(env: Any, asset: Any) -> dict[str, float | None]:
       higher_is_better=False,
     ),
     "standing_hand_contact_rate": standing_hand_rate,
+    "mid_getup_env_count": float(mid_getup_count),
+    "mid_getup_hand_contact_rate": mid_getup_hand_rate,
+    "mid_getup_hand_push_rate": mid_getup_hand_push_rate,
+    "mid_getup_torso_upward_velocity_mean": mid_getup_upward_velocity_mean,
   }
 
 
@@ -836,6 +876,35 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     standing_env_posture_records,
     "standing_hand_contact_rate",
   )
+  mid_getup_posture_records = [
+    record
+    for record in step_records
+    if float(record.get("posture", {}).get("mid_getup_env_count") or 0.0) > 0.0
+  ]
+  mid_getup_record_count = len(mid_getup_posture_records)
+  mid_getup_env_max_count = max(
+    (
+      float(record.get("posture", {}).get("mid_getup_env_count") or 0.0)
+      for record in mid_getup_posture_records
+    ),
+    default=0.0,
+  )
+  mean_mid_getup_hand_contact_rate = _posture_mean(
+    mid_getup_posture_records,
+    "mid_getup_hand_contact_rate",
+  )
+  mean_mid_getup_hand_push_rate = _posture_mean(
+    mid_getup_posture_records,
+    "mid_getup_hand_push_rate",
+  )
+  max_mid_getup_hand_push_rate = _posture_max(
+    mid_getup_posture_records,
+    "mid_getup_hand_push_rate",
+  )
+  mean_mid_getup_torso_upward_velocity = _posture_mean(
+    mid_getup_posture_records,
+    "mid_getup_torso_upward_velocity_mean",
+  )
 
   def _success_group_from_split(group_name: str) -> dict[str, Any] | None:
     group_steps = [
@@ -976,6 +1045,12 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
       "mean_standing_foot_geom_spread_good_rate": mean_standing_foot_geom_spread_good_rate,
       "mean_standing_natural_leg_pose_good_rate": mean_standing_natural_leg_pose_good_rate,
       "mean_standing_hand_contact_rate": mean_standing_hand_contact_rate,
+      "mid_getup_record_count": mid_getup_record_count,
+      "mid_getup_env_max_count": mid_getup_env_max_count,
+      "mean_mid_getup_hand_contact_rate": mean_mid_getup_hand_contact_rate,
+      "mean_mid_getup_hand_push_rate": mean_mid_getup_hand_push_rate,
+      "max_mid_getup_hand_push_rate": max_mid_getup_hand_push_rate,
+      "mean_mid_getup_torso_upward_velocity": mean_mid_getup_torso_upward_velocity,
       "final_foot_flatness_min": final_foot_flatness_min,
       "final_foot_heading_alignment_min": final_foot_heading_alignment_min,
       "final_foot_geom_contact_spread_min": final_foot_geom_contact_spread_min,
@@ -1021,6 +1096,14 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
       "mean_standing_foot_geom_spread_good_rate_lt_0_8": (
         mean_standing_foot_geom_spread_good_rate is not None
         and mean_standing_foot_geom_spread_good_rate < 0.8
+      ),
+      "mean_mid_getup_hand_contact_rate_lt_0_2": (
+        mean_mid_getup_hand_contact_rate is not None
+        and mean_mid_getup_hand_contact_rate < 0.2
+      ),
+      "mean_mid_getup_hand_push_rate_lt_0_2": (
+        mean_mid_getup_hand_push_rate is not None
+        and mean_mid_getup_hand_push_rate < 0.2
       ),
     },
   }
