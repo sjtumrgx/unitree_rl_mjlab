@@ -29,7 +29,7 @@ class GetupAmpPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
   amp_feature_layout: str = "yaw_invariant"
 
 
-def unitree_g1_getup_ppo_runner_cfg(terrain: str = "ground") -> RslRlOnPolicyRunnerCfg:
+def unitree_g1_getup_ppo_runner_cfg(terrain: str = "mixed") -> RslRlOnPolicyRunnerCfg:
   """Create PPO runner configuration for Unitree G1 HoST get-up."""
   return RslRlOnPolicyRunnerCfg(
     actor=RslRlModelCfg(

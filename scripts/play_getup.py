@@ -10,18 +10,18 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
   sys.path.insert(0, str(_REPO_ROOT))
 
-from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_TERRAIN_VARIANTS
+from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_SINGLE_TERRAIN_VARIANTS
 
 
 def build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--terrain", choices=GETUP_TERRAIN_VARIANTS, default="ground")
+  parser.add_argument("--terrain", choices=GETUP_SINGLE_TERRAIN_VARIANTS, default="ground")
   parser.add_argument("extra_args", nargs=argparse.REMAINDER)
   return parser
 
 
 def build_forwarded_args(terrain: str, extra_args: list[str]) -> list[str]:
-  if terrain not in GETUP_TERRAIN_VARIANTS:
+  if terrain not in GETUP_SINGLE_TERRAIN_VARIANTS:
     raise ValueError(f"Unsupported terrain: {terrain}")
   forwarded_extra = extra_args[1:] if extra_args[:1] == ["--"] else extra_args
   return ["Unitree-G1-GetUp", f"--getup-terrain={terrain}", *forwarded_extra]

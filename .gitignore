@@ -14,6 +14,7 @@ deploy/robots/*/build/
 src/assets/motions/g1/dance1_subject2.npz
 simulate/build
 .omx/
+.omc/
 __pycache__/
 *.pyc
 .history/
@@ -35,6 +36,7 @@ tests/tasks/*
 !tests/tasks/test_g1_getup_amp_contract.py
 !tests/tasks/test_g1_getup_amp_algorithm.py
 !tests/tasks/test_g1_getup_reset_and_assist_contracts.py
+!tests/tasks/test_g1_antifall_getup_contract.py
 !tests/scripts/
 tests/scripts/*
 !tests/scripts/test_prepare_g1_getup_amp_data.py
@@ -43,6 +45,9 @@ tests/scripts/*
 !tests/scripts/test_play_g1_getup_amp_data.py
 !tests/scripts/test_diagnose_getup_contracts.py
 !tests/scripts/test_diagnose_getup_rollout.py
+!tests/scripts/test_diagnose_antifall_getup_rollout.py
+!tests/scripts/test_evaluate_getup_amp_style.py
+!tests/scripts/test_diagnose_getup_multiterrain.py
 !tests/fixtures/
 tests/fixtures/*
 !tests/fixtures/g1_getup_amp/

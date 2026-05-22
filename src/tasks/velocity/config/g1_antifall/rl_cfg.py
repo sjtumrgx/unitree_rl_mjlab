@@ -18,6 +18,14 @@ def unitree_g1_antifall_ppo_runner_cfg(stage_name: str = "") -> RslRlOnPolicyRun
   return cfg
 
 
+def unitree_g1_antifall_getup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  cfg = unitree_g1_antifall_ppo_runner_cfg(stage_name="antifall_getup")
+  cfg.experiment_name = "g1_antifall_getup"
+  cfg.max_iterations = 10001
+  cfg.save_interval = 100
+  return cfg
+
+
 @dataclass
 class AntiFallCurriculumRunnerCfg(RslRlOnPolicyRunnerCfg):
   curriculum: AntiFallCurriculumCfg = field(default_factory=AntiFallCurriculumCfg)

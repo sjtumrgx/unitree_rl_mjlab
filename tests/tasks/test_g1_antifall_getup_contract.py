@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+import mjlab.tasks  # noqa: F401
+import src.tasks  # noqa: F401
+from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
+
+from src.tasks.velocity import mdp
+from src.tasks.velocity.rl.antifall_runner import AntiFallOnPolicyRunner
+
+TASK_ID = "Unitree-G1-AntiFall-GetUp"
+
+
+def test_antifall_getup_task_is_registered_with_own_experiment() -> None:
+  assert TASK_ID in list_tasks()
+  assert load_runner_cls(TASK_ID) is AntiFallOnPolicyRunner
+  rl_cfg = load_rl_cfg(TASK_ID)
+  assert rl_cfg.experiment_name == "g1_antifall_getup"
+  assert rl_cfg.run_name == "antifall_getup"
+
+
+def test_antifall_getup_env_combines_walking_push_and_fallen_recovery_contracts() -> None:
+  cfg = load_env_cfg(TASK_ID)
+
+  twist = cfg.commands["twist"]
+  assert twist.rel_standing_envs <= 0.08
+  assert twist.ranges.lin_vel_x[1] >= 1.5
+  assert twist.ranges.lin_vel_y[0] < 0.0 < twist.ranges.lin_vel_y[1]
+  assert "push_robot" in cfg.events
+  assert cfg.events["push_robot"].func is mdp.push_by_setting_velocity_with_history
+
+  reset_params = cfg.events["reset_base"].params
+  assert reset_params["hard_reset_prob"] >= 0.25
+  assert reset_params["hard_pose_range"]["roll"][0] <= -2.0
+  assert reset_params["hard_pose_range"]["pitch"][1] >= 2.0
+
+  assert cfg.actions["joint_pos"].__class__.__name__ == "HostRelativeJointPositionActionCfg"
+  assert cfg.actions["joint_pos"].max_delta <= 1.0
+  assert cfg.observations["actor"].terms["actions"].func is mdp.host_effective_actions
+
+  for reward_name in (
+    "track_linear_velocity",
+    "track_angular_velocity",
+    "recovery_quality",
+    "recovery_completion_bonus",
+    "host_lift_progress",
+    "host_upright_progress",
+    "host_hand_push",
+    "getup_completion_bonus",
+  ):
+    assert reward_name in cfg.rewards
+  for metric_name in (
+    "controllable_locomotion",
+    "disturbance_count",
+    "recovery_success_count",
+    "getup_success_count",
+    "getup_latency",
+  ):
+    assert metric_name in cfg.metrics
+  sensor_names = {sensor.name for sensor in cfg.scene.sensors}
+  assert {"support_body_contact", "hand_ground_contact", "foot_geom_ground_contact"}.issubset(sensor_names)
+
+
+def test_antifall_getup_play_cfg_preserves_evaluation_disturbances_and_contact_headroom() -> None:
+  cfg = load_env_cfg(TASK_ID, play=True)
+  assert "push_robot" in cfg.events
+  assert cfg.sim.nconmax >= 256
+  assert cfg.events["reset_base"].params["hard_reset_prob"] >= 0.25

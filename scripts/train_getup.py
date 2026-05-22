@@ -10,12 +10,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
   sys.path.insert(0, str(_REPO_ROOT))
 
-from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_TERRAIN_VARIANTS
+from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_TERRAIN_VARIANTS, GETUP_TRAIN_MIX_TERRAIN
 
 
 def build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--terrain", choices=GETUP_TERRAIN_VARIANTS, default="ground")
+  parser.add_argument("--terrain", choices=GETUP_TERRAIN_VARIANTS, default=GETUP_TRAIN_MIX_TERRAIN)
   parser.add_argument("extra_args", nargs=argparse.REMAINDER)
   return parser
 

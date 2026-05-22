@@ -30,12 +30,12 @@ from src.tasks.velocity.config.g1_antifall.env_cfgs import (
 )
 
 
-GETUP_TERRAIN_VARIANTS = ("ground", "platform", "wall", "slope")
 GETUP_TRAIN_NUM_ENVS = 4096
 GETUP_EPISODE_LENGTH_S = 12.0
 GETUP_STALL_MIN_STEPS = 600
 GETUP_SUCCESS_TORSO_HEIGHT = 0.55
 HOST_SOURCE_TASKS = {
+  "mixed": "g1_mixed_terrains",
   "ground": "g1_ground",
   "platform": "g1_platform",
   "wall": "g1_wall",
@@ -43,6 +43,18 @@ HOST_SOURCE_TASKS = {
 }
 
 HOST_TERRAIN_PARITY = {
+  "mixed": {
+    "num_rows": 10,
+    "num_cols": 20,
+    "terrain_proportions": (0.25, 0.25, 0.25, 0.25),
+    "mjlab_terrain_names": ("flat", "pyramid_stairs", "hf_pyramid_slope", "random_rough"),
+    "curriculum": True,
+    "max_init_terrain_level": 5,
+    "target_base_height_phase1": 0.45,
+    "target_base_height_phase2": 0.45,
+    "target_base_height_phase3": 0.65,
+    "pull_force_n": 120,
+  },
   "ground": {
     "num_rows": 1,
     "num_cols": 20,
@@ -152,6 +164,9 @@ _HOST_GETUP_TERRAINS = (
   "hf_pyramid_slope",
   "random_rough",
 )
+GETUP_SINGLE_TERRAIN_VARIANTS = ("ground", "platform", "wall", "slope")
+GETUP_TRAIN_MIX_TERRAIN = "mixed"
+GETUP_TERRAIN_VARIANTS = (GETUP_TRAIN_MIX_TERRAIN, *GETUP_SINGLE_TERRAIN_VARIANTS)
 _HOST_GETUP_HOLDOUT_TERRAINS = (
   "open_stairs",
   "random_stairs",
@@ -182,6 +197,8 @@ def _host_variant_sub_terrains(terrain_variant: str) -> dict:
 
 
 def _apply_host_terrain_variant(cfg: ManagerBasedRlEnvCfg, terrain_variant: str) -> None:
+  if terrain_variant == GETUP_TRAIN_MIX_TERRAIN:
+    _set_train_getup_terrain_mix(cfg)
   if terrain_variant not in GETUP_TERRAIN_VARIANTS:
     raise ValueError(
       f"Unsupported Unitree-G1-GetUp terrain {terrain_variant!r}; "
@@ -666,7 +683,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
 
 
-def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:
+def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_23dof_rough_env_cfg(play=play)
   if not play:
     cfg.scene.num_envs = GETUP_TRAIN_NUM_ENVS
@@ -686,7 +703,6 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
     max_delta=_HOST_GETUP_MAX_ACTION_DELTA,
   )
   _apply_zero_command_profile(cfg)
-  _set_train_getup_terrain_mix(cfg)
   _apply_host_terrain_variant(cfg, terrain)
   cfg.curriculum.pop("command_vel", None)
   _add_support_depth_camera(cfg)
@@ -907,7 +923,7 @@ def _apply_getup_amp_observation_group(
   )
 
 
-def unitree_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:
+def unitree_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create the Unitree G1 HoST get-up configuration for one terrain variant."""
   return _make_g1_getup_env_cfg(terrain=terrain, play=play)
 
@@ -928,7 +944,7 @@ def unitree_g1_getup_amp_env_cfg(
   return cfg
 
 
-def unitree_g1_getup_benchmark_env_cfg(terrain: str = "ground", play: bool = False) -> ManagerBasedRlEnvCfg:
+def unitree_g1_getup_benchmark_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create a deterministic HoST get-up benchmark scaffold."""
   cfg = _make_g1_getup_env_cfg(terrain=terrain, play=play)
   _set_benchmark_holdout_terrain_mix(cfg)

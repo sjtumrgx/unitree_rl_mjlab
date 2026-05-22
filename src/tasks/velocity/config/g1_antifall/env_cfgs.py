@@ -1,15 +1,18 @@
 """Stage-configured Unitree G1 anti-fall velocity environment scaffolds."""
 
 from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 
 from src.tasks.velocity import mdp
 from src.tasks.velocity.config.g1.env_cfgs import (
   unitree_g1_flat_env_cfg,
 )
+from src.tasks.velocity.mdp.getup.actions import HostRelativeJointPositionActionCfg
 
 _ALLOWED_ACTOR_TERMS = (
   "base_ang_vel",
@@ -431,4 +434,138 @@ def unitree_g1_antifall_benchmark_env_cfg(play: bool = False) -> ManagerBasedRlE
     2: (0.0, 0.0),
   }
   _apply_antifall_helpers(cfg)
+  return cfg
+
+
+def _add_antifall_rewards_after_getup_stack(cfg: ManagerBasedRlEnvCfg, source_rewards: dict) -> None:
+  """Re-add locomotion and recovery terms after the GetUp stack trims rewards."""
+
+  for reward_name in (
+    "track_linear_velocity",
+    "track_angular_velocity",
+    "body_orientation_l2",
+    "pose",
+  ):
+    if reward_name in source_rewards:
+      cfg.rewards[reward_name] = source_rewards[reward_name]
+  _apply_antifall_rewards(cfg)
+
+
+def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create walking anti-fall plus fallen GetUp recovery scaffold.
+
+  This task intentionally combines the late anti-fall walking/push ladder with
+  the repaired HoST-style GetUp action/reset/reward contract.  It trains one
+  actor to track velocity commands, absorb disturbances, recover from hard
+  fallen resets, and resume controllable locomotion.
+  """
+
+  from src.tasks.velocity.config.g1_getup.env_cfgs import (
+    GETUP_SUCCESS_TORSO_HEIGHT,
+    _GETUP_HARD_POSE_RANGE,
+    _GETUP_HARD_VELOCITY_RANGE,
+    _HOST_GETUP_INITIAL_ACTION_SCALE,
+    _HOST_GETUP_MAX_ACTION_DELTA,
+    _HOST_GETUP_MIN_ACTION_SCALE,
+    _HOST_GETUP_UNACTUATED_TIMESTEPS,
+    _add_getup_stall_guard,
+    _add_support_body_contact_sensor,
+    _add_support_depth_camera,
+    _apply_getup_nan_safety,
+    _apply_host_effective_action_observations,
+    _apply_host_getup_reward_stack,
+  )
+
+  cfg = unitree_g1_antifall_stage4b_env_cfg(play=play)
+  locomotion_reward_source = dict(cfg.rewards)
+  if not play:
+    cfg.scene.num_envs = 4096
+  cfg.episode_length_s = 30.0
+  cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 256)
+  cfg.host_unactuated_timesteps = _HOST_GETUP_UNACTUATED_TIMESTEPS  # type: ignore[attr-defined]
+  cfg.host_reward_groups = ("task", "regu", "style", "target", "antifall")  # type: ignore[attr-defined]
+  cfg.actions["joint_pos"] = HostRelativeJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=1.0,
+    unactuated_timesteps=_HOST_GETUP_UNACTUATED_TIMESTEPS,
+    max_delta=_HOST_GETUP_MAX_ACTION_DELTA,
+  )
+  _tune_command_ranges(
+    cfg,
+    rel_standing_envs=0.05,
+    lin_vel_x=(-0.8, 1.6),
+    lin_vel_y=(-0.5, 0.5),
+    ang_vel_z=(-1.0, 1.0),
+  )
+  if "push_robot" not in cfg.events:
+    cfg.events["push_robot"] = EventTermCfg(
+      func=mdp.push_by_setting_velocity_with_history,
+      mode="interval",
+      params={"velocity_range": {}},
+      interval_range_s=(2.0, 3.5),
+    )
+  _configure_push_profile(
+    cfg,
+    interval_range_s=(2.0, 3.5),
+    velocity_range={
+      "x": (-1.4, 1.4),
+      "y": (-1.4, 1.4),
+      "z": (-0.9, 0.9),
+      "roll": (-1.2, 1.2),
+      "pitch": (-1.2, 1.2),
+      "yaw": (-1.4, 1.4),
+    },
+  )
+  _add_support_depth_camera(cfg)
+  _add_support_body_contact_sensor(cfg)
+  _add_getup_stall_guard(cfg)
+  _apply_getup_nan_safety(cfg)
+  _apply_host_effective_action_observations(cfg)
+  _apply_antifall_helpers(
+    cfg,
+    hard_reset_prob=0.35,
+    hard_pose_range=_GETUP_HARD_POSE_RANGE,
+    hard_velocity_range=_GETUP_HARD_VELOCITY_RANGE,
+  )
+  _apply_host_getup_reward_stack(cfg)
+  _add_antifall_rewards_after_getup_stack(cfg, locomotion_reward_source)
+  if not play:
+    cfg.events["getup_assist_force"] = EventTermCfg(
+      func=mdp.apply_host_getup_assist_force,
+      mode="step",
+      params={
+        "initial_force_n": 100.0,
+        "initial_action_scale": _HOST_GETUP_INITIAL_ACTION_SCALE,
+        "success_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
+        "force_decay_n": 20.0,
+        "action_scale_decay": 0.02,
+        "min_force_n": 0.0,
+        "min_action_scale": _HOST_GETUP_MIN_ACTION_SCALE,
+        "unactuated_timesteps": _HOST_GETUP_UNACTUATED_TIMESTEPS,
+        "orientation_projected_gravity_z_max": -0.8,
+        "no_orientation_gate": True,
+        "stable_success_required": True,
+        "upright_alignment_threshold": 0.85,
+        "feet_sensor_name": "feet_ground_contact",
+        "body_sensor_name": "support_body_contact",
+        "min_feet_contact_count": 1.0,
+        "max_body_support_count": 1.0,
+        "taper_start_height": 0.35,
+        "taper_end_height": GETUP_SUCCESS_TORSO_HEIGHT,
+        "no_assist_probability_initial": 0.10,
+        "no_assist_probability": 0.75,
+        "no_assist_ramp_start_progress": 0.5,
+        "no_assist_ramp_end_progress": 1.0,
+        "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+      },
+    )
+    cfg.metrics["getup_assist_force_n"] = MetricsTermCfg(
+      func=mdp.getup_assist_force_n,
+      params={"initial_force_n": 100.0},
+    )
+    cfg.metrics["getup_action_rescale"] = MetricsTermCfg(
+      func=mdp.getup_action_rescale,
+      params={"initial_action_scale": _HOST_GETUP_INITIAL_ACTION_SCALE},
+    )
   return cfg
