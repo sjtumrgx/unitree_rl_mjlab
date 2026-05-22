@@ -78,7 +78,7 @@ def test_reset_joints_from_presets_raises_when_selected_preset_has_no_targets() 
     )
 
 
-def test_supine_reset_uses_higher_fallen_z_offset_to_avoid_contact_pop() -> None:
+def test_fallen_reset_z_offsets_avoid_contact_pop_without_standing_reset() -> None:
   cfg = unitree_g1_getup_env_cfg("ground", play=True)
   presets = {
     preset["name"]: preset["pose_range"]
@@ -86,11 +86,18 @@ def test_supine_reset_uses_higher_fallen_z_offset_to_avoid_contact_pop() -> None
   }
 
   assert presets["supine"]["z"] == (-0.35, -0.25)
-  assert presets["left_side"]["z"] == (-0.7, -0.6)
-  assert presets["right_side"]["z"] == (-0.7, -0.6)
-  # The offset is still below the standing default root height; this is a
+  assert presets["left_side"]["x"] == (-0.10, 0.10)
+  assert presets["left_side"]["y"] == (-0.10, 0.10)
+  assert presets["right_side"]["x"] == (-0.10, 0.10)
+  assert presets["right_side"]["y"] == (-0.10, 0.10)
+  assert presets["left_side"]["z"] == (-0.55, -0.45)
+  assert presets["right_side"]["z"] == (-0.55, -0.45)
+  assert presets["seated_fall"]["z"] == (-0.5, -0.4)
+  # These offsets are still below the standing default root height; this is a
   # collision-impulse guard, not a hidden standing reset.
   assert presets["supine"]["z"][1] < -0.2
+  assert presets["left_side"]["z"][1] < -0.4
+  assert presets["right_side"]["z"][1] < -0.4
 
 
 def test_play_randomizes_terrain_before_fallen_root_reset() -> None:

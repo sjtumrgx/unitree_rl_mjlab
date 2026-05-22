@@ -925,9 +925,13 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
       {
         "name": "left_side",
         "pose_range": {
-          "x": (-0.15, 0.15),
-          "y": (-0.15, 0.15),
-          "z": (-0.7, -0.6),
+          "x": (-0.10, 0.10),
+          "y": (-0.10, 0.10),
+          # The old lower side-lying offset penetrated platform stair geometry
+          # and produced a reset-time upward contact impulse before the policy
+          # could act.  Keep this fallen and away from stair edges while
+          # aligning it with seated_fall height.
+          "z": (-0.55, -0.45),
           "roll": (1.5708 - 0.25, 1.5708 + 0.25),
           "pitch": (-0.35, 0.35),
           "yaw": (-3.14159, 3.14159),
@@ -936,9 +940,11 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
       {
         "name": "right_side",
         "pose_range": {
-          "x": (-0.15, 0.15),
-          "y": (-0.15, 0.15),
-          "z": (-0.7, -0.6),
+          "x": (-0.10, 0.10),
+          "y": (-0.10, 0.10),
+          # See left_side: avoid platform reset-time contact launch while
+          # keeping the root below the standing default height.
+          "z": (-0.55, -0.45),
           "roll": (-1.5708 - 0.25, -1.5708 + 0.25),
           "pitch": (-0.35, 0.35),
           "yaw": (-3.14159, 3.14159),
