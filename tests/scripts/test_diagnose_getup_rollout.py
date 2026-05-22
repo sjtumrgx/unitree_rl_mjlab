@@ -11,18 +11,35 @@ from scripts import diagnose_getup_rollout as rollout
 
 
 class _FakeAsset:
-  body_names = ("torso_link",)
+  body_names = ("torso_link", "left_ankle_roll_link", "right_ankle_roll_link")
+  joint_names = (
+    "left_hip_yaw_joint",
+    "left_hip_roll_joint",
+    "left_hip_pitch_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_yaw_joint",
+    "right_hip_roll_joint",
+    "right_hip_pitch_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+  )
 
   def __init__(self) -> None:
+    identity = torch.tensor([1.0, 0.0, 0.0, 0.0])
     self.data = SimpleNamespace(
       root_link_pos_w=torch.tensor([[0.0, 0.0, 1.1]]),
+      root_link_quat_w=identity.reshape(1, 4),
       root_link_lin_vel_w=torch.tensor([[0.1, 0.2, 2.5]]),
       root_link_ang_vel_w=torch.tensor([[0.0, 0.0, 3.0]]),
-      body_link_pos_w=torch.tensor([[[0.0, 0.0, 1.2]]]),
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 1.2], [0.1, 0.1, 0.0], [0.1, -0.1, 0.0]]]),
+      body_link_quat_w=identity.reshape(1, 1, 4).repeat(1, 3, 1),
       projected_gravity_b=torch.tensor([[0.0, 0.0, -0.9]]),
-      joint_pos=torch.tensor([[0.2, -0.1]]),
-      joint_vel=torch.zeros(1, 2),
-      joint_acc=torch.zeros(1, 2),
+      joint_pos=torch.zeros(1, 12),
+      joint_vel=torch.zeros(1, 12),
+      joint_acc=torch.zeros(1, 12),
     )
 
 
@@ -36,6 +53,8 @@ class _FakeEnv:
       "robot": _FakeAsset(),
       "env_origins": torch.zeros(1, 3),
       "feet_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.tensor([[1.0, 0.0]]))),
+      "foot_geom_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.ones(1, 14, 1))),
+      "hand_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.tensor([[1.0, 0.0]]))),
       "support_body_contact": SimpleNamespace(data=SimpleNamespace(found=torch.tensor([[0.0, 1.0]]))),
     }
     self.cfg = SimpleNamespace(events={"getup_assist_force": object()})
@@ -54,7 +73,8 @@ class _FakeEnv:
       _term_names=["getup_upright"],
       _step_values=torch.tensor([[1.0]]),
     )
-    self._host_getup_joint_position_target = torch.tensor([[1.3, -0.4]])
+    self._host_getup_joint_position_target = torch.zeros(1, 12)
+    self._host_getup_joint_position_target[:, :2] = torch.tensor([[1.1, -0.4]])
     self._host_getup_joint_target_ids = torch.tensor([0, 1])
     self._host_getup_curriculum_state = {
       "force_n": torch.tensor([80.0, 100.0]),
@@ -109,6 +129,11 @@ def test_rollout_step_record_contains_required_debug_fields() -> None:
   assert record["curriculum_assist"]["episode_force_scale_mean"] == pytest.approx(0.5)
   assert record["curriculum_assist"]["episode_force_scale_max"] == 1.0
   assert record["support"]["feet_contact_count"] == 1.0
+  assert record["support"]["hand_contact_count"] == 1.0
+  assert record["posture"]["foot_flatness_min"] == pytest.approx(1.0)
+  assert record["posture"]["foot_heading_alignment_min"] == pytest.approx(1.0)
+  assert record["posture"]["foot_geom_contact_spread_min"] == pytest.approx(1.0)
+  assert record["posture"]["natural_leg_pose_error_mean"] is not None
   assert record["reward"]["terms"]["host_lift_progress"] == pytest.approx(0.4)
   assert record["reward"]["terms"]["host_task_reward"] == pytest.approx(0.7)
   assert record["termination"]["terms"]["unstable_state"] is True
@@ -226,6 +251,117 @@ def test_rollout_summary_reports_single_episode_success_rate() -> None:
   assert summary["success"]["num_envs"] == 4
   assert summary["success"]["max_getup_upright_rate"] == pytest.approx(0.5)
   assert summary["success"]["final_getup_upright_rate"] == pytest.approx(0.5)
+  assert "posture" in summary
+  assert "min_foot_flatness" in summary["posture"]
+  assert "max_hand_contact_count" in summary["posture"]
+
+
+def test_rollout_summary_reports_final_and_standing_phase_posture() -> None:
+  metadata = {"type": "metadata", "num_envs": 4}
+  early = rollout.build_step_record(
+    _FakeEnv(),
+    task_id="Unitree-G1-GetUp",
+    step_index=0,
+    mode="play-like",
+    raw_action=torch.tensor([[0.0, 0.0]]),
+    clipped_action=torch.tensor([[0.0, 0.0]]),
+    previous_clipped_action=None,
+    rewards=torch.tensor([0.0]),
+    dones=torch.tensor([0]),
+    extras={},
+    clip_actions=5.0,
+  )
+  final = rollout.build_step_record(
+    _FakeEnv(),
+    task_id="Unitree-G1-GetUp",
+    step_index=1,
+    mode="play-like",
+    raw_action=torch.tensor([[0.0, 0.0]]),
+    clipped_action=torch.tensor([[0.0, 0.0]]),
+    previous_clipped_action=None,
+    rewards=torch.tensor([0.0]),
+    dones=torch.tensor([0]),
+    extras={},
+    clip_actions=5.0,
+  )
+  early["root"]["torso_height_mean"] = 0.2
+  early["root"]["upright_alignment_mean"] = 0.1
+  early["posture"]["foot_flatness_min"] = 0.0
+  early["posture"]["foot_heading_alignment_min"] = 0.0
+  early["posture"]["foot_geom_contact_spread_min"] = 0.0
+  early["posture"]["natural_leg_pose_error_max"] = 2.0
+  early["support"]["hand_contact_count"] = 2.0
+  final["root"]["torso_height_mean"] = 0.62
+  final["root"]["upright_alignment_mean"] = 0.95
+  final["posture"]["foot_flatness_min"] = 0.8
+  final["posture"]["foot_heading_alignment_min"] = 0.7
+  final["posture"]["foot_geom_contact_spread_min"] = 0.75
+  final["posture"]["natural_leg_pose_error_max"] = 0.25
+  final["support"]["hand_contact_count"] = 0.0
+
+  summary = rollout.summarize_records([metadata, early, final])
+
+  assert summary["posture"]["min_foot_flatness"] == 0.0
+  assert summary["posture"]["standing_min_foot_flatness"] == pytest.approx(0.8)
+  assert summary["posture"]["final_foot_flatness_min"] == pytest.approx(0.8)
+  assert summary["posture"]["standing_min_foot_heading_alignment"] == pytest.approx(0.7)
+  assert summary["posture"]["standing_min_foot_geom_contact_spread"] == pytest.approx(0.75)
+  assert summary["posture"]["standing_max_natural_leg_pose_error"] == pytest.approx(0.25)
+  assert summary["posture"]["standing_records"] == 1
+  assert summary["posture"]["final_hand_contact_count"] == 0.0
+  assert summary["risk_flags"]["standing_foot_flatness_lt_0_6"] is False
+  assert summary["risk_flags"]["standing_foot_heading_alignment_lt_0_6"] is False
+  assert summary["risk_flags"]["standing_foot_geom_contact_spread_lt_0_5"] is False
+
+
+def test_rollout_summary_uses_last_standing_frame_before_timeout_reset() -> None:
+  metadata = {"type": "metadata", "num_envs": 4}
+  standing = rollout.build_step_record(
+    _FakeEnv(),
+    task_id="Unitree-G1-GetUp",
+    step_index=598,
+    mode="play-like",
+    raw_action=torch.tensor([[0.0, 0.0]]),
+    clipped_action=torch.tensor([[0.0, 0.0]]),
+    previous_clipped_action=None,
+    rewards=torch.tensor([0.0]),
+    dones=torch.tensor([0]),
+    extras={},
+    clip_actions=5.0,
+  )
+  reset = rollout.build_step_record(
+    _FakeEnv(),
+    task_id="Unitree-G1-GetUp",
+    step_index=599,
+    mode="play-like",
+    raw_action=torch.tensor([[0.0, 0.0]]),
+    clipped_action=torch.tensor([[0.0, 0.0]]),
+    previous_clipped_action=None,
+    rewards=torch.tensor([0.0]),
+    dones=torch.tensor([1]),
+    extras={},
+    clip_actions=5.0,
+  )
+  standing["root"]["torso_height_mean"] = 0.8
+  standing["root"]["upright_alignment_mean"] = 0.99
+  standing["posture"]["standing_env_count"] = 4.0
+  standing["posture"]["standing_foot_flatness_min"] = 0.7
+  standing["posture"]["standing_foot_heading_alignment_min"] = 0.8
+  standing["posture"]["standing_foot_geom_contact_spread_min"] = 0.75
+  standing["posture"]["standing_natural_leg_pose_error_max"] = 0.2
+  standing["posture"]["standing_hand_contact_rate"] = 0.0
+  reset["root"]["torso_height_mean"] = 0.2
+  reset["root"]["upright_alignment_mean"] = 0.0
+  reset["support"]["hand_contact_count"] = 2.0
+  reset["posture"]["standing_env_count"] = 0.0
+
+  summary = rollout.summarize_records([metadata, standing, reset])
+
+  assert summary["posture"]["final_hand_contact_count"] == 2.0
+  assert summary["posture"]["last_standing_hand_contact_rate"] == 0.0
+  assert summary["posture"]["last_standing_foot_flatness_min"] == pytest.approx(0.7)
+  assert summary["risk_flags"]["final_hand_contact_gt_0"] is True
+  assert summary["risk_flags"]["last_standing_hand_contact_gt_0"] is False
 
 
 def test_rollout_summary_splits_train_success_by_assist_episode_scale() -> None:

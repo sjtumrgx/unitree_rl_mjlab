@@ -259,13 +259,13 @@ def _add_support_body_contact_sensor(cfg: ManagerBasedRlEnvCfg) -> None:
   foot_geom_names = tuple(
     f"{side}_foot{i}_collision" for side in ("left", "right") for i in range(1, 8)
   )
-  support_contact_cfg = ContactSensorCfg(
-    name="support_body_contact",
+  hand_geom_names = ("left_hand_collision", "right_hand_collision")
+  foot_geom_contact_cfg = ContactSensorCfg(
+    name="foot_geom_ground_contact",
     primary=ContactMatch(
       mode="geom",
       entity="robot",
-      pattern=r".*_collision$",
-      exclude=tuple(foot_geom_names),
+      pattern=r"^(left|right)_foot[1-7]_collision$",
     ),
     secondary=ContactMatch(mode="body", pattern="terrain"),
     fields=("found", "force"),
@@ -273,13 +273,45 @@ def _add_support_body_contact_sensor(cfg: ManagerBasedRlEnvCfg) -> None:
     num_slots=1,
     history_length=4,
   )
-  cfg.scene.sensors = (cfg.scene.sensors or ()) + (support_contact_cfg,)
+  hand_contact_cfg = ContactSensorCfg(
+    name="hand_ground_contact",
+    primary=ContactMatch(
+      mode="geom",
+      entity="robot",
+      pattern=r"^(left|right)_hand_collision$",
+    ),
+    secondary=ContactMatch(mode="body", pattern="terrain"),
+    fields=("found", "force"),
+    reduce="none",
+    num_slots=1,
+    history_length=4,
+  )
+  support_contact_cfg = ContactSensorCfg(
+    name="support_body_contact",
+    primary=ContactMatch(
+      mode="geom",
+      entity="robot",
+      pattern=r".*_collision$",
+      exclude=tuple(foot_geom_names + hand_geom_names),
+    ),
+    secondary=ContactMatch(mode="body", pattern="terrain"),
+    fields=("found", "force"),
+    reduce="none",
+    num_slots=1,
+    history_length=4,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (
+    foot_geom_contact_cfg,
+    hand_contact_cfg,
+    support_contact_cfg,
+  )
   cfg.observations["actor"].terms["getup_progress"] = ObservationTermCfg(
     func=mdp.getup_progress_features,
     history_length=6,
     params={
       "sensor_name": support_contact_cfg.name,
       "feet_sensor_name": "feet_ground_contact",
+      "hand_sensor_name": hand_contact_cfg.name,
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
@@ -296,6 +328,7 @@ def _add_support_body_contact_sensor(cfg: ManagerBasedRlEnvCfg) -> None:
     params={
       "sensor_name": support_contact_cfg.name,
       "feet_sensor_name": "feet_ground_contact",
+      "hand_sensor_name": hand_contact_cfg.name,
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
@@ -486,6 +519,79 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
+  cfg.rewards["host_hand_support_progress"] = RewardTermCfg(
+    func=mdp.host_hand_support_progress_reward,
+    weight=0.8,
+    params={
+      "hand_sensor_name": "hand_ground_contact",
+      "min_height": 0.18,
+      "release_height": 0.55,
+      "final_upright_threshold": 0.9,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_hand_contact_after_stand"] = RewardTermCfg(
+    func=mdp.host_hand_contact_after_stand_penalty,
+    weight=-1.0,
+    params={
+      "hand_sensor_name": "hand_ground_contact",
+      "activation_height": GETUP_SUCCESS_TORSO_HEIGHT,
+      "upright_alignment_threshold": 0.9,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_foot_contact_spread"] = RewardTermCfg(
+    func=mdp.host_foot_contact_spread_reward,
+    weight=0.8,
+    params={
+      "foot_geom_sensor_name": "foot_geom_ground_contact",
+      "feet_sensor_name": "feet_ground_contact",
+      "min_height": 0.35,
+      "target_contacts_per_foot": 3.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_foot_flat"] = RewardTermCfg(
+    func=mdp.host_foot_flat_reward,
+    weight=1.2,
+    params={
+      "feet_sensor_name": "feet_ground_contact",
+      "min_height": 0.45,
+      "min_alignment": 0.5,
+      "foot_asset_cfg": SceneEntityCfg(
+        "robot",
+        body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
+      ),
+      "torso_asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_foot_heading"] = RewardTermCfg(
+    func=mdp.host_foot_heading_reward,
+    weight=0.8,
+    params={
+      "feet_sensor_name": "feet_ground_contact",
+      "min_height": 0.45,
+      "min_alignment": 0.5,
+      "foot_asset_cfg": SceneEntityCfg(
+        "robot",
+        body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
+      ),
+      "torso_asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_natural_stand_pose"] = RewardTermCfg(
+    func=mdp.host_natural_stand_pose_reward,
+    weight=1.5,
+    params={
+      "joint_names": _HOST_GETUP_STYLE_JOINT_NAMES,
+      "target_joint_angles": dict(_HOST_GETUP_TARGET_JOINT_ANGLES),
+      "std": 0.35,
+      "min_height": GETUP_SUCCESS_TORSO_HEIGHT,
+      "min_alignment": 0.75,
+      "asset_cfg": SceneEntityCfg("robot"),
+      "torso_asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
   cfg.rewards["host_target_standing"] = RewardTermCfg(
     func=mdp.host_target_standing_reward,
     weight=2.0,
@@ -651,7 +757,9 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
     weight=-0.75,
     params={
       "sensor_name": "support_body_contact",
+      "hand_sensor_name": "hand_ground_contact",
       "activation_height": 0.2,
+      "hand_release_height": 0.55,
       "normalize_count": 2.0,
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },

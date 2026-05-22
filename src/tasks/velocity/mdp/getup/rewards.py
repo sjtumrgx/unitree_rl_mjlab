@@ -10,6 +10,7 @@ from mjlab.envs import mdp as envs_mdp
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.envs import mdp as base_envs_mdp
+from mjlab.utils.lab_api.math import quat_apply, quat_apply_inverse, wrap_to_pi
 
 from ..rewards import (
   angular_momentum_penalty as _base_angular_momentum_penalty,
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 
 _TORSO_ASSET_CFG = SceneEntityCfg("robot", body_names=("torso_link",))
 _JOINT_ASSET_CFG = SceneEntityCfg("robot")
+_FOOT_ASSET_CFG = SceneEntityCfg("robot", body_names=("left_ankle_roll_link", "right_ankle_roll_link"))
 
 
 def _bounded_nonnegative_penalty(
@@ -87,6 +89,95 @@ def _contact_count(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
   found = sensor.data.found
   assert found is not None
   return (found > 0).float().flatten(start_dim=1).sum(dim=1)
+
+
+def _contact_norm(env: ManagerBasedRlEnv, sensor_name: str | None, normalize_count: float) -> torch.Tensor:
+  if sensor_name is None:
+    return torch.zeros(env.num_envs, device=env.device)
+  sensor = env.scene.get(sensor_name) if isinstance(env.scene, dict) else env.scene[sensor_name]
+  if sensor is None:
+    return torch.zeros(env.num_envs, device=env.device)
+  found = sensor.data.found
+  assert found is not None
+  count = (found > 0).float().flatten(start_dim=1).sum(dim=1)
+  return torch.clamp(count / max(normalize_count, 1e-6), min=0.0, max=1.0)
+
+
+def _body_quat_w(asset: Entity) -> torch.Tensor:
+  quat = getattr(asset.data, "body_link_quat_w", None)
+  if quat is not None:
+    return quat
+  quat = getattr(asset.data, "body_quat_w", None)
+  if quat is not None:
+    return quat
+  raise AttributeError("robot data must expose body_link_quat_w or body_quat_w")
+
+
+def _foot_contact_weights(
+  env: ManagerBasedRlEnv,
+  feet_sensor_name: str | None,
+  *,
+  num_feet: int,
+) -> torch.Tensor:
+  if feet_sensor_name is None:
+    return torch.ones(env.num_envs, num_feet, device=env.device)
+  sensor = env.scene.get(feet_sensor_name) if isinstance(env.scene, dict) else env.scene[feet_sensor_name]
+  if sensor is None:
+    return torch.ones(env.num_envs, num_feet, device=env.device)
+  found = sensor.data.found
+  assert found is not None
+  contact = (found > 0).float().flatten(start_dim=1)
+  if contact.shape[1] == num_feet:
+    return contact
+  if contact.shape[1] >= 2 * num_feet and contact.shape[1] % num_feet == 0:
+    return torch.clamp(contact.reshape(contact.shape[0], num_feet, -1).amax(dim=2), max=1.0)
+  if contact.shape[1] >= 2 and num_feet == 2:
+    return contact[:, :2]
+  if contact.shape[1] == 1:
+    return contact.expand(-1, num_feet)
+  return torch.ones(env.num_envs, num_feet, device=env.device)
+
+
+def _standing_gate(
+  env: ManagerBasedRlEnv,
+  *,
+  min_height: float,
+  min_alignment: float,
+  asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
+  height_gate = torch.clamp((torso_height - min_height) / 0.15, min=0.0, max=1.0)
+  alignment_gate = torch.clamp(
+    (_upright_alignment(asset.data.projected_gravity_b) - min_alignment)
+    / max(1.0 - min_alignment, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  return height_gate * alignment_gate
+
+
+def _foot_flatness_from_quat(foot_quat_w: torch.Tensor) -> torch.Tensor:
+  gravity_w = torch.zeros_like(foot_quat_w[..., :3])
+  gravity_w[..., 2] = -1.0
+  gravity_b = quat_apply_inverse(foot_quat_w.reshape(-1, 4), gravity_w.reshape(-1, 3))
+  gravity_b = gravity_b.reshape(*foot_quat_w.shape[:-1], 3)
+  # BFM-Zero penalizes lateral gravity components in the foot frame.  A flat
+  # sole has local gravity almost purely along -Z, while toe-tip/rolled contacts
+  # expose large x/y components.
+  tilt = torch.linalg.norm(gravity_b[..., :2], dim=-1)
+  return torch.clamp(1.0 - tilt, min=0.0, max=1.0)
+
+
+def _heading_alignment_from_quat(root_quat_w: torch.Tensor, foot_quat_w: torch.Tensor) -> torch.Tensor:
+  forward = torch.zeros_like(foot_quat_w[..., :3])
+  forward[..., 0] = 1.0
+  root_forward = quat_apply(root_quat_w, forward[:, 0, :] if forward.ndim == 3 else forward)
+  foot_forward = quat_apply(foot_quat_w.reshape(-1, 4), forward.reshape(-1, 3)).reshape_as(forward)
+  root_heading = torch.atan2(root_forward[:, 1], root_forward[:, 0])
+  foot_heading = torch.atan2(foot_forward[..., 1], foot_forward[..., 0])
+  diff = torch.abs(wrap_to_pi(foot_heading - root_heading[:, None]))
+  return torch.exp(-torch.square(diff / 0.6))
 
 
 def _host_orientation_term(
@@ -358,6 +449,162 @@ def host_feet_support_reward(
   body_relief = 1.0 - torch.clamp(body_count / max(max_body_support_count, 1e-6), min=0.0, max=1.0)
   height = _host_height_term(_torso_height(env, asset_cfg=asset_cfg))
   return feet_support * (0.25 + 0.75 * body_relief) * (0.25 + 0.75 * alignment) * (0.25 + 0.75 * height)
+
+
+def host_hand_support_progress_reward(
+  env: ManagerBasedRlEnv,
+  hand_sensor_name: str,
+  min_height: float = 0.18,
+  release_height: float = 0.55,
+  final_upright_threshold: float = 0.9,
+  normalize_count: float = 2.0,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward hand contact only during the useful push-up phase.
+
+  The current GetUp policy learned to stand but tends to twist into toe-tip
+  support because hands are just another body contact that is penalized after
+  lift.  This term makes palm/wrist ground contact useful while the torso is
+  rising, then shuts off before final standing so the policy still releases
+  the hands.
+  """
+
+  asset: Entity = env.scene[asset_cfg.name]
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
+  hand_support = _contact_norm(env, hand_sensor_name, normalize_count)
+  height_progress = torch.clamp(
+    (torso_height - min_height) / max(release_height - min_height, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  height_band = (0.25 + 0.75 * height_progress) * (torso_height >= min_height).float()
+  below_release = (torso_height < release_height).float()
+  not_final_upright = (_upright_alignment(asset.data.projected_gravity_b) < final_upright_threshold).float()
+  return hand_support * height_band * below_release * not_final_upright
+
+
+def host_hand_contact_after_stand_penalty(
+  env: ManagerBasedRlEnv,
+  hand_sensor_name: str,
+  activation_height: float = 0.55,
+  upright_alignment_threshold: float = 0.9,
+  normalize_count: float = 2.0,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize palm/wrist ground contact after the robot is upright and tall."""
+
+  asset: Entity = env.scene[asset_cfg.name]
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
+  upright = _upright_alignment(asset.data.projected_gravity_b) >= upright_alignment_threshold
+  standing = (torso_height >= activation_height) & upright
+  return _contact_norm(env, hand_sensor_name, normalize_count) * standing.float()
+
+
+def host_foot_flat_reward(
+  env: ManagerBasedRlEnv,
+  feet_sensor_name: str | None = "feet_ground_contact",
+  min_height: float = 0.45,
+  min_alignment: float = 0.5,
+  foot_asset_cfg: SceneEntityCfg = _FOOT_ASSET_CFG,
+  torso_asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """BFM-inspired flat-foot reward using ankle/foot orientation in contact.
+
+  This is a positive counterpart of BFM-Zero's feet-orientation penalty:
+  contacted feet get high reward when the local gravity vector is close to the
+  foot -Z axis, which discourages toe-tip and heavily rolled support.
+  """
+
+  asset: Entity = env.scene[foot_asset_cfg.name]
+  foot_quat = _body_quat_w(asset)[:, foot_asset_cfg.body_ids, :]
+  flatness = _foot_flatness_from_quat(foot_quat)
+  contact = _foot_contact_weights(env, feet_sensor_name, num_feet=flatness.shape[1])
+  contact_gate = torch.clamp(contact.sum(dim=1) / max(float(flatness.shape[1]), 1.0), min=0.0, max=1.0)
+  contacted_flatness = torch.where(contact > 0.0, flatness, torch.ones_like(flatness))
+  both_feet_flat = contacted_flatness.amin(dim=1)
+  return both_feet_flat * contact_gate * _standing_gate(
+    env,
+    min_height=min_height,
+    min_alignment=min_alignment,
+    asset_cfg=torso_asset_cfg,
+  )
+
+
+def host_foot_heading_reward(
+  env: ManagerBasedRlEnv,
+  feet_sensor_name: str | None = "feet_ground_contact",
+  min_height: float = 0.45,
+  min_alignment: float = 0.5,
+  foot_asset_cfg: SceneEntityCfg = _FOOT_ASSET_CFG,
+  torso_asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward feet pointing with the root heading in the final stand phase."""
+
+  asset: Entity = env.scene[foot_asset_cfg.name]
+  foot_quat = _body_quat_w(asset)[:, foot_asset_cfg.body_ids, :]
+  heading = _heading_alignment_from_quat(asset.data.root_link_quat_w, foot_quat)
+  contact = _foot_contact_weights(env, feet_sensor_name, num_feet=heading.shape[1])
+  contact_gate = torch.clamp(contact.sum(dim=1) / max(float(heading.shape[1]), 1.0), min=0.0, max=1.0)
+  contacted_heading = torch.where(contact > 0.0, heading, torch.ones_like(heading))
+  all_feet_heading = contacted_heading.amin(dim=1)
+  return all_feet_heading * contact_gate * _standing_gate(
+    env,
+    min_height=min_height,
+    min_alignment=min_alignment,
+    asset_cfg=torso_asset_cfg,
+  )
+
+
+def host_foot_contact_spread_reward(
+  env: ManagerBasedRlEnv,
+  foot_geom_sensor_name: str,
+  feet_sensor_name: str = "feet_ground_contact",
+  min_height: float = 0.35,
+  target_contacts_per_foot: float = 3.0,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward multiple sole contact geoms instead of a single toe-tip contact."""
+
+  sensor = env.scene[foot_geom_sensor_name]
+  found = sensor.data.found
+  assert found is not None
+  contact = (found > 0).float().flatten(start_dim=1)
+  if contact.shape[1] >= 14:
+    foot_contacts = torch.stack([contact[:, :7].sum(dim=1), contact[:, 7:14].sum(dim=1)], dim=1)
+  else:
+    coarse = _foot_contact_weights(env, feet_sensor_name, num_feet=2)
+    foot_contacts = coarse * target_contacts_per_foot
+  spread = torch.clamp(foot_contacts / max(target_contacts_per_foot, 1e-6), min=0.0, max=1.0)
+  both_feet_gate = torch.clamp(_contact_count(env, feet_sensor_name) / 2.0, min=0.0, max=1.0)
+  height_gate = torch.clamp((_torso_height(env, asset_cfg=asset_cfg) - min_height) / 0.25, min=0.0, max=1.0)
+  return spread.mean(dim=1) * both_feet_gate * height_gate
+
+
+def host_natural_stand_pose_reward(
+  env: ManagerBasedRlEnv,
+  joint_names: tuple[str, ...],
+  target_joint_angles: dict[str, float],
+  std: float = 0.35,
+  min_height: float = 0.55,
+  min_alignment: float = 0.75,
+  asset_cfg: SceneEntityCfg = _JOINT_ASSET_CFG,
+  torso_asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """Tight final-pose reward for untwisted legs and neutral ankles."""
+
+  pose = host_style_pose_reward(
+    env,
+    joint_names=joint_names,
+    target_joint_angles=target_joint_angles,
+    std=std,
+    asset_cfg=asset_cfg,
+  )
+  return pose * _standing_gate(
+    env,
+    min_height=min_height,
+    min_alignment=min_alignment,
+    asset_cfg=torso_asset_cfg,
+  )
 
 
 def host_target_standing_reward(
@@ -692,14 +939,22 @@ def support_contact_diversity_reward(
 def support_body_contact_penalty_after_lift(
   env: ManagerBasedRlEnv,
   sensor_name: str,
+  hand_sensor_name: str | None = None,
   activation_height: float = 0.35,
+  hand_release_height: float = 0.55,
   normalize_count: float = 2.0,
   asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
 ) -> torch.Tensor:
   sensor = env.scene[sensor_name]
   sensor_data = sensor.data
   assert sensor_data.found is not None
-  contact_count = (sensor_data.found > 0).float().sum(dim=1)
+  contact_count = (sensor_data.found > 0).float().flatten(start_dim=1).sum(dim=1)
+  if hand_sensor_name is not None:
+    hand_contact = _contact_norm(env, hand_sensor_name, normalize_count=normalize_count)
+    hand_count = hand_contact * normalize_count
+    torso_height_for_release = _torso_height(env, asset_cfg=asset_cfg)
+    hand_allowed = (torso_height_for_release < hand_release_height).float()
+    contact_count = torch.clamp(contact_count - hand_count * hand_allowed, min=0.0)
   torso_height = _torso_height(env, asset_cfg=asset_cfg)
   active = (torso_height >= activation_height).float()
   normalized = torch.clamp(contact_count / max(normalize_count, 1e-6), min=0.0, max=1.0)

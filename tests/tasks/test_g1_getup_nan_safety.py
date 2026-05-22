@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 
@@ -49,6 +50,33 @@ def test_getup_actor_and_critic_include_bfm_local_body_state_observation():
   ):
     assert actor_terms[term_name].history_length == 6
   assert actor_terms["bfm_local_body_state"].history_length == 0
+
+
+def test_getup_config_exposes_hand_and_foot_posture_contracts():
+  from src.tasks.velocity import mdp
+  from src.tasks.velocity.config.g1_getup.env_cfgs import unitree_g1_getup_env_cfg
+
+  cfg = unitree_g1_getup_env_cfg("ground")
+  sensor_names = {sensor.name for sensor in cfg.scene.sensors or ()}
+
+  assert "hand_ground_contact" in sensor_names
+  assert "foot_geom_ground_contact" in sensor_names
+
+  progress_params = cfg.observations["actor"].terms["getup_progress"].params
+  assert progress_params["hand_sensor_name"] == "hand_ground_contact"
+  assert progress_params["feet_sensor_name"] == "feet_ground_contact"
+
+  reward_funcs = {name: term.func for name, term in cfg.rewards.items()}
+  assert reward_funcs["host_hand_support_progress"] is mdp.host_hand_support_progress_reward
+  assert reward_funcs["host_hand_contact_after_stand"] is mdp.host_hand_contact_after_stand_penalty
+  assert reward_funcs["host_foot_flat"] is mdp.host_foot_flat_reward
+  assert reward_funcs["host_foot_heading"] is mdp.host_foot_heading_reward
+  assert reward_funcs["host_foot_contact_spread"] is mdp.host_foot_contact_spread_reward
+  assert reward_funcs["host_natural_stand_pose"] is mdp.host_natural_stand_pose_reward
+
+  body_penalty_params = cfg.rewards["support_body_contact_penalty_after_lift"].params
+  assert body_penalty_params["hand_sensor_name"] == "hand_ground_contact"
+  assert body_penalty_params["hand_release_height"] > body_penalty_params["activation_height"]
 
 
 def test_bfm_local_body_state_is_finite_and_heading_invariant():
@@ -119,6 +147,45 @@ def test_bfm_local_body_state_is_finite_and_heading_invariant():
   torch.testing.assert_close(obs[0], obs[1], atol=1e-5, rtol=1e-5)
 
 
+def test_getup_progress_features_include_hand_support_when_sensor_is_present():
+  from types import SimpleNamespace
+
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+  from src.tasks.velocity.mdp.getup.observations import getup_progress_features
+
+  robot = SimpleNamespace(
+    data=SimpleNamespace(
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 0.335]]]),
+      projected_gravity_b=torch.tensor([[0.0, 0.0, -0.5]]),
+    )
+  )
+  env = SimpleNamespace(
+    num_envs=1,
+    device="cpu",
+    scene={
+      "robot": robot,
+      "env_origins": torch.zeros(1, 3),
+      "support_body_contact": SimpleNamespace(data=SimpleNamespace(found=torch.tensor([[[1.0], [0.0]]]))),
+      "feet_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.tensor([[[1.0], [1.0]]]))),
+      "hand_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.tensor([[[1.0], [0.0]]]))),
+    },
+  )
+
+  obs = getup_progress_features(
+    env,
+    sensor_name="support_body_contact",
+    feet_sensor_name="feet_ground_contact",
+    hand_sensor_name="hand_ground_contact",
+    min_height=0.12,
+    target_height=0.55,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  assert obs.shape == (1, 5)
+  assert obs[0, 3].item() == pytest.approx(1.0)
+  assert obs[0, 4].item() == pytest.approx(0.5)
+
+
 def test_getup_ppo_uses_tight_action_and_entropy_bounds():
   from src.tasks.velocity.config.g1_getup.rl_cfg import unitree_g1_getup_ppo_runner_cfg
 
@@ -138,6 +205,168 @@ def test_policy_action_sanitizer_clamps_nan_and_inf():
 
   assert torch.isfinite(sanitized).all()
   assert sanitized.tolist() == [[0.0, 5.0, -5.0, 3.0, -5.0]]
+
+
+def test_foot_flat_and_heading_rewards_prefer_flat_forward_feet():
+  from types import SimpleNamespace
+
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+  from mjlab.utils.lab_api.math import quat_from_euler_xyz
+  from src.tasks.velocity.mdp.getup import rewards
+
+  identity = quat_from_euler_xyz(torch.tensor([0.0]), torch.tensor([0.0]), torch.tensor([0.0]))[0]
+  rolled = quat_from_euler_xyz(torch.tensor([torch.pi / 2]), torch.tensor([0.0]), torch.tensor([0.0]))[0]
+  yawed = quat_from_euler_xyz(torch.tensor([0.0]), torch.tensor([0.0]), torch.tensor([torch.pi / 2]))[0]
+
+  robot = SimpleNamespace(
+    data=SimpleNamespace(
+      root_link_quat_w=identity.reshape(1, 4).repeat(2, 1),
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 0.7]], [[0.0, 0.0, 0.7]]]),
+      body_link_quat_w=torch.stack(
+        [
+          torch.stack([identity, identity], dim=0),
+          torch.stack([rolled, yawed], dim=0),
+        ],
+        dim=0,
+      ),
+      projected_gravity_b=torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]),
+    )
+  )
+  env = SimpleNamespace(
+    num_envs=2,
+    device="cpu",
+    scene={
+      "robot": robot,
+      "env_origins": torch.zeros(2, 3),
+      "feet_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.ones(2, 2, 1))),
+    },
+  )
+
+  foot_cfg = SceneEntityCfg("robot", body_ids=[0, 1])
+  torso_cfg = SceneEntityCfg("robot", body_ids=[0])
+  flat_reward = rewards.host_foot_flat_reward(
+    env,
+    feet_sensor_name="feet_ground_contact",
+    foot_asset_cfg=foot_cfg,
+    torso_asset_cfg=torso_cfg,
+  )
+  heading_reward = rewards.host_foot_heading_reward(
+    env,
+    feet_sensor_name="feet_ground_contact",
+    foot_asset_cfg=foot_cfg,
+    torso_asset_cfg=torso_cfg,
+  )
+
+  assert flat_reward[0].item() > 0.95
+  assert flat_reward[1].item() < 0.2
+  assert heading_reward[0].item() > 0.95
+  assert heading_reward[1].item() < 0.2
+
+
+def test_hand_support_reward_pays_mid_getup_but_not_final_standing():
+  from types import SimpleNamespace
+
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+  from src.tasks.velocity.mdp.getup import rewards
+
+  robot = SimpleNamespace(
+    data=SimpleNamespace(
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 0.32]], [[0.0, 0.0, 0.72]]]),
+      projected_gravity_b=torch.tensor([[0.3, 0.0, -0.35], [0.0, 0.0, -1.0]]),
+    )
+  )
+  env = SimpleNamespace(
+    num_envs=2,
+    device="cpu",
+    scene={
+      "robot": robot,
+      "env_origins": torch.zeros(2, 3),
+      "hand_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.ones(2, 2, 1))),
+    },
+  )
+
+  reward = rewards.host_hand_support_progress_reward(
+    env,
+    hand_sensor_name="hand_ground_contact",
+    min_height=0.18,
+    release_height=0.55,
+    final_upright_threshold=0.9,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  assert reward[0].item() > 0.5
+  assert reward[1].item() == pytest.approx(0.0)
+
+
+def test_hand_contact_after_stand_penalty_only_applies_to_final_upright_pose():
+  from types import SimpleNamespace
+
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+  from src.tasks.velocity.mdp.getup import rewards
+
+  robot = SimpleNamespace(
+    data=SimpleNamespace(
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 0.40]], [[0.0, 0.0, 0.68]]]),
+      projected_gravity_b=torch.tensor([[0.4, 0.0, -0.4], [0.0, 0.0, -0.95]]),
+    )
+  )
+  env = SimpleNamespace(
+    num_envs=2,
+    device="cpu",
+    scene={
+      "robot": robot,
+      "env_origins": torch.zeros(2, 3),
+      "hand_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.ones(2, 2, 1))),
+    },
+  )
+
+  penalty = rewards.host_hand_contact_after_stand_penalty(
+    env,
+    hand_sensor_name="hand_ground_contact",
+    activation_height=0.55,
+    upright_alignment_threshold=0.9,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  assert penalty[0].item() == pytest.approx(0.0)
+  assert penalty[1].item() == pytest.approx(1.0)
+
+
+def test_body_contact_penalty_allows_hand_support_before_release_height_only():
+  from types import SimpleNamespace
+
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+  from src.tasks.velocity.mdp.getup import rewards
+
+  robot = SimpleNamespace(
+    data=SimpleNamespace(
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 0.32]], [[0.0, 0.0, 0.62]]]),
+      projected_gravity_b=torch.tensor([[0.4, 0.0, -0.3], [0.0, 0.0, -1.0]]),
+    )
+  )
+  env = SimpleNamespace(
+    num_envs=2,
+    device="cpu",
+    scene={
+      "robot": robot,
+      "env_origins": torch.zeros(2, 3),
+      "support_body_contact": SimpleNamespace(data=SimpleNamespace(found=torch.ones(2, 2, 1))),
+      "hand_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.ones(2, 2, 1))),
+    },
+  )
+
+  penalty = rewards.support_body_contact_penalty_after_lift(
+    env,
+    sensor_name="support_body_contact",
+    hand_sensor_name="hand_ground_contact",
+    activation_height=0.2,
+    hand_release_height=0.55,
+    normalize_count=2.0,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  assert penalty[0].item() == pytest.approx(0.0)
+  assert penalty[1].item() == pytest.approx(1.0)
 
 # HoST parity regression tests added for G1 GetUp reward/curriculum repair.
 from pathlib import Path

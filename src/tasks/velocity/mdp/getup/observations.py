@@ -37,7 +37,7 @@ def _contact_norm(
     return torch.zeros(_batch_size(env), device=getattr(env, "device", None) or "cpu")
   sensor_data = sensor.data
   assert sensor_data.found is not None
-  contact_count = (sensor_data.found > 0).float().sum(dim=1)
+  contact_count = (sensor_data.found > 0).float().flatten(start_dim=1).sum(dim=1)
   return torch.clamp(contact_count / max(normalize_count, 1e-6), min=0.0, max=1.0)
 
 
@@ -162,6 +162,7 @@ def getup_progress_features(
   env: ManagerBasedRlEnv,
   sensor_name: str,
   feet_sensor_name: str | None = None,
+  hand_sensor_name: str | None = None,
   min_height: float = 0.12,
   target_height: float = 0.55,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
@@ -179,9 +180,12 @@ def getup_progress_features(
   facing_up = torch.clamp(_upright_alignment(asset.data.projected_gravity_b), min=0.0, max=1.0)
   body_support_norm = _contact_norm(env, sensor_name, normalize_count=2.0)
   feet_support_norm = _contact_norm(env, feet_sensor_name, normalize_count=2.0)
+  hand_support_norm = _contact_norm(env, hand_sensor_name, normalize_count=2.0)
   features = (height_progress, facing_up, body_support_norm)
   if feet_sensor_name is not None:
     features = (*features, feet_support_norm)
+  if hand_sensor_name is not None:
+    features = (*features, hand_support_norm)
   return torch.stack(features, dim=1)
 
 

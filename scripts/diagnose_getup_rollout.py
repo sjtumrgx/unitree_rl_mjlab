@@ -26,6 +26,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 SCHEMA_VERSION = "g1-getup-rollout-v1"
 GETUP_TASKS = ("Unitree-G1-GetUp", "Unitree-G1-GetUp-AMP")
+STANDING_POSTURE_HEIGHT = 0.55
+STANDING_POSTURE_ALIGNMENT = 0.75
 _TRACKED_REWARD_TERMS = {
   "host_lift_progress",
   "host_upright_progress",
@@ -33,12 +35,32 @@ _TRACKED_REWARD_TERMS = {
   "host_task_reward",
   "host_target_standing",
   "host_feet_support",
+  "host_hand_support_progress",
+  "host_hand_contact_after_stand",
+  "host_foot_contact_spread",
+  "host_foot_flat",
+  "host_foot_heading",
+  "host_natural_stand_pose",
   "getup_completion_bonus",
   "host_action_smoothness",
   "action_rate_l2",
   "joint_acc_l2",
   "support_body_contact_penalty_after_lift",
   "pelvis_clearance_penalty",
+}
+_NATURAL_LEG_TARGETS = {
+  "left_hip_yaw_joint": 0.0,
+  "left_hip_roll_joint": 0.0,
+  "left_hip_pitch_joint": -0.1,
+  "left_knee_joint": 0.3,
+  "left_ankle_pitch_joint": -0.2,
+  "left_ankle_roll_joint": 0.0,
+  "right_hip_yaw_joint": 0.0,
+  "right_hip_roll_joint": 0.0,
+  "right_hip_pitch_joint": -0.1,
+  "right_knee_joint": 0.3,
+  "right_ankle_pitch_joint": -0.2,
+  "right_ankle_roll_joint": 0.0,
 }
 
 
@@ -129,6 +151,202 @@ def _contact_count(env: Any, sensor_name: str) -> float | None:
   return _tensor_stat(_contact_count_tensor(env, sensor_name), "max")
 
 
+def _quat_apply(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+  q = q.float()
+  v = v.float()
+  q_w = q[..., :1]
+  q_vec = q[..., 1:]
+  return v * (2.0 * q_w * q_w - 1.0) + 2.0 * q_w * torch.cross(q_vec, v, dim=-1) + 2.0 * q_vec * (
+    q_vec * v
+  ).sum(dim=-1, keepdim=True)
+
+
+def _quat_apply_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+  inv = q.clone()
+  inv[..., 1:] = -inv[..., 1:]
+  return _quat_apply(inv, v)
+
+
+def _wrap_to_pi(angle: torch.Tensor) -> torch.Tensor:
+  return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _body_quat(asset: Any) -> torch.Tensor | None:
+  quat = getattr(asset.data, "body_link_quat_w", None)
+  if quat is not None:
+    return quat
+  return getattr(asset.data, "body_quat_w", None)
+
+
+def _body_ids(asset: Any, body_names: tuple[str, ...]) -> list[int]:
+  return [idx for name in body_names if (idx := _body_id(asset, name)) is not None]
+
+
+def _standing_mask(
+  env: Any,
+  asset: Any,
+  *,
+  min_height: float = STANDING_POSTURE_HEIGHT,
+  min_alignment: float = STANDING_POSTURE_ALIGNMENT,
+) -> torch.Tensor:
+  torso_height = _torso_height_tensor(env, asset)
+  upright_alignment = -asset.data.projected_gravity_b[:, 2]
+  return (torso_height >= min_height) & (upright_alignment >= min_alignment)
+
+
+def _foot_flatness(asset: Any) -> torch.Tensor | None:
+  quat = _body_quat(asset)
+  foot_ids = _body_ids(asset, ("left_ankle_roll_link", "right_ankle_roll_link"))
+  if quat is None or len(foot_ids) != 2:
+    return None
+  foot_quat = quat[:, foot_ids, :]
+  gravity = torch.zeros_like(foot_quat[..., :3])
+  gravity[..., 2] = -1.0
+  local_gravity = _quat_apply_inverse(foot_quat, gravity)
+  tilt = torch.linalg.norm(local_gravity[..., :2], dim=-1)
+  return torch.clamp(1.0 - tilt, min=0.0, max=1.0)
+
+
+def _foot_heading_alignment(asset: Any) -> torch.Tensor | None:
+  quat = _body_quat(asset)
+  root_quat = getattr(asset.data, "root_link_quat_w", None)
+  foot_ids = _body_ids(asset, ("left_ankle_roll_link", "right_ankle_roll_link"))
+  if quat is None or root_quat is None or len(foot_ids) != 2:
+    return None
+  foot_quat = quat[:, foot_ids, :]
+  foot_forward = torch.zeros_like(foot_quat[..., :3])
+  foot_forward[..., 0] = 1.0
+  root_forward = torch.zeros_like(root_quat[..., :3])
+  root_forward[..., 0] = 1.0
+  foot_forward_w = _quat_apply(foot_quat, foot_forward)
+  root_forward_w = _quat_apply(root_quat, root_forward)
+  foot_heading = torch.atan2(foot_forward_w[..., 1], foot_forward_w[..., 0])
+  root_heading = torch.atan2(root_forward_w[:, 1], root_forward_w[:, 0])
+  diff = torch.abs(_wrap_to_pi(foot_heading - root_heading[:, None]))
+  return torch.exp(-torch.square(diff / 0.6))
+
+
+def _foot_geom_spread(env: Any) -> torch.Tensor | None:
+  sensor = _scene_get(env.scene, "foot_geom_ground_contact")
+  found = getattr(getattr(sensor, "data", None), "found", None)
+  if found is None:
+    return None
+  contact = (found > 0).float().flatten(start_dim=1)
+  if contact.shape[1] < 14:
+    return None
+  left = torch.clamp(contact[:, :7].sum(dim=1) / 3.0, min=0.0, max=1.0)
+  right = torch.clamp(contact[:, 7:14].sum(dim=1) / 3.0, min=0.0, max=1.0)
+  return torch.stack([left, right], dim=1)
+
+
+def _natural_leg_pose_error(asset: Any) -> torch.Tensor | None:
+  joint_names = list(getattr(asset, "joint_names", ()))
+  if not joint_names:
+    return None
+  ids: list[int] = []
+  targets: list[float] = []
+  joint_pos = getattr(asset.data, "joint_pos", None)
+  if joint_pos is None:
+    return None
+  for name, target in _NATURAL_LEG_TARGETS.items():
+    if name in joint_names and joint_names.index(name) < joint_pos.shape[1]:
+      ids.append(joint_names.index(name))
+      targets.append(float(target))
+  if not ids:
+    return None
+  ids_t = torch.tensor(ids, device=joint_pos.device, dtype=torch.long)
+  targets_t = torch.tensor(targets, device=joint_pos.device, dtype=joint_pos.dtype)
+  return torch.mean(torch.abs(joint_pos[:, ids_t] - targets_t), dim=1)
+
+
+def _posture_terms(env: Any, asset: Any) -> dict[str, float | None]:
+  flatness = _foot_flatness(asset)
+  heading = _foot_heading_alignment(asset)
+  spread = _foot_geom_spread(env)
+  natural_error = _natural_leg_pose_error(asset)
+  standing = _standing_mask(env, asset)
+  hand_count = _contact_count_tensor(env, "hand_ground_contact")
+
+  def _per_env_min(value: torch.Tensor | None) -> torch.Tensor | None:
+    if value is None:
+      return None
+    return value.amin(dim=1) if value.ndim > 1 else value
+
+  def _per_env_mean(value: torch.Tensor | None) -> torch.Tensor | None:
+    if value is None:
+      return None
+    return value.mean(dim=1) if value.ndim > 1 else value
+
+  def _masked_stat(value: torch.Tensor | None, reducer: str) -> float | None:
+    if value is None:
+      return None
+    per_env = _per_env_min(value) if reducer == "min" else _per_env_mean(value)
+    if per_env is None or per_env.numel() == 0 or not bool(standing.any().item()):
+      return None
+    if per_env.shape[0] != standing.shape[0]:
+      return None
+    masked = per_env[standing]
+    if masked.numel() == 0:
+      return None
+    if reducer == "max":
+      return _tensor_stat(masked, "max")
+    if reducer == "mean":
+      return _tensor_stat(masked, "mean")
+    return _tensor_stat(masked, "min")
+
+  def _masked_good_rate(
+    value: torch.Tensor | None,
+    *,
+    threshold: float,
+    higher_is_better: bool = True,
+  ) -> float | None:
+    if value is None or not bool(standing.any().item()):
+      return None
+    per_env = _per_env_min(value) if higher_is_better else value
+    if per_env is None or per_env.numel() == 0:
+      return None
+    if per_env.shape[0] != standing.shape[0]:
+      return None
+    checked = per_env[standing]
+    if checked.numel() == 0:
+      return None
+    good = checked >= threshold if higher_is_better else checked <= threshold
+    return _scalar(good.float().mean())  # type: ignore[return-value]
+
+  standing_count = int(standing.sum().item())
+  standing_hand_rate = None
+  if standing_count > 0 and hand_count is not None and hand_count.shape[0] == standing.shape[0]:
+    standing_hand_rate = _scalar((hand_count[standing] > 0.0).float().mean())
+  return {
+    "foot_flatness_min": _tensor_stat(flatness.amin(dim=1) if flatness is not None else None, "min"),
+    "foot_flatness_mean": _tensor_stat(flatness.mean(dim=1) if flatness is not None else None, "mean"),
+    "foot_heading_alignment_min": _tensor_stat(heading.amin(dim=1) if heading is not None else None, "min"),
+    "foot_heading_alignment_mean": _tensor_stat(heading.mean(dim=1) if heading is not None else None, "mean"),
+    "foot_geom_contact_spread_min": _tensor_stat(spread.amin(dim=1) if spread is not None else None, "min"),
+    "foot_geom_contact_spread_mean": _tensor_stat(spread.mean(dim=1) if spread is not None else None, "mean"),
+    "natural_leg_pose_error_mean": _tensor_stat(natural_error, "mean"),
+    "natural_leg_pose_error_max": _tensor_stat(natural_error, "max"),
+    "standing_env_count": float(standing_count),
+    "standing_foot_flatness_min": _masked_stat(flatness, "min"),
+    "standing_foot_flatness_mean": _masked_stat(flatness, "mean"),
+    "standing_foot_flatness_good_rate": _masked_good_rate(flatness, threshold=0.6),
+    "standing_foot_heading_alignment_min": _masked_stat(heading, "min"),
+    "standing_foot_heading_alignment_mean": _masked_stat(heading, "mean"),
+    "standing_foot_heading_alignment_good_rate": _masked_good_rate(heading, threshold=0.6),
+    "standing_foot_geom_contact_spread_min": _masked_stat(spread, "min"),
+    "standing_foot_geom_contact_spread_mean": _masked_stat(spread, "mean"),
+    "standing_foot_geom_contact_spread_good_rate": _masked_good_rate(spread, threshold=0.5),
+    "standing_natural_leg_pose_error_mean": _masked_stat(natural_error, "mean"),
+    "standing_natural_leg_pose_error_max": _masked_stat(natural_error, "max"),
+    "standing_natural_leg_pose_good_rate": _masked_good_rate(
+      natural_error,
+      threshold=0.35,
+      higher_is_better=False,
+    ),
+    "standing_hand_contact_rate": standing_hand_rate,
+  }
+
+
 def _reward_terms(env: Any) -> dict[str, float]:
   manager = getattr(env, "reward_manager", None)
   names = list(getattr(manager, "_term_names", ()))
@@ -199,7 +417,10 @@ def _joint_target_delta(env: Any, asset: Any) -> dict[str, float | None]:
   if target_ids is None:
     current = asset.data.joint_pos[:, : target.shape[1]]
   else:
-    current = asset.data.joint_pos[:, target_ids]
+    if target.shape[1] == len(target_ids):
+      current = asset.data.joint_pos[:, target_ids]
+    else:
+      current = asset.data.joint_pos[:, : target.shape[1]]
   delta = target - current
   return {
     "joint_target_delta_max": _max_abs(delta),
@@ -380,8 +601,11 @@ def build_step_record(
     "assist_success_split": _assist_success_split(env),
     "support": {
       "feet_contact_count": _contact_count(env, "feet_ground_contact"),
+      "foot_geom_contact_count": _contact_count(env, "foot_geom_ground_contact"),
+      "hand_contact_count": _contact_count(env, "hand_ground_contact"),
       "support_body_contact_count": _contact_count(env, "support_body_contact"),
     },
+    "posture": _posture_terms(env, asset),
     "reward": {
       "total_mean": _scalar(rewards.mean()),
       "terms": _reward_terms(env),
@@ -444,6 +668,174 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     float(record.get("metrics", {}).get("getup_upright") or 0.0)
     for record in step_records
   ]
+  posture_records = [record.get("posture", {}) for record in step_records]
+
+  def _posture_value(record: dict[str, Any], key: str) -> float | None:
+    value = record.get("posture", {}).get(key)
+    if value is None:
+      return None
+    return float(value)
+
+  def _posture_min(records_subset: list[dict[str, Any]], key: str) -> float | None:
+    return min(
+      (
+        value
+        for record in records_subset
+        if (value := _posture_value(record, key)) is not None
+      ),
+      default=None,
+    )
+
+  def _posture_max(records_subset: list[dict[str, Any]], key: str) -> float | None:
+    return max(
+      (
+        value
+        for record in records_subset
+        if (value := _posture_value(record, key)) is not None
+      ),
+      default=None,
+    )
+
+  def _posture_last(records_subset: list[dict[str, Any]], key: str) -> float | None:
+    for record in reversed(records_subset):
+      value = _posture_value(record, key)
+      if value is not None:
+        return value
+    return None
+
+  def _posture_mean(records_subset: list[dict[str, Any]], key: str) -> float | None:
+    values = [
+      value
+      for record in records_subset
+      if (value := _posture_value(record, key)) is not None
+    ]
+    return sum(values) / len(values) if values else None
+
+  min_foot_flatness = min(
+    (
+      float(posture["foot_flatness_min"])
+      for posture in posture_records
+      if posture.get("foot_flatness_min") is not None
+    ),
+    default=None,
+  )
+  min_foot_heading_alignment = min(
+    (
+      float(posture["foot_heading_alignment_min"])
+      for posture in posture_records
+      if posture.get("foot_heading_alignment_min") is not None
+    ),
+    default=None,
+  )
+  min_foot_geom_contact_spread = min(
+    (
+      float(posture["foot_geom_contact_spread_min"])
+      for posture in posture_records
+      if posture.get("foot_geom_contact_spread_min") is not None
+    ),
+    default=None,
+  )
+  max_natural_leg_pose_error = max(
+    (
+      float(posture["natural_leg_pose_error_max"])
+      for posture in posture_records
+      if posture.get("natural_leg_pose_error_max") is not None
+    ),
+    default=None,
+  )
+  max_hand_contact_count = max(
+    (
+      float(record.get("support", {}).get("hand_contact_count") or 0.0)
+      for record in step_records
+    ),
+    default=0.0,
+  )
+  final_hand_contact_count = (
+    float(step_records[-1].get("support", {}).get("hand_contact_count") or 0.0)
+    if step_records
+    else 0.0
+  )
+  standing_posture_records = [
+    record
+    for record in step_records
+    if float(record.get("root", {}).get("torso_height_mean") or 0.0) >= STANDING_POSTURE_HEIGHT
+    and float(record.get("root", {}).get("upright_alignment_mean") or 0.0) >= STANDING_POSTURE_ALIGNMENT
+  ]
+  final_record = step_records[-1] if step_records else {}
+  standing_min_foot_flatness = _posture_min(standing_posture_records, "foot_flatness_min")
+  standing_min_foot_heading_alignment = _posture_min(
+    standing_posture_records,
+    "foot_heading_alignment_min",
+  )
+  standing_min_foot_geom_contact_spread = _posture_min(
+    standing_posture_records,
+    "foot_geom_contact_spread_min",
+  )
+  standing_max_natural_leg_pose_error = _posture_max(
+    standing_posture_records,
+    "natural_leg_pose_error_max",
+  )
+  standing_env_posture_records = [
+    record
+    for record in step_records
+    if float(record.get("posture", {}).get("standing_env_count") or 0.0) > 0.0
+  ]
+  standing_env_record_count = len(standing_env_posture_records)
+  standing_env_max_count = max(
+    (
+      float(record.get("posture", {}).get("standing_env_count") or 0.0)
+      for record in standing_env_posture_records
+    ),
+    default=0.0,
+  )
+  standing_env_last_record = standing_env_posture_records[-1] if standing_env_posture_records else {}
+  standing_env_last_count = float(
+    standing_env_last_record.get("posture", {}).get("standing_env_count") or 0.0
+  )
+  final_foot_flatness_min = _posture_value(final_record, "foot_flatness_min")
+  final_foot_heading_alignment_min = _posture_value(final_record, "foot_heading_alignment_min")
+  final_foot_geom_contact_spread_min = _posture_value(final_record, "foot_geom_contact_spread_min")
+  final_natural_leg_pose_error_max = _posture_value(final_record, "natural_leg_pose_error_max")
+  last_standing_foot_flatness_min = _posture_last(
+    standing_env_posture_records,
+    "standing_foot_flatness_min",
+  )
+  last_standing_foot_heading_alignment_min = _posture_last(
+    standing_env_posture_records,
+    "standing_foot_heading_alignment_min",
+  )
+  last_standing_foot_geom_contact_spread_min = _posture_last(
+    standing_env_posture_records,
+    "standing_foot_geom_contact_spread_min",
+  )
+  last_standing_natural_leg_pose_error_max = _posture_last(
+    standing_env_posture_records,
+    "standing_natural_leg_pose_error_max",
+  )
+  last_standing_hand_contact_rate = _posture_last(
+    standing_env_posture_records,
+    "standing_hand_contact_rate",
+  )
+  mean_standing_foot_flatness_good_rate = _posture_mean(
+    standing_env_posture_records,
+    "standing_foot_flatness_good_rate",
+  )
+  mean_standing_foot_heading_good_rate = _posture_mean(
+    standing_env_posture_records,
+    "standing_foot_heading_alignment_good_rate",
+  )
+  mean_standing_foot_geom_spread_good_rate = _posture_mean(
+    standing_env_posture_records,
+    "standing_foot_geom_contact_spread_good_rate",
+  )
+  mean_standing_natural_leg_pose_good_rate = _posture_mean(
+    standing_env_posture_records,
+    "standing_natural_leg_pose_good_rate",
+  )
+  mean_standing_hand_contact_rate = _posture_mean(
+    standing_env_posture_records,
+    "standing_hand_contact_rate",
+  )
 
   def _success_group_from_split(group_name: str) -> dict[str, Any] | None:
     group_steps = [
@@ -559,6 +951,36 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
       "assisted": assisted_success,
       "no_assist": no_assist_success,
     },
+    "posture": {
+      "min_foot_flatness": min_foot_flatness,
+      "min_foot_heading_alignment": min_foot_heading_alignment,
+      "min_foot_geom_contact_spread": min_foot_geom_contact_spread,
+      "max_natural_leg_pose_error": max_natural_leg_pose_error,
+      "max_hand_contact_count": max_hand_contact_count,
+      "final_hand_contact_count": final_hand_contact_count,
+      "standing_records": len(standing_posture_records),
+      "standing_min_foot_flatness": standing_min_foot_flatness,
+      "standing_min_foot_heading_alignment": standing_min_foot_heading_alignment,
+      "standing_min_foot_geom_contact_spread": standing_min_foot_geom_contact_spread,
+      "standing_max_natural_leg_pose_error": standing_max_natural_leg_pose_error,
+      "standing_env_record_count": standing_env_record_count,
+      "standing_env_max_count": standing_env_max_count,
+      "standing_env_last_count": standing_env_last_count,
+      "last_standing_foot_flatness_min": last_standing_foot_flatness_min,
+      "last_standing_foot_heading_alignment_min": last_standing_foot_heading_alignment_min,
+      "last_standing_foot_geom_contact_spread_min": last_standing_foot_geom_contact_spread_min,
+      "last_standing_natural_leg_pose_error_max": last_standing_natural_leg_pose_error_max,
+      "last_standing_hand_contact_rate": last_standing_hand_contact_rate,
+      "mean_standing_foot_flatness_good_rate": mean_standing_foot_flatness_good_rate,
+      "mean_standing_foot_heading_good_rate": mean_standing_foot_heading_good_rate,
+      "mean_standing_foot_geom_spread_good_rate": mean_standing_foot_geom_spread_good_rate,
+      "mean_standing_natural_leg_pose_good_rate": mean_standing_natural_leg_pose_good_rate,
+      "mean_standing_hand_contact_rate": mean_standing_hand_contact_rate,
+      "final_foot_flatness_min": final_foot_flatness_min,
+      "final_foot_heading_alignment_min": final_foot_heading_alignment_min,
+      "final_foot_geom_contact_spread_min": final_foot_geom_contact_spread_min,
+      "final_natural_leg_pose_error_max": final_natural_leg_pose_error_max,
+    },
     "risk_flags": {
       "target_delta_gt_1rad": max_target_delta > 1.0,
       "upward_velocity_gt_2mps": max_upward_velocity > 2.0,
@@ -566,6 +988,40 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
       # Backwards-compatible alias used by older diagnostics.
       "vertical_velocity_gt_2mps": max_vertical_speed > 2.0,
       "supportless_height_spike": supportless_height_spike,
+      "foot_flatness_lt_0_6": min_foot_flatness is not None and min_foot_flatness < 0.6,
+      "foot_heading_alignment_lt_0_6": (
+        min_foot_heading_alignment is not None and min_foot_heading_alignment < 0.6
+      ),
+      "foot_geom_contact_spread_lt_0_5": (
+        min_foot_geom_contact_spread is not None and min_foot_geom_contact_spread < 0.5
+      ),
+      "final_hand_contact_gt_0": final_hand_contact_count > 0.0,
+      "standing_foot_flatness_lt_0_6": (
+        standing_min_foot_flatness is not None and standing_min_foot_flatness < 0.6
+      ),
+      "standing_foot_heading_alignment_lt_0_6": (
+        standing_min_foot_heading_alignment is not None
+        and standing_min_foot_heading_alignment < 0.6
+      ),
+      "standing_foot_geom_contact_spread_lt_0_5": (
+        standing_min_foot_geom_contact_spread is not None
+        and standing_min_foot_geom_contact_spread < 0.5
+      ),
+      "last_standing_hand_contact_gt_0": (
+        last_standing_hand_contact_rate is not None and last_standing_hand_contact_rate > 0.0
+      ),
+      "mean_standing_foot_flatness_good_rate_lt_0_8": (
+        mean_standing_foot_flatness_good_rate is not None
+        and mean_standing_foot_flatness_good_rate < 0.8
+      ),
+      "mean_standing_foot_heading_good_rate_lt_0_8": (
+        mean_standing_foot_heading_good_rate is not None
+        and mean_standing_foot_heading_good_rate < 0.8
+      ),
+      "mean_standing_foot_geom_spread_good_rate_lt_0_8": (
+        mean_standing_foot_geom_spread_good_rate is not None
+        and mean_standing_foot_geom_spread_good_rate < 0.8
+      ),
     },
   }
 
