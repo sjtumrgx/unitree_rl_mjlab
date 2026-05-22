@@ -14,6 +14,7 @@ from src.tasks.velocity.mdp.anti_fall.events import (
   get_antifall_state,
   reset_antifall_state,
 )
+from src.tasks.velocity.mdp.anti_fall.rewards import recovery_phase_mask
 from .metrics import _upright_alignment, stable_getup_success_mask
 
 if TYPE_CHECKING:
@@ -505,6 +506,12 @@ class apply_host_getup_assist_force:
     no_assist_probability_initial: float | None = None,
     no_assist_ramp_start_progress: float = 0.0,
     no_assist_ramp_end_progress: float = 1.0,
+    recovery_phase_only: bool = False,
+    fallen_height_threshold: float = 0.35,
+    fallen_tilt_threshold: float = 0.75,
+    recovery_window_s: float = 2.0,
+    include_disturbance_window: bool = True,
+    include_near_failure_reset_window: bool = True,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   ) -> None:
     del (
@@ -586,6 +593,17 @@ class apply_host_getup_assist_force:
       & (episode_force_scale > 0.0)
       & ~state["episode_success"][env_ids]
     )
+    if recovery_phase_only:
+      phase_mask = recovery_phase_mask(
+        env,
+        fallen_height_threshold=fallen_height_threshold,
+        fallen_tilt_threshold=fallen_tilt_threshold,
+        window_s=recovery_window_s,
+        include_disturbance_window=include_disturbance_window,
+        include_near_failure_reset_window=include_near_failure_reset_window,
+        asset_cfg=asset_cfg,
+      )[env_ids]
+      active = active & phase_mask
     taper_span = max(float(taper_end_height) - float(taper_start_height), 1e-6)
     assist_fraction = torch.clamp(
       (float(taper_end_height) - torso_height) / taper_span,

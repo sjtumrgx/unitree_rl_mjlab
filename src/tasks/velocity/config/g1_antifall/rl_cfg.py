@@ -23,6 +23,15 @@ def unitree_g1_antifall_getup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg.experiment_name = "g1_antifall_getup"
   cfg.max_iterations = 10001
   cfg.save_interval = 100
+  # AntiFall-GetUp resumes the stage4b walking actor and only fine-tunes it for
+  # fall recovery.  The base velocity PPO defaults are intentionally aggressive
+  # for from-scratch walking, but they overwrite the warm-start too quickly here
+  # and make the policy lose pre-push tracking before recovery has a chance to
+  # improve.  Keep this branch conservative unless an explicit from-scratch
+  # GetUp curriculum is added.
+  cfg.algorithm.learning_rate = 1.0e-4
+  cfg.algorithm.desired_kl = 0.003
+  cfg.actor.distribution_cfg["init_std"] = 0.5
   return cfg
 
 

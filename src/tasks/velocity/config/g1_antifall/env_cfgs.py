@@ -28,6 +28,12 @@ _RECOVERY_WINDOW_S = 2.0
 _TRACKING_THRESHOLD = 0.35
 _YAW_THRESHOLD = 0.35
 _TILT_THRESHOLD = 0.30
+_ANTIFALL_GETUP_HARD_RESET_SCHEDULE = (
+  {"step": 0, "prob": 0.0},
+  {"step": 1500, "prob": 0.05},
+  {"step": 3000, "prob": 0.10},
+  {"step": 4500, "prob": 0.15},
+)
 _STAGE2_HARD_POSE_RANGE = {
   "x": (-0.5, 0.5),
   "y": (-0.5, 0.5),
@@ -207,6 +213,7 @@ def _configure_antifall_reset(
   cfg: ManagerBasedRlEnvCfg,
   *,
   hard_reset_prob: float = 0.0,
+  hard_reset_prob_schedule: tuple[dict[str, float], ...] | None = None,
   hard_pose_range: dict[str, tuple[float, float]] | None = None,
   hard_velocity_range: dict[str, tuple[float, float]] | None = None,
 ) -> None:
@@ -218,6 +225,7 @@ def _configure_antifall_reset(
     "hard_pose_range": hard_pose_range,
     "hard_velocity_range": hard_velocity_range,
     "hard_reset_prob": hard_reset_prob,
+    "hard_reset_prob_schedule": hard_reset_prob_schedule,
   }
 
 
@@ -232,6 +240,7 @@ def _apply_antifall_helpers(
   cfg: ManagerBasedRlEnvCfg,
   *,
   hard_reset_prob: float = 0.0,
+  hard_reset_prob_schedule: tuple[dict[str, float], ...] | None = None,
   hard_pose_range: dict[str, tuple[float, float]] | None = None,
   hard_velocity_range: dict[str, tuple[float, float]] | None = None,
 ) -> None:
@@ -241,6 +250,7 @@ def _apply_antifall_helpers(
   _configure_antifall_reset(
     cfg,
     hard_reset_prob=hard_reset_prob,
+    hard_reset_prob_schedule=hard_reset_prob_schedule,
     hard_pose_range=hard_pose_range,
     hard_velocity_range=hard_velocity_range,
   )
@@ -472,6 +482,42 @@ def _add_antifall_rewards_after_getup_stack(cfg: ManagerBasedRlEnvCfg, source_re
   _apply_antifall_rewards(cfg)
 
 
+def _gate_getup_rewards_to_recovery_phase(cfg: ManagerBasedRlEnvCfg) -> None:
+  """Prevent dense GetUp shaping from altering nominal warm-start walking."""
+
+  getup_reward_names = (
+    "host_task_reward",
+    "host_lift_progress",
+    "host_upright_progress",
+    "host_support_relief",
+    "host_feet_support",
+    "host_hand_support_progress",
+    "host_hand_push",
+    "host_foot_contact_spread",
+    "host_foot_flat",
+    "host_foot_heading",
+    "host_natural_stand_pose",
+    "host_target_standing",
+    "getup_completion_bonus",
+  )
+  for reward_name in getup_reward_names:
+    term = cfg.rewards.get(reward_name)
+    if term is None or term.func is mdp.recovery_phase_reward:
+      continue
+    original_func = term.func
+    original_params = dict(term.params)
+    term.func = mdp.recovery_phase_reward
+    term.params = {
+      "reward_func": original_func,
+      "fallen_height_threshold": 0.35,
+      "fallen_tilt_threshold": 0.75,
+      "window_s": 0.0,
+      "include_disturbance_window": False,
+      "include_near_failure_reset_window": True,
+      **original_params,
+    }
+
+
 def unitree_g1_antifall_getup_env_cfg(
   play: bool = False,
   *,
@@ -542,17 +588,34 @@ def unitree_g1_antifall_getup_env_cfg(
       params={"velocity_range": {}},
       interval_range_s=(2.0, 3.5),
     )
-  _configure_push_profile(
-    cfg,
-    interval_range_s=(2.0, 3.5),
-    velocity_range={
+  if play:
+    push_interval_range_s = (2.0, 3.5)
+    push_velocity_range = {
       "x": (-1.4, 1.4),
       "y": (-1.4, 1.4),
       "z": (-0.9, 0.9),
       "roll": (-1.2, 1.2),
       "pitch": (-1.2, 1.2),
       "yaw": (-1.4, 1.4),
-    },
+    }
+  else:
+    # Preserve the Stage4b walking actor before introducing full gate-strength
+    # push/fall recovery.  The play diagnostic still uses the harder BFM-style
+    # push profile; training starts from lower-frequency Stage2-scale pushes so
+    # PPO does not immediately destroy command tracking.
+    push_interval_range_s = (6.0, 8.0)
+    push_velocity_range = {
+      "x": (-0.75, 0.75),
+      "y": (-0.75, 0.75),
+      "z": (-0.5, 0.5),
+      "roll": (-0.7, 0.7),
+      "pitch": (-0.7, 0.7),
+      "yaw": (-1.0, 1.0),
+    }
+  _configure_push_profile(
+    cfg,
+    interval_range_s=push_interval_range_s,
+    velocity_range=push_velocity_range,
     recovery_window_s=_RECOVERY_WINDOW_S,
     active=True,
   )
@@ -562,14 +625,31 @@ def unitree_g1_antifall_getup_env_cfg(
   cfg.terminations["stalled_getup"].params["recovery_grace_s"] = _RECOVERY_WINDOW_S
   _apply_getup_nan_safety(cfg)
   _apply_host_effective_action_observations(cfg)
+  scheduled_getup_hard_reset = hard_reset_prob is None and not play
   _apply_antifall_helpers(
     cfg,
-    hard_reset_prob=0.15 if hard_reset_prob is None else float(hard_reset_prob),
+    hard_reset_prob=0.0 if scheduled_getup_hard_reset else (0.15 if hard_reset_prob is None else float(hard_reset_prob)),
+    hard_reset_prob_schedule=_ANTIFALL_GETUP_HARD_RESET_SCHEDULE if scheduled_getup_hard_reset else None,
     hard_pose_range=_GETUP_HARD_POSE_RANGE,
     hard_velocity_range=_GETUP_HARD_VELOCITY_RANGE,
   )
   _apply_host_getup_reward_stack(cfg)
   _add_antifall_rewards_after_getup_stack(cfg, locomotion_reward_source)
+  cfg.rewards["recovery_quality"].params.update(
+    {
+      "require_fallen_or_near_failure": True,
+      "fallen_height_threshold": 0.35,
+      "fallen_tilt_threshold": 0.75,
+    }
+  )
+  cfg.rewards["recovery_completion_bonus"].params.update(
+    {
+      "require_fallen_or_near_failure": True,
+      "fallen_height_threshold": 0.35,
+      "fallen_tilt_threshold": 0.75,
+    }
+  )
+  _gate_getup_rewards_to_recovery_phase(cfg)
   if not play:
     cfg.events["getup_assist_force"] = EventTermCfg(
       func=mdp.apply_host_getup_assist_force,
@@ -594,6 +674,12 @@ def unitree_g1_antifall_getup_env_cfg(
         "no_assist_probability": 0.75,
         "no_assist_ramp_start_progress": 0.5,
         "no_assist_ramp_end_progress": 1.0,
+        "recovery_phase_only": True,
+        "fallen_height_threshold": 0.35,
+        "fallen_tilt_threshold": 0.75,
+        "recovery_window_s": _RECOVERY_WINDOW_S,
+        "include_disturbance_window": False,
+        "include_near_failure_reset_window": True,
         "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
       },
     )

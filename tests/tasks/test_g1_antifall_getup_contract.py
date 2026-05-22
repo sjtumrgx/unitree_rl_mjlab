@@ -18,6 +18,14 @@ def test_antifall_getup_task_is_registered_with_own_experiment() -> None:
   assert rl_cfg.run_name == "antifall_getup"
 
 
+
+def test_antifall_getup_runner_uses_conservative_warmstart_finetune_hyperparams() -> None:
+  rl_cfg = load_rl_cfg(TASK_ID)
+
+  assert rl_cfg.algorithm.learning_rate <= 1.0e-4
+  assert rl_cfg.algorithm.desired_kl <= 0.003
+  assert rl_cfg.actor.distribution_cfg["init_std"] <= 0.5
+
 def test_antifall_getup_env_combines_walking_push_and_fallen_recovery_contracts() -> None:
   cfg = load_env_cfg(TASK_ID)
 
@@ -29,7 +37,10 @@ def test_antifall_getup_env_combines_walking_push_and_fallen_recovery_contracts(
   assert cfg.events["push_robot"].func is mdp.push_by_setting_velocity_with_history
 
   reset_params = cfg.events["reset_base"].params
-  assert 0.05 <= reset_params["hard_reset_prob"] <= 0.2
+  assert reset_params["hard_reset_prob"] == 0.0
+  schedule = reset_params["hard_reset_prob_schedule"]
+  assert schedule[0] == {"step": 0, "prob": 0.0}
+  assert 0.05 <= schedule[-1]["prob"] <= 0.2
   assert reset_params["hard_pose_range"]["roll"][0] <= -2.0
   assert reset_params["hard_pose_range"]["pitch"][1] >= 2.0
 
@@ -60,6 +71,76 @@ def test_antifall_getup_env_combines_walking_push_and_fallen_recovery_contracts(
   assert {"support_body_contact", "hand_ground_contact", "foot_geom_ground_contact"}.issubset(sensor_names)
 
 
+
+
+def test_antifall_getup_training_hard_resets_ramp_after_walking_warm_start() -> None:
+  cfg = load_env_cfg(TASK_ID)
+  reset_params = cfg.events["reset_base"].params
+
+  assert reset_params["hard_reset_prob"] == 0.0
+  assert reset_params["hard_reset_prob_schedule"][0]["prob"] == 0.0
+  assert reset_params["hard_reset_prob_schedule"][1]["step"] >= 1500
+  assert reset_params["hard_reset_prob_schedule"][-1]["prob"] <= 0.15
+
+
+def test_scheduled_hard_reset_probability_uses_latest_elapsed_step() -> None:
+  from src.tasks.velocity.mdp.anti_fall.events import scheduled_hard_reset_prob
+
+  schedule = (
+    {"step": 0, "prob": 0.0},
+    {"step": 10, "prob": 0.05},
+    {"step": 20, "prob": 0.15},
+  )
+
+  assert scheduled_hard_reset_prob(0.3, schedule, common_step_counter=0) == 0.0
+  assert scheduled_hard_reset_prob(0.3, schedule, common_step_counter=9) == 0.0
+  assert scheduled_hard_reset_prob(0.3, schedule, common_step_counter=10) == 0.05
+  assert scheduled_hard_reset_prob(0.3, schedule, common_step_counter=25) == 0.15
+  assert scheduled_hard_reset_prob(0.3, None, common_step_counter=25) == 0.3
+
+
+def test_antifall_getup_gates_host_getup_rewards_to_recovery_phase() -> None:
+  cfg = load_env_cfg(TASK_ID)
+
+  for reward_name in (
+    "host_task_reward",
+    "host_lift_progress",
+    "host_upright_progress",
+    "host_support_relief",
+    "host_feet_support",
+    "getup_completion_bonus",
+  ):
+    term = cfg.rewards[reward_name]
+    assert term.func is mdp.recovery_phase_reward
+    assert "reward_func" in term.params
+    assert term.params["fallen_height_threshold"] <= 0.4
+    assert term.params["fallen_tilt_threshold"] >= 0.7
+    assert term.params["include_disturbance_window"] is False
+    assert term.params["window_s"] == 0.0
+
+
+def test_antifall_getup_recovery_rewards_ignore_plain_push_windows() -> None:
+  cfg = load_env_cfg(TASK_ID)
+
+  recovery_reward = cfg.rewards["recovery_quality"]
+  assert recovery_reward.func is mdp.recovery_quality
+  assert recovery_reward.params["require_fallen_or_near_failure"] is True
+  assert recovery_reward.params["fallen_height_threshold"] <= 0.4
+  assert recovery_reward.params["fallen_tilt_threshold"] >= 0.7
+
+  completion = cfg.rewards["recovery_completion_bonus"]
+  assert completion.func is mdp.recovery_completion_bonus
+  assert completion.params["require_fallen_or_near_failure"] is True
+
+
+def test_antifall_getup_assist_is_recovery_phase_gated() -> None:
+  cfg = load_env_cfg(TASK_ID)
+  assist = cfg.events["getup_assist_force"]
+
+  assert assist.params["recovery_phase_only"] is True
+  assert assist.params["fallen_height_threshold"] <= 0.4
+  assert assist.params["fallen_tilt_threshold"] >= 0.7
+  assert assist.params["include_disturbance_window"] is False
 
 def test_antifall_getup_stable_success_terms_do_not_share_mutable_scene_entity_cfgs() -> None:
   cfg = load_env_cfg(TASK_ID)
@@ -126,12 +207,29 @@ def test_antifall_getup_uses_hybrid_action_to_preserve_warmstart_walking() -> No
   assert action.scale != 1.0
 
 
-def test_antifall_getup_push_profile_marks_bfm_style_recovery_window() -> None:
+def test_antifall_getup_training_push_profile_is_warmstart_friendly() -> None:
   cfg = load_env_cfg(TASK_ID)
   push = cfg.events["push_robot"]
+  profile = push.params["velocity_range"]
 
   assert push.params["recovery_window_s"] >= 2.0
   assert push.params["active"] is True
+  assert push.interval_range_s[0] >= 5.0
+  assert profile["x"] == (-0.75, 0.75)
+  assert profile["y"] == (-0.75, 0.75)
+  assert profile["z"] == (-0.5, 0.5)
+  assert profile["yaw"] == (-1.0, 1.0)
+
+
+def test_antifall_getup_play_keeps_strong_push_gate_coverage() -> None:
+  cfg = load_env_cfg(TASK_ID, play=True)
+  push = cfg.events["push_robot"]
+  profile = push.params["velocity_range"]
+
+  assert push.interval_range_s[1] <= 3.5
+  assert profile["x"] == (-1.4, 1.4)
+  assert profile["y"] == (-1.4, 1.4)
+  assert profile["yaw"] == (-1.4, 1.4)
 
 def test_antifall_getup_stall_guard_ignores_bfm_style_recovery_window() -> None:
   cfg = load_env_cfg(TASK_ID)

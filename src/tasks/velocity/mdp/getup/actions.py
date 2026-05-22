@@ -222,13 +222,17 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     )
 
   def _recovery_mask(self) -> torch.Tensor:
-    """Use current-pose recovery deltas while fallen or inside the push recovery window."""
+    """Use current-pose recovery deltas only after the robot is actually fallen.
 
-    fallen = self._fallen_mask()
-    window_s = float(self.cfg.recovery_window_s)
-    if window_s <= 0.0:
-      return fallen
-    return fallen | disturbance_window_mask(self._env, window_s)
+    The anti-fall task keeps a BFM-style disturbance/recovery window for rewards,
+    metrics, and stall guards, but the warm-started walking actor must retain its
+    default-offset action contract while it is still upright inside a push
+    window.  Switching every upright post-push step to current-pose deltas makes
+    the inherited Stage4b walking policy behave like a different controller and
+    destroys pre-disturbance tracking before recovery learning can help.
+    """
+
+    return self._fallen_mask()
 
   def _compute_recovery_deltas(self, actions: torch.Tensor) -> torch.Tensor:
     deltas = actions * float(self.cfg.recovery_action_scale)

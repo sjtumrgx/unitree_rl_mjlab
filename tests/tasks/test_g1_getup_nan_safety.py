@@ -754,7 +754,7 @@ def test_recovery_hybrid_action_preserves_default_offset_for_upright_walking_and
   torch.testing.assert_close(action.effective_action[1], torch.tensor([0.75, -0.75, 0.5]))
 
 
-def test_recovery_hybrid_action_uses_current_pose_delta_during_upright_push_window() -> None:
+def test_recovery_hybrid_action_preserves_walking_contract_during_upright_push_window() -> None:
   from src.tasks.velocity.mdp.anti_fall.events import get_antifall_state
   from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
 
@@ -786,9 +786,9 @@ def test_recovery_hybrid_action_uses_current_pose_delta_during_upright_push_wind
 
   target = env.scene["robot"].targets
   assert target is not None
-  expected_recovery_target = torch.tensor([[0.4, -0.4, 0.2], [0.75, -0.75, 0.5]])
-  torch.testing.assert_close(target, expected_recovery_target)
-  torch.testing.assert_close(action.effective_action, expected_recovery_target)
+  expected_walking_target = torch.tensor([[1.2, -1.2, 0.6], [2.0, -2.0, 0.75]])
+  torch.testing.assert_close(target, expected_walking_target)
+  torch.testing.assert_close(action.effective_action, raw)
 
 
 class _FakeContactSensor:

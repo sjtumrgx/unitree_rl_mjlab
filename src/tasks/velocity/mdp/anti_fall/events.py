@@ -152,6 +152,23 @@ def push_by_setting_velocity_with_history(
   )
 
 
+def scheduled_hard_reset_prob(
+  hard_reset_prob: float,
+  hard_reset_prob_schedule: tuple[dict[str, float], ...] | list[dict[str, float]] | None = None,
+  *,
+  common_step_counter: int,
+) -> float:
+  """Return hard-reset probability after applying an optional step schedule."""
+
+  prob = float(hard_reset_prob)
+  if hard_reset_prob_schedule is None:
+    return prob
+  for stage in hard_reset_prob_schedule:
+    if int(common_step_counter) >= int(stage["step"]):
+      prob = float(stage["prob"])
+  return prob
+
+
 def reset_root_state_mixed(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | None,
@@ -160,6 +177,7 @@ def reset_root_state_mixed(
   hard_pose_range: dict[str, tuple[float, float]] | None = None,
   hard_velocity_range: dict[str, tuple[float, float]] | None = None,
   hard_reset_prob: float = 0.0,
+  hard_reset_prob_schedule: tuple[dict[str, float], ...] | list[dict[str, float]] | None = None,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
   ids = _resolve_env_ids(env, env_ids)
@@ -167,6 +185,12 @@ def reset_root_state_mixed(
     return
 
   reset_antifall_state(env, ids)
+
+  hard_reset_prob = scheduled_hard_reset_prob(
+    hard_reset_prob,
+    hard_reset_prob_schedule,
+    common_step_counter=int(getattr(env, "common_step_counter", 0)),
+  )
 
   if hard_pose_range is None or hard_reset_prob <= 0.0:
     envs_mdp.reset_root_state_uniform(
