@@ -32,6 +32,9 @@ from src.tasks.velocity.config.g1_antifall.env_cfgs import (
 
 GETUP_TERRAIN_VARIANTS = ("ground", "platform", "wall", "slope")
 GETUP_TRAIN_NUM_ENVS = 4096
+GETUP_EPISODE_LENGTH_S = 12.0
+GETUP_STALL_MIN_STEPS = 600
+GETUP_SUCCESS_TORSO_HEIGHT = 0.55
 HOST_SOURCE_TASKS = {
   "ground": "g1_ground",
   "platform": "g1_platform",
@@ -50,7 +53,11 @@ HOST_TERRAIN_PARITY = {
     "target_base_height_phase1": 0.45,
     "target_base_height_phase2": 0.45,
     "target_base_height_phase3": 0.65,
-    "pull_force_n": 100,
+    # Keep the ground assist as a sparse bootstrap, not the primary solution.
+    # The 200N/50% mix learned assisted get-up but stayed 0/64 in play-like
+    # diagnostics through 1000 iterations; bias training toward no-assist
+    # dynamics and let the wrench only seed occasional upright examples.
+    "pull_force_n": 120,
   },
   "platform": {
     "num_rows": 8,
@@ -269,11 +276,16 @@ def _add_support_body_contact_sensor(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.scene.sensors = (cfg.scene.sensors or ()) + (support_contact_cfg,)
   cfg.observations["actor"].terms["getup_progress"] = ObservationTermCfg(
     func=mdp.getup_progress_features,
+    history_length=6,
     params={
       "sensor_name": support_contact_cfg.name,
       "feet_sensor_name": "feet_ground_contact",
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
+  )
+  cfg.observations["actor"].terms["bfm_local_body_state"] = ObservationTermCfg(
+    func=mdp.bfm_local_body_state,
+    params={"asset_cfg": SceneEntityCfg("robot")},
   )
   cfg.observations["critic"].terms["support_contact_pattern"] = ObservationTermCfg(
     func=mdp.support_body_contact_pattern,
@@ -287,6 +299,10 @@ def _add_support_body_contact_sensor(cfg: ManagerBasedRlEnvCfg) -> None:
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
+  cfg.observations["critic"].terms["bfm_local_body_state"] = ObservationTermCfg(
+    func=mdp.bfm_local_body_state,
+    params={"asset_cfg": SceneEntityCfg("robot")},
+  )
   cfg.metrics["support_body_contact_count"] = MetricsTermCfg(
     func=mdp.support_body_contact_count,
     params={"sensor_name": support_contact_cfg.name},
@@ -297,15 +313,24 @@ def _add_support_body_contact_sensor(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.metrics["getup_upright"] = MetricsTermCfg(
     func=mdp.getup_upright,
-    params={"asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",))},
+    params={
+      "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
   )
   cfg.metrics["getup_success_count"] = MetricsTermCfg(
     func=mdp.getup_success_count,
-    params={"asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",))},
+    params={
+      "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
   )
   cfg.metrics["getup_latency"] = MetricsTermCfg(
     func=mdp.getup_latency,
-    params={"asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",))},
+    params={
+      "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
   )
   cfg.metrics["pelvis_clearance_violation"] = MetricsTermCfg(
     func=mdp.pelvis_clearance_violation,
@@ -320,8 +345,13 @@ def _add_getup_stall_guard(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.terminations["stalled_getup"] = TerminationTermCfg(
     func=mdp.stalled_getup_progress,
     params={
-      "min_steps_before_check": 50,
+      # 600 env steps = 12 seconds at the current 20 ms control step.  Local
+      # standardized fall->stand AMP segments include valid recoveries up to
+      # about 11.2s; shorter guards terminate both learning and evaluation
+      # before a demonstrated get-up can complete.
+      "min_steps_before_check": GETUP_STALL_MIN_STEPS,
       "progress_threshold": 0.2,
+      "target_height": 0.55,
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
@@ -393,7 +423,36 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
     params={
       "min_height": 0.12,
       "target_height": 0.55,
-      "orientation_floor": -1.0,
+      # Require progress toward upright while still keeping a dense gradient
+      # once the torso starts rotating in the correct direction.  A -1.0 floor
+      # overpaid high-but-sideways postures and never forced the final turn.
+      "orientation_floor": 0.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_upright_progress"] = RewardTermCfg(
+    func=mdp.host_upright_progress_reward,
+    weight=1.5,
+    params={
+      "min_height": 0.18,
+      "target_height": GETUP_SUCCESS_TORSO_HEIGHT,
+      # Keep the dense rotation reward focused on real get-up progress.  The
+      # failed play-like policies reached ~0.50m but stayed only weakly upright;
+      # rewarding alignment below zero would again pay sideways/fallen poses.
+      "alignment_floor": 0.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["host_support_relief"] = RewardTermCfg(
+    func=mdp.host_support_relief_reward,
+    weight=1.5,
+    params={
+      "feet_sensor_name": "feet_ground_contact",
+      "body_sensor_name": "support_body_contact",
+      "min_height": 0.18,
+      "target_height": GETUP_SUCCESS_TORSO_HEIGHT,
+      "max_body_support_count": 8.0,
+      "alignment_floor": 0.0,
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
@@ -429,12 +488,22 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_target_standing"] = RewardTermCfg(
     func=mdp.host_target_standing_reward,
-    weight=1.0,
+    weight=2.0,
     params={
       "feet_sensor_name": "feet_ground_contact",
       "body_sensor_name": "support_body_contact",
       "base_height_target": 0.75,
       "target_base_height_phase3": 0.65,
+      "standing_gate_start_height": 0.45,
+      "max_body_support_count": 8.0,
+      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+    },
+  )
+  cfg.rewards["getup_completion_bonus"] = RewardTermCfg(
+    func=mdp.getup_completion_bonus,
+    weight=3.0,
+    params={
+      "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
@@ -445,6 +514,11 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
   if not play:
     cfg.scene.num_envs = GETUP_TRAIN_NUM_ENVS
   _apply_antifall_actor_contract(cfg, history_length=6)
+  actor_obs = cfg.observations["actor"]
+  actor_history_length = actor_obs.history_length
+  actor_obs.history_length = None
+  for term in actor_obs.terms.values():
+    term.history_length = int(actor_history_length or 1)
   cfg.host_unactuated_timesteps = _HOST_GETUP_UNACTUATED_TIMESTEPS  # type: ignore[attr-defined]
   cfg.host_reward_groups = ("task", "regu", "style", "target")  # type: ignore[attr-defined]
   cfg.actions["joint_pos"] = HostRelativeJointPositionActionCfg(
@@ -463,7 +537,7 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
   _add_getup_stall_guard(cfg)
   _apply_getup_nan_safety(cfg)
   _apply_host_effective_action_observations(cfg)
-  cfg.episode_length_s = 10.0
+  cfg.episode_length_s = GETUP_EPISODE_LENGTH_S
   cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 128)
   cfg.events.pop("push_robot", None)
   if not play:
@@ -473,20 +547,39 @@ def _make_g1_getup_env_cfg(terrain: str = "ground", play: bool = False) -> Manag
       params={
         "initial_force_n": HOST_TERRAIN_PARITY[terrain]["pull_force_n"],
         "initial_action_scale": _HOST_GETUP_INITIAL_ACTION_SCALE,
-        "success_height_threshold": 0.9,
+        "success_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
         "force_decay_n": 20.0,
         "action_scale_decay": 0.02,
         "min_force_n": 0.0,
         "min_action_scale": _HOST_GETUP_MIN_ACTION_SCALE,
         "unactuated_timesteps": _HOST_GETUP_UNACTUATED_TIMESTEPS,
         "orientation_projected_gravity_z_max": -0.8,
-        "no_orientation_gate": False,
+        # The assist is a get-up curriculum crutch: it must pull during fallen
+        # and side-lying exploration after the startup window.  Keeping HoST's
+        # strict upright-orientation gate here makes the force inactive until
+        # the robot is already almost standing, so learning never reaches the
+        # success/decay path.  Stable support is still required before decay.
+        "no_orientation_gate": True,
         "stable_success_required": True,
         "upright_alignment_threshold": 0.85,
         "feet_sensor_name": "feet_ground_contact",
         "body_sensor_name": "support_body_contact",
         "min_feet_contact_count": 1.0,
         "max_body_support_count": 1.0,
+        # Taper the crutch before the success band.  This keeps the vertical
+        # pull useful for early exploration but prevents train-only external
+        # force from carrying the policy through the actual upright success.
+        "taper_start_height": 0.35,
+        "taper_end_height": GETUP_SUCCESS_TORSO_HEIGHT,
+        # Keep early training mostly assisted, then push envs toward exact
+        # play/no-assist dynamics after the force curriculum has actually
+        # decayed.  In live A/B training on 2026-05-21 this schedule produced
+        # 127/128 play-like success by model_599, while a 25% initial
+        # no-assist schedule stalled around 9/128 at the same checkpoint range.
+        "no_assist_probability_initial": 0.05,
+        "no_assist_probability": 0.80,
+        "no_assist_ramp_start_progress": 0.5,
+        "no_assist_ramp_end_progress": 1.0,
         "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
       },
     )

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import torch
+
 from mjlab.envs.mdp.actions import JointPositionAction, JointPositionActionCfg
 
 if TYPE_CHECKING:
@@ -84,6 +86,17 @@ class HostRelativeJointPositionAction(JointPositionAction):
         device=self._processed_actions.device,
         dtype=self._processed_actions.dtype,
       )
+      episode_force_scale = state.get("episode_force_scale")
+      if episode_force_scale is not None:
+        no_assist_episode = episode_force_scale.to(
+          device=self._processed_actions.device,
+          dtype=self._processed_actions.dtype,
+        ) <= 0.0
+        # No-assist curriculum episodes are the transfer bridge to play mode:
+        # they must remove both the external force and the train-only action
+        # down-scaling so the policy experiences the same dynamics/action scale
+        # as evaluation.  Keep assisted episodes on the decaying HoST scale.
+        action_rescale = torch.where(no_assist_episode, torch.ones_like(action_rescale), action_rescale)
       if action_rescale.ndim == 1:
         action_rescale = action_rescale.unsqueeze(1)
       self._processed_actions = self._processed_actions * action_rescale

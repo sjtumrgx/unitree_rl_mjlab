@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 import tyro
+import torch
 
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlBaseRunnerCfg
@@ -34,6 +35,8 @@ class TrainConfig:
   torchrunx_log_dir: str | None = None
   gpu_ids: str | None = "[0]"
   getup_terrain: str | None = None
+  actor_only_resume: bool = False
+  reset_actor_std_on_resume: bool = False
 
   @staticmethod
   def from_task(task_id: str) -> "TrainConfig":
@@ -214,7 +217,20 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   runner.add_git_repo_to_log(__file__)
   if resume_path is not None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-    runner.load(str(resume_path))
+    load_cfg = {"actor": True} if cfg.actor_only_resume else None
+    if cfg.actor_only_resume:
+      print("[INFO]: Actor-only resume enabled; optimizer and critic are reinitialized.")
+    if cfg.actor_only_resume:
+      _load_actor_with_compatible_input_expansion(
+        runner,
+        resume_path,
+        load_cfg=load_cfg,
+        map_location=device,
+      )
+    else:
+      runner.load(str(resume_path), load_cfg=load_cfg)
+    if cfg.reset_actor_std_on_resume:
+      _reset_actor_distribution_std(runner, cfg.agent)
 
   # Only write config files from rank 0 to avoid race conditions.
   if rank == 0:
@@ -226,6 +242,141 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   )
 
   env.close()
+
+
+def _expand_observation_normalizer_tensor(
+  old: torch.Tensor,
+  target: torch.Tensor,
+  *,
+  fill_value: float,
+) -> torch.Tensor | None:
+  if old.shape == target.shape:
+    return old
+  if old.ndim != 2 or target.ndim != 2:
+    return None
+  if old.shape[0] != target.shape[0] or old.shape[1] > target.shape[1]:
+    return None
+
+  expanded = target.detach().clone()
+  expanded[:, : old.shape[1]] = old
+  expanded[:, old.shape[1] :] = fill_value
+  return expanded
+
+
+def _expand_first_linear_weight(old: torch.Tensor, target: torch.Tensor) -> torch.Tensor | None:
+  if old.shape == target.shape:
+    return old
+  if old.ndim != 2 or target.ndim != 2:
+    return None
+  if old.shape[0] != target.shape[0] or old.shape[1] > target.shape[1]:
+    return None
+
+  expanded = target.detach().clone()
+  expanded.zero_()
+  expanded[:, : old.shape[1]] = old
+  return expanded
+
+
+def _expand_model_input_state(
+  checkpoint_state: dict[str, torch.Tensor],
+  target_state: dict[str, torch.Tensor],
+) -> bool:
+  """Expand legacy actor/critic input tensors when observation dims grow.
+
+  BFM-local-body observations add new input columns after the existing GetUp
+  actor terms.  For actor-only resume we want the old policy to behave exactly
+  as before at iteration 0, then learn from the new features.  Therefore old
+  first-layer weights are copied into the leading columns while newly-added
+  input columns are zeroed.  Observation normalizer statistics keep their old
+  leading values and use neutral mean=0,var/std=1 for new dimensions.
+  """
+
+  changed = False
+  normalizer_fill = {
+    "obs_normalizer._mean": 0.0,
+    "obs_normalizer._var": 1.0,
+    "obs_normalizer._std": 1.0,
+  }
+  for key, fill_value in normalizer_fill.items():
+    old = checkpoint_state.get(key)
+    target = target_state.get(key)
+    if old is None or target is None:
+      continue
+    expanded = _expand_observation_normalizer_tensor(old, target, fill_value=fill_value)
+    if expanded is None:
+      continue
+    if expanded.shape != old.shape:
+      changed = True
+    checkpoint_state[key] = expanded
+
+  old_weight = checkpoint_state.get("mlp.0.weight")
+  target_weight = target_state.get("mlp.0.weight")
+  if old_weight is not None and target_weight is not None:
+    expanded_weight = _expand_first_linear_weight(old_weight, target_weight)
+    if expanded_weight is not None:
+      if expanded_weight.shape != old_weight.shape:
+        changed = True
+      checkpoint_state["mlp.0.weight"] = expanded_weight
+
+  return changed
+
+
+def _load_actor_with_compatible_input_expansion(
+  runner,
+  resume_path: Path,
+  *,
+  load_cfg: dict | None,
+  map_location: str | None,
+) -> None:
+  """Load actor checkpoints, expanding input tensors for additive obs terms."""
+
+  try:
+    try:
+      runner.load(str(resume_path), load_cfg=load_cfg, map_location=map_location)
+    except TypeError:
+      runner.load(str(resume_path), load_cfg=load_cfg)
+    return
+  except RuntimeError as exc:
+    if "size mismatch" not in str(exc):
+      raise
+    checkpoint = torch.load(resume_path, map_location=map_location, weights_only=False)
+    actor_state = checkpoint.get("actor_state_dict")
+    if not isinstance(actor_state, dict):
+      raise
+    target_state = runner.alg.get_policy().state_dict()
+    changed = _expand_model_input_state(actor_state, target_state)
+    if not changed:
+      raise
+    runner.alg.get_policy().load_state_dict(actor_state, strict=True)
+    print(
+      "[INFO]: Expanded actor checkpoint input tensors for additive observation dimensions; "
+      "critic and optimizer were reinitialized."
+    )
+
+
+def _reset_actor_distribution_std(runner, agent_cfg: RslRlBaseRunnerCfg) -> None:
+  """Reset loaded Gaussian actor std to the current config's initial std."""
+
+  distribution_cfg = getattr(getattr(agent_cfg, "actor", None), "distribution_cfg", {}) or {}
+  init_std = float(distribution_cfg.get("init_std", 1.0))
+  std_type = distribution_cfg.get("std_type", "scalar")
+  policy = runner.alg.get_policy()
+  distribution = getattr(policy, "distribution", None)
+  if distribution is None:
+    raise RuntimeError("Cannot reset actor std: policy has no distribution module.")
+  if std_type == "scalar" and hasattr(distribution, "std_param"):
+    distribution.std_param.data.fill_(init_std)
+    print(f"[INFO]: Reset actor std_param to {init_std:g}.")
+    return
+  if std_type == "log" and hasattr(distribution, "log_std_param"):
+    import math
+
+    distribution.log_std_param.data.fill_(math.log(init_std))
+    print(f"[INFO]: Reset actor log_std_param to log({init_std:g}).")
+    return
+  raise RuntimeError(
+    f"Cannot reset actor std: unsupported distribution std_type={std_type!r}."
+  )
 
 
 def launch_training(task_id: str, args: TrainConfig | None = None):
@@ -243,6 +394,10 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
     terrain_agent_cfg.logger = args.agent.logger
     terrain_agent_cfg.upload_model = args.agent.upload_model
     terrain_agent_cfg.seed = args.agent.seed
+    terrain_agent_cfg.resume = args.agent.resume
+    terrain_agent_cfg.load_run = args.agent.load_run
+    terrain_agent_cfg.load_checkpoint = args.agent.load_checkpoint
+    terrain_agent_cfg.clip_actions = args.agent.clip_actions
     args = replace(args, env=terrain_env_cfg, agent=terrain_agent_cfg)
 
   # Create log directory once before launching workers.

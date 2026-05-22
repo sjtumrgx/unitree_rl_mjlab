@@ -183,8 +183,93 @@ def host_getup_lift_progress_reward(
     min=0.0,
     max=1.0,
   )
-  # Mix: 70% height progress (primary direction), 30% alignment progress.
-  return 0.7 * height_progress + 0.3 * alignment_progress
+  # Height alone was enough for failed policies to learn a high-but-sideways
+  # posture that never became a get-up.  Keep the dense height gradient, but
+  # gate it by upright progress so torso lift only becomes highly valuable when
+  # it is also rotating toward the success orientation.
+  return height_progress * (0.25 + 0.75 * alignment_progress)
+
+
+def host_upright_progress_reward(
+  env: ManagerBasedRlEnv,
+  min_height: float = 0.18,
+  target_height: float = 0.55,
+  alignment_floor: float = -0.25,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """Dense upright-rotation progress that is still tied to get-up height.
+
+  Failed no-assist policies can lift the torso to ~0.50m while keeping the
+  torso far from upright.  ``host_getup_lift_progress_reward`` intentionally
+  gates height by orientation; this companion term provides the opposite
+  gradient: rotate toward upright, but only with at least some lift progress so
+  it does not reward idle rolling on the floor.
+  """
+
+  asset: Entity = env.scene[asset_cfg.name]
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
+  height_progress = torch.clamp(
+    (torso_height - min_height) / max(target_height - min_height, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  alignment = _upright_alignment(asset.data.projected_gravity_b)
+  alignment_progress = torch.clamp(
+    (alignment - alignment_floor) / max(1.0 - alignment_floor, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  return alignment_progress * (0.25 + 0.75 * height_progress)
+
+
+def host_support_relief_reward(
+  env: ManagerBasedRlEnv,
+  feet_sensor_name: str,
+  body_sensor_name: str,
+  min_height: float = 0.18,
+  target_height: float = 0.55,
+  max_body_support_count: float = 8.0,
+  alignment_floor: float = -0.25,
+  asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
+) -> torch.Tensor:
+  """Softly reward shifting support away from the torso/body stack.
+
+  The strict HoST task term only pays when body support is nearly gone.  In the
+  observed no-assist failures the policy reaches two foot contacts but remains
+  heavily body-supported, so there is no usable gradient for progressively
+  unloading the torso.  This term keeps the gradient soft and gated by lift,
+  upright progress, and foot support; the strict completion reward remains the
+  actual success criterion.
+  """
+
+  asset: Entity = env.scene[asset_cfg.name]
+  torso_height = _torso_height(env, asset_cfg=asset_cfg)
+  height_progress = torch.clamp(
+    (torso_height - min_height) / max(target_height - min_height, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  alignment = _upright_alignment(asset.data.projected_gravity_b)
+  alignment_progress = torch.clamp(
+    (alignment - alignment_floor) / max(1.0 - alignment_floor, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+
+  feet_count = _contact_count(env, feet_sensor_name)
+  feet_gate = 0.25 + 0.75 * torch.clamp(feet_count / 2.0, min=0.0, max=1.0)
+  body_count = _contact_count(env, body_sensor_name)
+  body_relief = 1.0 - torch.clamp(
+    body_count / max(max_body_support_count, 1e-6),
+    min=0.0,
+    max=1.0,
+  )
+  return (
+    body_relief
+    * feet_gate
+    * (0.25 + 0.75 * height_progress)
+    * (0.25 + 0.75 * alignment_progress)
+  )
 
 
 def host_action_smoothness_penalty(
@@ -281,6 +366,8 @@ def host_target_standing_reward(
   body_sensor_name: str,
   base_height_target: float = 0.75,
   target_base_height_phase3: float = 0.65,
+  standing_gate_start_height: float | None = None,
+  max_body_support_count: float = 8.0,
   asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
 ) -> torch.Tensor:
   """Soft standing-pose reward.
@@ -293,16 +380,18 @@ def host_target_standing_reward(
   torso_height = _torso_height(env, asset_cfg=asset_cfg)
   feet_count = _contact_count(env, feet_sensor_name)
   body_count = _contact_count(env, body_sensor_name)
-  feet_gate = torch.clamp(feet_count / 2.0, min=0.0, max=1.0)
-  body_gate = 1.0 - torch.clamp((body_count - 1.0) / 2.0, min=0.0, max=1.0)
-  standing_gate = torch.clamp(
-    (torso_height - target_base_height_phase3) / max(0.1, 1e-6),
+  gate_start = target_base_height_phase3 if standing_gate_start_height is None else standing_gate_start_height
+  height_progress = torch.clamp(
+    (torso_height - gate_start) / max(base_height_target - gate_start, 1e-6),
     min=0.0,
     max=1.0,
   )
-  orientation = torch.exp(-2.0 * torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1))
-  height = torch.exp(-torch.square(torso_height - base_height_target) / max(0.2 ** 2, 1e-6))
-  return orientation * height * standing_gate * feet_gate * (0.25 + 0.75 * body_gate)
+  alignment = torch.clamp(_upright_alignment(asset.data.projected_gravity_b), min=0.0, max=1.0)
+  feet_gate = 0.25 + 0.75 * torch.clamp(feet_count / 2.0, min=0.0, max=1.0)
+  body_relief = 1.0 - torch.clamp(body_count / max(max_body_support_count, 1e-6), min=0.0, max=1.0)
+  orientation = 0.25 + 0.75 * alignment
+  body_gate = 0.25 + 0.75 * body_relief
+  return orientation * height_progress * feet_gate * body_gate
 
 
 def getup_posture_reward(

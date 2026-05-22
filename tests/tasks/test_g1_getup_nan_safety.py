@@ -25,6 +25,100 @@ def test_getup_variants_enable_observation_sanitization_and_unstable_guard():
     assert cfg.rewards["action_rate_l2"].func is mdp.bounded_action_rate_after_lift
 
 
+def test_getup_actor_and_critic_include_bfm_local_body_state_observation():
+  from src.tasks.velocity import mdp
+  from src.tasks.velocity.config.g1_getup.env_cfgs import unitree_g1_getup_env_cfg
+
+  cfg = unitree_g1_getup_env_cfg("ground")
+
+  for group_name in ("actor", "critic"):
+    term = cfg.observations[group_name].terms.get("bfm_local_body_state")
+    assert term is not None
+    assert term.func is mdp.bfm_local_body_state
+
+  actor_terms = cfg.observations["actor"].terms
+  assert cfg.observations["actor"].history_length is None
+  for term_name in (
+    "base_ang_vel",
+    "projected_gravity",
+    "command",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+    "getup_progress",
+  ):
+    assert actor_terms[term_name].history_length == 6
+  assert actor_terms["bfm_local_body_state"].history_length == 0
+
+
+def test_bfm_local_body_state_is_finite_and_heading_invariant():
+  from types import SimpleNamespace
+
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+  from mjlab.utils.lab_api.math import quat_apply, quat_from_euler_xyz, quat_mul
+  from src.tasks.velocity.mdp.getup.observations import bfm_local_body_state
+
+  yaw0 = quat_from_euler_xyz(torch.tensor([0.0]), torch.tensor([0.0]), torch.tensor([0.0]))[0]
+  yaw90 = quat_from_euler_xyz(
+    torch.tensor([0.0]), torch.tensor([0.0]), torch.tensor([torch.pi / 2])
+  )[0]
+  local_body_pos = torch.tensor(
+    [
+      [0.0, 0.0, 0.0],
+      [0.4, 0.0, 0.1],
+      [0.0, -0.2, 0.3],
+    ],
+    dtype=torch.float32,
+  )
+  local_body_vel = torch.tensor(
+    [
+      [0.2, 0.0, 0.0],
+      [0.1, 0.3, 0.0],
+      [-0.2, 0.1, 0.05],
+    ],
+    dtype=torch.float32,
+  )
+  local_body_ang_vel = torch.tensor(
+    [
+      [0.0, 0.1, 0.2],
+      [0.3, 0.0, 0.1],
+      [0.2, -0.1, 0.0],
+    ],
+    dtype=torch.float32,
+  )
+  local_body_quat = yaw0.repeat(3, 1)
+  root_pos = torch.tensor([[0.0, 0.0, 0.5], [2.0, -1.0, 1.5]], dtype=torch.float32)
+  env_origins = torch.tensor([[0.0, 0.0, 0.0], [2.0, -1.0, 1.0]], dtype=torch.float32)
+
+  body_pos_0 = root_pos[0] + local_body_pos
+  body_pos_1 = root_pos[1] + quat_apply(yaw90.repeat(3, 1), local_body_pos)
+  body_vel_0 = local_body_vel
+  body_vel_1 = quat_apply(yaw90.repeat(3, 1), local_body_vel)
+  body_ang_vel_0 = local_body_ang_vel
+  body_ang_vel_1 = quat_apply(yaw90.repeat(3, 1), local_body_ang_vel)
+  body_quat_0 = local_body_quat
+  body_quat_1 = quat_mul(yaw90.repeat(3, 1), local_body_quat)
+
+  robot = SimpleNamespace(
+    data=SimpleNamespace(
+      root_link_pos_w=root_pos,
+      root_link_quat_w=torch.stack([yaw0, yaw90], dim=0),
+      body_link_pos_w=torch.stack([body_pos_0, body_pos_1], dim=0),
+      body_link_quat_w=torch.stack([body_quat_0, body_quat_1], dim=0),
+      body_link_lin_vel_w=torch.stack([body_vel_0, body_vel_1], dim=0),
+      body_link_ang_vel_w=torch.stack([body_ang_vel_0, body_ang_vel_1], dim=0),
+    )
+  )
+  env = SimpleNamespace(num_envs=2, device="cpu", scene={"robot": robot, "env_origins": env_origins})
+
+  obs = bfm_local_body_state(env, asset_cfg=SceneEntityCfg("robot", body_ids=[0, 1, 2]))
+
+  assert obs.shape == (2, 43)
+  assert torch.isfinite(obs).all()
+  assert obs[:, 0].tolist() == [0.5, 0.5]
+  torch.testing.assert_close(obs[0], obs[1], atol=1e-5, rtol=1e-5)
+
+
 def test_getup_ppo_uses_tight_action_and_entropy_bounds():
   from src.tasks.velocity.config.g1_getup.rl_cfg import unitree_g1_getup_ppo_runner_cfg
 
@@ -91,7 +185,7 @@ def test_getup_actor_history_and_unactuated_contract_match_host_ground() -> None
   for terrain in GETUP_TERRAIN_VARIANTS:
     cfg = unitree_g1_getup_env_cfg(terrain=terrain)
 
-    assert cfg.observations["actor"].history_length == 6
+    assert cfg.observations["actor"].history_length is None
     assert getattr(cfg, "host_unactuated_timesteps") == 30
 
     action_cfg = cfg.actions["joint_pos"]
@@ -100,6 +194,29 @@ def test_getup_actor_history_and_unactuated_contract_match_host_ground() -> None
     assert action_cfg.scale == 1.0
     assert action_cfg.use_default_offset is False
     assert action_cfg.max_delta == 1.0
+
+
+def test_getup_stall_guard_allows_multi_second_recovery_attempts() -> None:
+  from src.tasks.velocity.config.g1_getup.env_cfgs import unitree_g1_getup_amp_env_cfg, unitree_g1_getup_env_cfg
+  from src.tasks.velocity.mdp.getup import stalled_getup_progress
+
+  # Local fall->stand AMP clips include valid recoveries that take up to about
+  # 11.2s after resampling to the 50 Hz env step.  The stall guard must leave
+  # enough room for those trajectories and for early PPO exploration before it
+  # declares "no progress".
+  min_demo_recovery_s = 12.0
+  cfgs = (
+    unitree_g1_getup_env_cfg("ground"),
+    unitree_g1_getup_amp_env_cfg(demo_data_dir="/tmp/g1_getup_amp_fixture"),
+  )
+
+  for cfg in cfgs:
+    stalled = cfg.terminations["stalled_getup"]
+    assert stalled.func is stalled_getup_progress
+    step_dt = cfg.sim.mujoco.timestep * cfg.decimation
+    assert cfg.episode_length_s >= min_demo_recovery_s
+    assert stalled.params["min_steps_before_check"] >= int(min_demo_recovery_s / step_dt)
+    assert stalled.params["target_height"] >= 0.55
 
 
 def test_getup_action_observations_use_executed_effective_actions_for_normal_and_amp() -> None:
@@ -130,12 +247,13 @@ def test_getup_assist_uses_host_curriculum_not_fixed_force_crutch() -> None:
   assert hasattr(mdp, "apply_host_getup_assist_force")
   assist = cfg.events["getup_assist_force"]
   assert assist.func is mdp.apply_host_getup_assist_force
-  assert assist.params["initial_force_n"] == 100
+  assert assist.params["initial_force_n"] == 120
   assert assist.params["force_decay_n"] == 20
   assert assist.params["action_scale_decay"] == 0.02
   assert assist.params["min_action_scale"] == 0.25
   assert assist.params["unactuated_timesteps"] == 30
-  assert assist.params["orientation_projected_gravity_z_max"] == -0.8
+  assert 0.55 <= assist.params["success_height_threshold"] < 0.9
+  assert assist.params["no_orientation_gate"] is True
   assert cfg.metrics["getup_assist_force_n"].func is mdp.getup_assist_force_n
   assert cfg.metrics["getup_action_rescale"].func is mdp.getup_action_rescale
 
@@ -178,8 +296,11 @@ def test_getup_reward_stack_replaces_reward_hacks_with_host_composite_terms() ->
     "host_action_smoothness": mdp.host_action_smoothness_penalty,
     "host_joint_tracking": mdp.host_joint_tracking_penalty,
     "host_style_pose": mdp.host_style_pose_reward,
+    "host_upright_progress": mdp.host_upright_progress_reward,
+    "host_support_relief": mdp.host_support_relief_reward,
     "host_feet_support": mdp.host_feet_support_reward,
     "host_target_standing": mdp.host_target_standing_reward,
+    "getup_completion_bonus": mdp.getup_completion_bonus,
   }
   for name, func in expected_funcs.items():
     assert name in cfg.rewards
@@ -308,6 +429,32 @@ def test_host_relative_action_clamps_current_pose_delta_after_startup() -> None:
   assert torch.allclose(env._host_getup_joint_position_delta, target)
 
 
+def test_no_assist_episode_uses_play_action_scale_instead_of_curriculum_rescale() -> None:
+  from src.tasks.velocity.mdp.getup.actions import HostRelativeJointPositionActionCfg
+
+  env = _FakeActionEnv()
+  env.episode_length_buf[:] = 31
+  env._host_getup_curriculum_state = {
+    "action_rescale": torch.tensor([0.25, 0.25]),
+    "episode_force_scale": torch.tensor([0.0, 1.0]),
+  }
+  action = HostRelativeJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=1.0,
+    unactuated_timesteps=30,
+  ).build(env)
+
+  raw = torch.tensor([[0.8, -0.4, 0.2], [0.8, -0.4, 0.2]])
+  action.process_actions(raw)
+  action.apply_actions()
+
+  assert torch.allclose(
+    env._host_getup_joint_position_delta,
+    torch.tensor([[0.8, -0.4, 0.2], [0.2, -0.1, 0.05]]),
+  )
+
+
 class _FakeContactSensor:
   def __init__(self, found: torch.Tensor):
     self.data = SimpleNamespace(found=found)
@@ -372,6 +519,129 @@ def test_host_task_reward_does_not_pay_upright_torso_without_feet_supported_heig
 
   assert reward[0].item() < 0.05
   assert reward[1].item() > 0.5
+
+
+def test_host_lift_progress_does_not_pay_tall_non_upright_postures_like_recovery() -> None:
+  from src.tasks.velocity import mdp
+
+  env = _FakeRewardEnv()
+  env.scene["robot"] = _FakeRewardRobot(
+    torso_height=torch.tensor([0.50, 0.50]),
+    projected_gravity_b=torch.tensor([[0.95, 0.0, -0.10], [0.0, 0.0, -0.98]]),
+  )
+
+  reward = mdp.host_getup_lift_progress_reward(
+    env,
+    orientation_floor=0.0,
+    asset_cfg=SceneEntityCfg("robot", body_names=("torso_link",)),
+  )
+
+  assert reward[0].item() < 0.35
+  assert reward[1].item() > 0.75
+
+
+def test_host_upright_progress_rewards_rotation_when_torso_is_lifted() -> None:
+  from src.tasks.velocity import mdp
+
+  env = _FakeRewardEnv()
+  env.scene["robot"] = _FakeRewardRobot(
+    torso_height=torch.tensor([0.50, 0.50]),
+    projected_gravity_b=torch.tensor([[0.95, 0.0, -0.10], [0.0, 0.0, -0.98]]),
+  )
+
+  reward = mdp.host_upright_progress_reward(
+    env,
+    alignment_floor=0.0,
+    asset_cfg=SceneEntityCfg("robot", body_names=("torso_link",)),
+  )
+
+  assert reward[0].item() < 0.2
+  assert reward[1].item() > reward[0].item() * 5.0
+
+
+def test_host_support_relief_rewards_unloading_body_contacts_with_foot_support() -> None:
+  from src.tasks.velocity import mdp
+
+  env = _FakeRewardEnv()
+  env.scene["robot"] = _FakeRewardRobot(
+    torso_height=torch.tensor([0.56, 0.56]),
+    projected_gravity_b=torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]),
+  )
+  env.scene["feet_ground_contact"] = _FakeContactSensor(
+    torch.tensor([[[1.0], [1.0]], [[1.0], [1.0]]])
+  )
+  env.scene["support_body_contact"] = _FakeContactSensor(
+    torch.tensor(
+      [
+        [[1.0], [1.0], [1.0], [1.0], [1.0], [1.0], [1.0], [1.0]],
+        [[0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0]],
+      ]
+    )
+  )
+
+  reward = mdp.host_support_relief_reward(
+    env,
+    feet_sensor_name="feet_ground_contact",
+    body_sensor_name="support_body_contact",
+    max_body_support_count=8.0,
+    alignment_floor=0.0,
+    asset_cfg=SceneEntityCfg("robot", body_names=("torso_link",)),
+  )
+
+  assert reward[0].item() == 0.0
+  assert reward[1].item() > 0.5
+
+
+def test_host_target_standing_rewards_reachable_success_band() -> None:
+  from src.tasks.velocity import mdp
+
+  env = _FakeRewardEnv()
+  env.scene["robot"] = _FakeRewardRobot(
+    torso_height=torch.tensor([0.50, 0.56]),
+    projected_gravity_b=torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]),
+  )
+
+  reward = mdp.host_target_standing_reward(
+    env,
+    feet_sensor_name="feet_ground_contact",
+    body_sensor_name="support_body_contact",
+    base_height_target=0.75,
+    target_base_height_phase3=0.65,
+    standing_gate_start_height=0.45,
+    max_body_support_count=8.0,
+    asset_cfg=SceneEntityCfg("robot", body_names=("torso_link",)),
+  )
+
+  assert reward[0].item() >= 0.0
+  assert reward[1].item() > reward[0].item()
+
+
+def test_getup_reward_stack_requires_upright_progress_for_dense_lift_reward() -> None:
+  from src.tasks.velocity.config.g1_getup.env_cfgs import unitree_g1_getup_env_cfg
+
+  cfg = unitree_g1_getup_env_cfg("ground")
+  lift_params = cfg.rewards["host_lift_progress"].params
+
+  assert lift_params["orientation_floor"] >= 0.0
+  assert cfg.rewards["host_upright_progress"].params["alignment_floor"] >= 0.0
+  assert cfg.rewards["host_support_relief"].params["alignment_floor"] >= 0.0
+
+
+def test_getup_reward_stack_targets_no_assist_transfer_before_full_stand() -> None:
+  from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_SUCCESS_TORSO_HEIGHT, unitree_g1_getup_env_cfg
+
+  cfg = unitree_g1_getup_env_cfg("ground")
+  target = cfg.rewards["host_target_standing"]
+  upright = cfg.rewards["host_upright_progress"]
+  support_relief = cfg.rewards["host_support_relief"]
+  assist_params = cfg.events["getup_assist_force"].params
+
+  assert target.weight >= 2.0
+  assert target.params["standing_gate_start_height"] <= GETUP_SUCCESS_TORSO_HEIGHT
+  assert target.params["max_body_support_count"] >= 8.0
+  assert upright.weight >= 1.0
+  assert support_relief.weight >= 1.0
+  assert assist_params["no_assist_probability"] >= 0.25
 
 
 def test_host_action_smoothness_penalty_ignores_raw_policy_actions_not_executed_in_warmup() -> None:

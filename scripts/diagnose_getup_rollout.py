@@ -28,9 +28,12 @@ SCHEMA_VERSION = "g1-getup-rollout-v1"
 GETUP_TASKS = ("Unitree-G1-GetUp", "Unitree-G1-GetUp-AMP")
 _TRACKED_REWARD_TERMS = {
   "host_lift_progress",
+  "host_upright_progress",
+  "host_support_relief",
   "host_task_reward",
   "host_target_standing",
   "host_feet_support",
+  "getup_completion_bonus",
   "host_action_smoothness",
   "action_rate_l2",
   "joint_acc_l2",
@@ -103,12 +106,27 @@ def _body_id(asset: Any, body_name: str) -> int | None:
   return None
 
 
-def _contact_count(env: Any, sensor_name: str) -> float | None:
+def _tensor_stat(value: torch.Tensor | None, reducer: str) -> float | None:
+  if value is None or value.numel() == 0:
+    return None
+  tensor = value.detach().float()
+  if reducer == "min":
+    return _scalar(tensor.amin())  # type: ignore[return-value]
+  if reducer == "mean":
+    return _scalar(tensor.mean())  # type: ignore[return-value]
+  return _scalar(tensor.amax())  # type: ignore[return-value]
+
+
+def _contact_count_tensor(env: Any, sensor_name: str) -> torch.Tensor | None:
   sensor = _scene_get(env.scene, sensor_name)
   found = getattr(getattr(sensor, "data", None), "found", None)
   if found is None:
     return None
-  return _scalar((found > 0).float().flatten(start_dim=1).sum(dim=1).amax())
+  return (found > 0).float().flatten(start_dim=1).sum(dim=1)
+
+
+def _contact_count(env: Any, sensor_name: str) -> float | None:
+  return _tensor_stat(_contact_count_tensor(env, sensor_name), "max")
 
 
 def _reward_terms(env: Any) -> dict[str, float]:
@@ -149,6 +167,15 @@ def _metric_terms(env: Any) -> dict[str, float]:
   return out
 
 
+def _metric_tensor(env: Any, metric_name: str) -> torch.Tensor | None:
+  manager = getattr(env, "metrics_manager", None)
+  names = list(getattr(manager, "_term_names", ()))
+  values = getattr(manager, "_step_values", None)
+  if values is None or metric_name not in names:
+    return None
+  return values[:, names.index(metric_name)].detach().float()
+
+
 def _action_term_tensors(env: Any) -> tuple[torch.Tensor | None, torch.Tensor | None]:
   action_manager = getattr(env, "action_manager", None)
   terms = getattr(action_manager, "_terms", {})
@@ -180,33 +207,130 @@ def _joint_target_delta(env: Any, asset: Any) -> dict[str, float | None]:
   }
 
 
-def _root_dynamics(env: Any, asset: Any) -> dict[str, float | None]:
+def _torso_height_tensor(env: Any, asset: Any) -> torch.Tensor:
   root_z = _relative_z(env, asset.data.root_link_pos_w[:, 2])
   torso_id = _body_id(asset, "torso_link")
   if torso_id is None:
-    torso_height = root_z
-  else:
-    torso_height = _relative_z(env, asset.data.body_link_pos_w[:, torso_id, 2])
+    return root_z
+  return _relative_z(env, asset.data.body_link_pos_w[:, torso_id, 2])
+
+
+def _supportless_height_spike(
+  env: Any,
+  asset: Any,
+  *,
+  torso_height_threshold: float = 0.9,
+  min_feet_contact_count: float = 1.0,
+) -> bool:
+  torso_height = _torso_height_tensor(env, asset)
+  feet_count = _contact_count_tensor(env, "feet_ground_contact")
+  if feet_count is None:
+    return False
+  return bool(((torso_height > torso_height_threshold) & (feet_count < min_feet_contact_count)).any().item())
+
+
+def _root_dynamics(env: Any, asset: Any) -> dict[str, float | None]:
+  root_z = _relative_z(env, asset.data.root_link_pos_w[:, 2])
+  torso_height = _torso_height_tensor(env, asset)
   projected_gravity = asset.data.projected_gravity_b
+  upright_alignment = -projected_gravity[:, 2]
   return {
-    "root_z": _scalar(root_z),
+    # Keep the legacy singular fields as batch maxima.  Rollout diagnostics run
+    # with many envs, and using element 0 here hid successful/unsafe envs in the
+    # summary even though metrics were already batch means.
+    "root_z": _tensor_stat(root_z, "max"),
+    "root_z_min": _tensor_stat(root_z, "min"),
+    "root_z_mean": _tensor_stat(root_z, "mean"),
+    "root_z_max": _tensor_stat(root_z, "max"),
     "root_vertical_velocity": _scalar(asset.data.root_link_lin_vel_w[:, 2].amax()),
     "root_lin_vel_norm": _l2_max(asset.data.root_link_lin_vel_w),
     "root_ang_vel_norm": _l2_max(asset.data.root_link_ang_vel_w),
-    "torso_height": _scalar(torso_height),
-    "upright_alignment": _scalar((-projected_gravity[:, 2]).amax()),
+    "torso_height": _tensor_stat(torso_height, "max"),
+    "torso_height_min": _tensor_stat(torso_height, "min"),
+    "torso_height_mean": _tensor_stat(torso_height, "mean"),
+    "torso_height_max": _tensor_stat(torso_height, "max"),
+    "upright_alignment": _tensor_stat(upright_alignment, "max"),
+    "upright_alignment_min": _tensor_stat(upright_alignment, "min"),
+    "upright_alignment_mean": _tensor_stat(upright_alignment, "mean"),
+    "upright_alignment_max": _tensor_stat(upright_alignment, "max"),
     "projected_gravity_z": _scalar(projected_gravity[:, 2].mean()),
+    "supportless_height_spike": _supportless_height_spike(env, asset),
   }
 
 
 def _curriculum_state(env: Any, train_like: bool) -> dict[str, float | bool | None]:
   state = getattr(env, "_host_getup_curriculum_state", None)
+  force = state.get("force_n") if isinstance(state, dict) else None
+  action_rescale = state.get("action_rescale") if isinstance(state, dict) else None
+  episode_success = state.get("episode_success") if isinstance(state, dict) else None
+  episode_force_scale = state.get("episode_force_scale") if isinstance(state, dict) else None
   return {
     "train_like": bool(train_like),
     "assist_event_active": "getup_assist_force" in getattr(getattr(env, "cfg", None), "events", {}),
-    "getup_assist_force_n": _scalar(state.get("force_n").amax()) if isinstance(state, dict) else None,
-    "getup_action_rescale": _scalar(state.get("action_rescale").amax()) if isinstance(state, dict) else None,
+    "getup_assist_force_n": _tensor_stat(force, "max"),
+    "getup_assist_force_n_min": _tensor_stat(force, "min"),
+    "getup_assist_force_n_mean": _tensor_stat(force, "mean"),
+    "getup_action_rescale": _tensor_stat(action_rescale, "max"),
+    "getup_action_rescale_min": _tensor_stat(action_rescale, "min"),
+    "getup_action_rescale_mean": _tensor_stat(action_rescale, "mean"),
+    "episode_success_latched_rate": _tensor_stat(episode_success.float(), "mean") if torch.is_tensor(episode_success) else None,
+    "episode_force_scale_min": _tensor_stat(episode_force_scale, "min"),
+    "episode_force_scale_mean": _tensor_stat(episode_force_scale, "mean"),
+    "episode_force_scale_max": _tensor_stat(episode_force_scale, "max"),
     "max_torso_height": _scalar(state.get("max_torso_height").amax()) if isinstance(state, dict) else None,
+  }
+
+
+def _assist_success_split(env: Any) -> dict[str, dict[str, float | int]] | None:
+  """Return per-step success/upright counts split by per-env assist mask.
+
+  ``episode_force_scale_mean`` is useful telemetry, but it cannot tell whether
+  the successful envs in a mixed batch were assisted or no-assist.  Keep this
+  compact (counts, not arrays) so JSONL remains small while train-like
+  diagnostics can distinguish real play-transfer progress from assist-only
+  success.
+  """
+
+  state = getattr(env, "_host_getup_curriculum_state", None)
+  if not isinstance(state, dict):
+    return None
+  episode_force_scale = state.get("episode_force_scale")
+  if episode_force_scale is None or not torch.is_tensor(episode_force_scale):
+    return None
+
+  success = _metric_tensor(env, "getup_success_count")
+  upright = _metric_tensor(env, "getup_upright")
+  if success is None and upright is None:
+    return None
+  scale = episode_force_scale.detach().float()
+  if (success is not None and success.shape[0] != scale.shape[0]) or (
+    upright is not None and upright.shape[0] != scale.shape[0]
+  ):
+    return None
+  assisted_mask = scale > 0.0
+  no_assist_mask = ~assisted_mask
+
+  def _group(mask: torch.Tensor) -> dict[str, float | int]:
+    env_count = int(mask.sum().item())
+    if env_count == 0:
+      return {
+        "env_count": 0,
+        "success_events": 0.0,
+        "upright_count": 0.0,
+        "upright_rate": 0.0,
+      }
+    success_events = float(success[mask].sum().item()) if success is not None else 0.0
+    upright_count = float(upright[mask].sum().item()) if upright is not None else 0.0
+    return {
+      "env_count": env_count,
+      "success_events": success_events,
+      "upright_count": upright_count,
+      "upright_rate": upright_count / env_count,
+    }
+
+  return {
+    "assisted": _group(assisted_mask),
+    "no_assist": _group(no_assist_mask),
   }
 
 
@@ -253,6 +377,7 @@ def build_step_record(
     "target": _joint_target_delta(env, asset),
     "root": _root_dynamics(env, asset),
     "curriculum_assist": _curriculum_state(env, train_like=mode == "train-like"),
+    "assist_success_split": _assist_success_split(env),
     "support": {
       "feet_contact_count": _contact_count(env, "feet_ground_contact"),
       "support_body_contact_count": _contact_count(env, "support_body_contact"),
@@ -275,6 +400,8 @@ def build_step_record(
 
 def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
   step_records = [record for record in records if record.get("type") == "step"]
+  metadata = next((record for record in records if record.get("type") == "metadata"), {})
+  num_envs = int(metadata.get("num_envs") or 0)
   max_target_delta = max(
     (float(record["target"]["joint_target_delta_max"] or 0.0) for record in step_records),
     default=0.0,
@@ -296,10 +423,124 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     None,
   )
   supportless_height_spike = any(
-    float(record["root"]["torso_height"] or 0.0) > 0.9
-    and float(record["support"]["feet_contact_count"] or 0.0) < 1.0
+    bool(record["root"].get("supportless_height_spike", False))
+    or (
+      float(record["root"]["torso_height"] or 0.0) > 0.9
+      and float(record["support"]["feet_contact_count"] or 0.0) < 1.0
+    )
     for record in step_records
   )
+  success_events_per_env = sum(
+    float(record.get("metrics", {}).get("getup_success_count") or 0.0)
+    for record in step_records
+  )
+  success_count_estimate = (
+    int(round(success_events_per_env * num_envs)) if num_envs > 0 else None
+  )
+  single_episode_success_rate = (
+    max(0.0, min(1.0, success_events_per_env)) if num_envs > 0 else None
+  )
+  upright_rates = [
+    float(record.get("metrics", {}).get("getup_upright") or 0.0)
+    for record in step_records
+  ]
+
+  def _success_group_from_split(group_name: str) -> dict[str, Any] | None:
+    group_steps = [
+      record.get("assist_success_split", {}).get(group_name)
+      for record in step_records
+      if isinstance(record.get("assist_success_split"), dict)
+      and isinstance(record.get("assist_success_split", {}).get(group_name), dict)
+    ]
+    if not group_steps:
+      return None
+    env_count = max(int(step.get("env_count") or 0) for step in group_steps)
+    success_events = sum(float(step.get("success_events") or 0.0) for step in group_steps)
+    upright_rates = [float(step.get("upright_rate") or 0.0) for step in group_steps]
+    final_upright_rate = upright_rates[-1] if upright_rates else 0.0
+    return {
+      "records": len(group_steps),
+      "env_count": env_count,
+      "success_events": success_events,
+      "success_events_per_env": success_events / env_count if env_count > 0 else 0.0,
+      "success_count_estimate": int(round(success_events)) if env_count > 0 else None,
+      "single_episode_success_rate": (
+        max(0.0, min(1.0, success_events / env_count)) if env_count > 0 else 0.0
+      ),
+      "max_getup_upright_rate": max(upright_rates, default=0.0),
+      "final_getup_upright_rate": final_upright_rate,
+    }
+
+  def _success_group_from_record_means(group_records: list[dict[str, Any]]) -> dict[str, Any]:
+    events_per_env = sum(
+      float(record.get("metrics", {}).get("getup_success_count") or 0.0)
+      for record in group_records
+    )
+    group_upright_rates = [
+      float(record.get("metrics", {}).get("getup_upright") or 0.0)
+      for record in group_records
+    ]
+    return {
+      "records": len(group_records),
+      "env_count": num_envs or 0,
+      "success_events_per_env": events_per_env,
+      "success_count_estimate": int(round(events_per_env * num_envs)) if num_envs > 0 else None,
+      "single_episode_success_rate": max(0.0, min(1.0, events_per_env)) if num_envs > 0 else None,
+      "max_getup_upright_rate": max(group_upright_rates, default=0.0),
+      "final_getup_upright_rate": group_upright_rates[-1] if group_upright_rates else 0.0,
+    }
+
+  assisted_records = [
+    record
+    for record in step_records
+    if float(record.get("curriculum_assist", {}).get("episode_force_scale_mean") or 0.0) > 0.0
+  ]
+  no_assist_records = [
+    record
+    for record in step_records
+    if (
+      record.get("curriculum_assist", {}).get("episode_force_scale_mean") is not None
+      and float(record.get("curriculum_assist", {}).get("episode_force_scale_mean") or 0.0) <= 0.0
+    )
+  ]
+  total_success = {
+    "num_envs": num_envs or None,
+    "success_events_per_env": success_events_per_env,
+    "success_count_estimate": success_count_estimate,
+    "single_episode_success_rate": single_episode_success_rate,
+    "max_getup_upright_rate": max(upright_rates, default=0.0),
+    "final_getup_upright_rate": upright_rates[-1] if upright_rates else 0.0,
+  }
+  assisted_success = _success_group_from_split("assisted") or _success_group_from_record_means(assisted_records)
+  no_assist_success = _success_group_from_split("no_assist") or _success_group_from_record_means(no_assist_records)
+
+  # Play-like diagnostics have no getup_assist_force event, so every env is by
+  # definition no-assist.  Mirroring the total success here prevents the summary
+  # from showing a misleading no_assist=0/num_envs next to a high play success.
+  has_assist_telemetry = any(
+    isinstance(record.get("assist_success_split"), dict)
+    or record.get("curriculum_assist", {}).get("episode_force_scale_mean") is not None
+    for record in step_records
+  )
+  if not has_assist_telemetry:
+    assisted_success = {
+      "records": 0,
+      "env_count": 0,
+      "success_events_per_env": 0.0,
+      "success_count_estimate": 0,
+      "single_episode_success_rate": 0.0,
+      "max_getup_upright_rate": 0.0,
+      "final_getup_upright_rate": 0.0,
+    }
+    no_assist_success = {
+      "records": len(step_records),
+      "env_count": num_envs or 0,
+      "success_events_per_env": success_events_per_env,
+      "success_count_estimate": success_count_estimate,
+      "single_episode_success_rate": single_episode_success_rate,
+      "max_getup_upright_rate": max(upright_rates, default=0.0),
+      "final_getup_upright_rate": upright_rates[-1] if upright_rates else 0.0,
+    }
   return {
     "schema_version": SCHEMA_VERSION,
     "type": "summary",
@@ -313,6 +554,11 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     # (absolute vertical velocity), not signed upward velocity.
     "max_root_vertical_velocity": max_vertical_speed,
     "max_torso_height": max_torso_height,
+    "success": total_success,
+    "success_by_assist": {
+      "assisted": assisted_success,
+      "no_assist": no_assist_success,
+    },
     "risk_flags": {
       "target_delta_gt_1rad": max_target_delta > 1.0,
       "upward_velocity_gt_2mps": max_upward_velocity > 2.0,
@@ -417,7 +663,14 @@ def _make_trained_policy(args: argparse.Namespace, env, agent_cfg):
   agent_dict["upload_model"] = False
   runner_cls = load_runner_cls(args.task_id) or MjlabOnPolicyRunner
   runner = runner_cls(env, agent_dict, None, args.device)
-  runner.load(str(checkpoint), load_cfg={"actor": True}, strict=True, map_location=args.device)
+  from scripts.train import _load_actor_with_compatible_input_expansion
+
+  _load_actor_with_compatible_input_expansion(
+    runner,
+    checkpoint,
+    load_cfg={"actor": True},
+    map_location=args.device,
+  )
   return runner.get_inference_policy(device=args.device), runner
 
 

@@ -29,13 +29,23 @@ class _FakeAsset:
     self.wrench_writes.append((forces.clone(), torques.clone(), env_ids, body_ids))
 
 
+class _FakeContactSensor:
+  def __init__(self, found: torch.Tensor):
+    self.data = SimpleNamespace(found=found)
+
+
 class _FakeEnv:
   def __init__(self):
     self.num_envs = 1
     self.device = "cpu"
     self.common_step_counter = 0
     self.episode_length_buf = torch.tensor([31], dtype=torch.long)
-    self.scene = {"robot": _FakeAsset(), "env_origins": torch.zeros(1, 3)}
+    self.scene = {
+      "robot": _FakeAsset(),
+      "env_origins": torch.zeros(1, 3),
+      "feet_ground_contact": _FakeContactSensor(torch.tensor([[[1.0]]])),
+      "support_body_contact": _FakeContactSensor(torch.tensor([[[0.0]]])),
+    }
 
 
 def test_reset_joints_from_presets_raises_for_unknown_joint_name() -> None:
@@ -96,6 +106,223 @@ def test_assist_curriculum_does_not_decay_on_ballistic_height_without_stable_sup
   assert state["action_rescale"].item() == 1.0
 
 
+def test_assist_curriculum_decays_when_stable_success_reaches_reachable_height() -> None:
+  env = _FakeEnv()
+  env.scene["robot"].data.projected_gravity_b = torch.tensor([[0.0, 0.0, -1.0]])
+  cfg = SimpleNamespace(
+    params={
+      "asset_cfg": SceneEntityCfg("robot", body_ids=[0]),
+      "success_height_threshold": 0.75,
+      "stable_success_required": True,
+      "upright_alignment_threshold": 0.85,
+      "force_decay_n": 20.0,
+      "action_scale_decay": 0.02,
+    }
+  )
+  assist = events.apply_host_getup_assist_force(cfg, env)
+  state = events.get_host_getup_curriculum_state(env, initial_force_n=100.0, initial_action_scale=1.0)
+  state["max_torso_height"][:] = 0.82
+
+  assist.reset(torch.tensor([0]))
+
+  assert state["force_n"].item() == pytest.approx(80.0)
+  assert state["action_rescale"].item() == pytest.approx(0.98)
+
+
+def test_assist_curriculum_decays_from_latched_episode_success_even_if_reset_pose_falls() -> None:
+  env = _FakeEnv()
+  env.scene["robot"].data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.82]]])
+  env.scene["robot"].data.projected_gravity_b = torch.tensor([[0.0, 0.0, -1.0]])
+  cfg = SimpleNamespace(
+    params={
+      "asset_cfg": SceneEntityCfg("robot", body_ids=[0]),
+      "success_height_threshold": 0.75,
+      "stable_success_required": True,
+      "upright_alignment_threshold": 0.85,
+      "force_decay_n": 20.0,
+      "action_scale_decay": 0.02,
+    }
+  )
+  assist = events.apply_host_getup_assist_force(cfg, env)
+  state = events.get_host_getup_curriculum_state(env, initial_force_n=100.0, initial_action_scale=1.0)
+
+  assist(
+    env,
+    None,
+    initial_force_n=100.0,
+    success_height_threshold=0.75,
+    stable_success_required=True,
+    upright_alignment_threshold=0.85,
+    no_orientation_gate=True,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+  env.scene["robot"].data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.2]]])
+  env.scene["robot"].data.projected_gravity_b = torch.tensor([[0.8, 0.0, -0.1]])
+
+  assist.reset(torch.tensor([0]))
+
+  assert state["force_n"].item() == pytest.approx(80.0)
+  assert state["action_rescale"].item() == pytest.approx(0.98)
+
+
+def test_assist_force_turns_off_immediately_after_episode_success_latches() -> None:
+  env = _FakeEnv()
+  env.scene["robot"].data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.82]]])
+  env.scene["robot"].data.projected_gravity_b = torch.tensor([[0.0, 0.0, -1.0]])
+  cfg = SimpleNamespace(
+    params={
+      "asset_cfg": SceneEntityCfg("robot", body_ids=[0]),
+      "success_height_threshold": 0.75,
+      "stable_success_required": True,
+      "upright_alignment_threshold": 0.85,
+    }
+  )
+  assist = events.apply_host_getup_assist_force(cfg, env)
+  state = events.get_host_getup_curriculum_state(env, initial_force_n=100.0, initial_action_scale=1.0)
+
+  assist(
+    env,
+    None,
+    initial_force_n=100.0,
+    success_height_threshold=0.75,
+    stable_success_required=True,
+    upright_alignment_threshold=0.85,
+    no_orientation_gate=True,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  forces, _, env_ids, _ = env.scene["robot"].wrench_writes[-1]
+  assert env_ids.tolist() == [0]
+  assert state["episode_success"].item() is True
+  assert forces[0, 0, 2].item() == pytest.approx(0.0)
+
+
+def test_assist_force_tapers_out_before_success_height() -> None:
+  env = _FakeEnv()
+  env.scene["robot"].data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.575]]])
+  cfg = SimpleNamespace(params={"asset_cfg": SceneEntityCfg("robot", body_ids=[0])})
+  assist = events.apply_host_getup_assist_force(cfg, env)
+
+  assist(
+    env,
+    None,
+    initial_force_n=100.0,
+    unactuated_timesteps=30,
+    no_orientation_gate=True,
+    taper_start_height=0.45,
+    taper_end_height=0.70,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  forces, _, env_ids, _ = env.scene["robot"].wrench_writes[-1]
+  assert env_ids.tolist() == [0]
+  assert forces[0, 0, 2].item() == pytest.approx(50.0)
+
+
+def test_configured_assist_is_zero_by_reported_getup_success_height() -> None:
+  cfg = unitree_g1_getup_env_cfg("ground")
+
+  reported_success_height = cfg.metrics["getup_upright"].params["torso_height_threshold"]
+  assist_params = cfg.events["getup_assist_force"].params
+
+  assert assist_params["success_height_threshold"] == pytest.approx(reported_success_height)
+  assert assist_params["taper_end_height"] <= reported_success_height
+
+
+def test_configured_assist_includes_no_assist_episode_mix_for_play_transfer() -> None:
+  cfg = unitree_g1_getup_env_cfg("ground")
+  assist_params = cfg.events["getup_assist_force"].params
+
+  assert assist_params["no_assist_probability_initial"] == pytest.approx(0.05)
+  assert assist_params["no_assist_probability_initial"] < assist_params["no_assist_probability"]
+  assert assist_params["no_assist_probability"] >= 0.8
+  assert assist_params["no_assist_probability"] < 1.0
+  assert assist_params["no_assist_ramp_start_progress"] == pytest.approx(0.5)
+  assert assist_params["no_assist_ramp_end_progress"] == pytest.approx(1.0)
+
+
+def test_no_assist_episode_mix_ramps_with_assist_force_decay() -> None:
+  force = torch.tensor([120.0, 90.0, 60.0, 30.0, 0.0])
+
+  probability = events._scheduled_no_assist_probability(
+    force,
+    initial_force_n=120.0,
+    min_force_n=0.0,
+    initial_probability=0.25,
+    max_probability=0.80,
+    ramp_start_progress=0.2,
+    ramp_end_progress=0.8,
+  )
+
+  assert probability[0].item() == pytest.approx(0.25)
+  assert probability[1].item() == pytest.approx(0.2958333333)
+  assert probability[2].item() == pytest.approx(0.525)
+  assert probability[3].item() == pytest.approx(0.7541666667)
+  assert probability[4].item() == pytest.approx(0.80)
+
+
+def test_ground_assist_is_limited_to_sparse_bootstrap_not_primary_solution() -> None:
+  cfg = unitree_g1_getup_env_cfg("ground")
+  assist_params = cfg.events["getup_assist_force"].params
+
+  assert assist_params["initial_force_n"] <= 120.0
+  assert assist_params["taper_start_height"] <= 0.35
+
+
+def test_assist_force_is_zero_at_taper_end_even_before_success_latches() -> None:
+  env = _FakeEnv()
+  env.scene["robot"].data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.70]]])
+  env.scene["robot"].data.projected_gravity_b = torch.tensor([[0.8, 0.0, -0.1]])
+  cfg = SimpleNamespace(params={"asset_cfg": SceneEntityCfg("robot", body_ids=[0])})
+  assist = events.apply_host_getup_assist_force(cfg, env)
+
+  assist(
+    env,
+    None,
+    initial_force_n=100.0,
+    unactuated_timesteps=30,
+    no_orientation_gate=True,
+    stable_success_required=True,
+    success_height_threshold=0.75,
+    taper_start_height=0.45,
+    taper_end_height=0.70,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  forces, _, env_ids, _ = env.scene["robot"].wrench_writes[-1]
+  assert env_ids.tolist() == [0]
+  assert forces[0, 0, 2].item() == pytest.approx(0.0)
+
+
+def test_assist_can_sample_no_assist_episode_without_destroying_curriculum_force() -> None:
+  env = _FakeEnv()
+  env.scene["robot"].data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.20]]])
+  cfg = SimpleNamespace(
+    params={
+      "asset_cfg": SceneEntityCfg("robot", body_ids=[0]),
+      "no_assist_probability": 1.0,
+    }
+  )
+  assist = events.apply_host_getup_assist_force(cfg, env)
+  state = events.get_host_getup_curriculum_state(env, initial_force_n=100.0, initial_action_scale=1.0)
+
+  assist.reset(torch.tensor([0]))
+  assist(
+    env,
+    None,
+    initial_force_n=100.0,
+    unactuated_timesteps=30,
+    no_orientation_gate=True,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  forces, _, env_ids, _ = env.scene["robot"].wrench_writes[-1]
+  assert env_ids.tolist() == [0]
+  assert state["force_n"].item() == pytest.approx(100.0)
+  assert state["episode_force_scale"].item() == pytest.approx(0.0)
+  assert forces[0, 0, 2].item() == pytest.approx(0.0)
+
+
 def test_assist_force_step_accepts_stable_success_config_params() -> None:
   env = _FakeEnv()
   cfg = SimpleNamespace(params={"asset_cfg": SceneEntityCfg("robot", body_ids=[0])})
@@ -116,3 +343,23 @@ def test_assist_force_step_accepts_stable_success_config_params() -> None:
   forces, _, env_ids, _ = env.scene["robot"].wrench_writes[-1]
   assert env_ids.tolist() == [0]
   assert torch.allclose(forces, torch.zeros_like(forces))
+
+
+def test_assist_force_can_pull_fallen_postures_after_startup_when_orientation_gate_disabled() -> None:
+  env = _FakeEnv()
+  env.scene["robot"].data.body_link_pos_w = torch.tensor([[[0.0, 0.0, 0.20]]])
+  cfg = SimpleNamespace(params={"asset_cfg": SceneEntityCfg("robot", body_ids=[0])})
+  assist = events.apply_host_getup_assist_force(cfg, env)
+
+  assist(
+    env,
+    None,
+    initial_force_n=100.0,
+    unactuated_timesteps=30,
+    no_orientation_gate=True,
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  forces, _, env_ids, _ = env.scene["robot"].wrench_writes[-1]
+  assert env_ids.tolist() == [0]
+  assert forces[0, 0, 2].item() == pytest.approx(100.0)

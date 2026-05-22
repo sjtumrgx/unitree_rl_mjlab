@@ -264,9 +264,56 @@ def get_host_getup_curriculum_state(
       "force_n": torch.full((env.num_envs,), float(initial_force_n), device=env.device),
       "action_rescale": torch.full((env.num_envs,), float(initial_action_scale), device=env.device),
       "max_torso_height": torch.zeros(env.num_envs, dtype=torch.float32, device=env.device),
+      "episode_success": torch.zeros(env.num_envs, dtype=torch.bool, device=env.device),
+      "episode_force_scale": torch.ones(env.num_envs, dtype=torch.float32, device=env.device),
     }
     setattr(env, "_host_getup_curriculum_state", state)
+  if "episode_success" not in state:
+    state["episode_success"] = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+  if "episode_force_scale" not in state:
+    state["episode_force_scale"] = torch.ones(env.num_envs, dtype=torch.float32, device=env.device)
   return state
+
+
+def _scheduled_no_assist_probability(
+  force_n: torch.Tensor,
+  *,
+  initial_force_n: float,
+  min_force_n: float,
+  initial_probability: float,
+  max_probability: float,
+  ramp_start_progress: float = 0.0,
+  ramp_end_progress: float = 1.0,
+) -> torch.Tensor:
+  """Ramp no-assist exposure as the per-env assist curriculum succeeds.
+
+  Starting every resumed episode with a high no-assist probability can erase an
+  assisted get-up policy before it has converted those successes to the play
+  dynamics.  Tie the probability to the same per-env force decay that records
+  stable assisted success: early envs keep enough assisted episodes to maintain
+  the skill, while envs that repeatedly succeed and decay the force are pushed
+  toward no-assist rollouts.  The ramp window lets training hold a low
+  no-assist dose until the assisted policy has already proven repeatable by
+  decaying a configurable fraction of the external force.
+  """
+
+  initial = min(max(float(initial_probability), 0.0), 1.0)
+  maximum = min(max(float(max_probability), 0.0), 1.0)
+  if maximum < initial:
+    initial, maximum = maximum, initial
+  span = max(float(initial_force_n) - float(min_force_n), 1e-6)
+  force_decay_progress = torch.clamp(
+    (float(initial_force_n) - force_n.float()) / span,
+    min=0.0,
+    max=1.0,
+  )
+  ramp_start = min(max(float(ramp_start_progress), 0.0), 1.0)
+  ramp_end = min(max(float(ramp_end_progress), 0.0), 1.0)
+  if ramp_end < ramp_start:
+    ramp_start, ramp_end = ramp_end, ramp_start
+  ramp_span = max(ramp_end - ramp_start, 1e-6)
+  ramp_progress = torch.clamp((force_decay_progress - ramp_start) / ramp_span, min=0.0, max=1.0)
+  return initial + (maximum - initial) * ramp_progress
 
 
 def _relative_torso_height(
@@ -314,6 +361,15 @@ class apply_host_getup_assist_force:
     self._body_sensor_name = cfg.params.get("body_sensor_name")
     self._min_feet_contact_count = float(cfg.params.get("min_feet_contact_count", 1.0))
     self._max_body_support_count = float(cfg.params.get("max_body_support_count", 1.0))
+    self._no_assist_probability = float(cfg.params.get("no_assist_probability", 0.0))
+    self._no_assist_probability_initial = float(
+      cfg.params.get(
+        "no_assist_probability_initial",
+        min(max(self._no_assist_probability, 0.0), 1.0),
+      )
+    )
+    self._no_assist_ramp_start_progress = float(cfg.params.get("no_assist_ramp_start_progress", 0.0))
+    self._no_assist_ramp_end_progress = float(cfg.params.get("no_assist_ramp_end_progress", 1.0))
     get_host_getup_curriculum_state(
       env,
       initial_force_n=self._initial_force_n,
@@ -340,15 +396,19 @@ class apply_host_getup_assist_force:
     body_sensor_name: str | None = None,
     min_feet_contact_count: float = 1.0,
     max_body_support_count: float = 1.0,
+    taper_start_height: float = 0.45,
+    taper_end_height: float = 0.70,
+    no_assist_probability: float = 0.0,
+    no_assist_probability_initial: float | None = None,
+    no_assist_ramp_start_progress: float = 0.0,
+    no_assist_ramp_end_progress: float = 1.0,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   ) -> None:
     del (
-      stable_success_required,
-      upright_alignment_threshold,
-      feet_sensor_name,
-      body_sensor_name,
-      min_feet_contact_count,
-      max_body_support_count,
+      no_assist_probability,
+      no_assist_probability_initial,
+      no_assist_ramp_start_progress,
+      no_assist_ramp_end_progress,
     )
     if env_ids is None:
       env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
@@ -363,6 +423,22 @@ class apply_host_getup_assist_force:
       state["max_torso_height"][env_ids],
       torso_height,
     )
+    if stable_success_required:
+      succeeded_now = _stable_getup_success_mask(
+        env,
+        env_ids,
+        asset=asset,
+        body_ids=asset_cfg.body_ids,
+        success_height_threshold=success_height_threshold,
+        upright_alignment_threshold=upright_alignment_threshold,
+        feet_sensor_name=feet_sensor_name,
+        body_sensor_name=body_sensor_name,
+        min_feet_contact_count=min_feet_contact_count,
+        max_body_support_count=max_body_support_count,
+      )
+    else:
+      succeeded_now = torso_height > float(success_height_threshold)
+    state["episode_success"][env_ids] |= succeeded_now
 
     episode_length = getattr(env, "episode_length_buf", torch.zeros(env.num_envs, device=env.device))
     past_startup = episode_length[env_ids] > int(unactuated_timesteps)
@@ -370,11 +446,30 @@ class apply_host_getup_assist_force:
       oriented = torch.ones_like(past_startup, dtype=torch.bool, device=env.device)
     else:
       oriented = asset.data.projected_gravity_b[env_ids, 2] < float(orientation_projected_gravity_z_max)
-    active = past_startup & oriented & (state["force_n"][env_ids] > 0.0)
+    # Once an episode has reached stable get-up success, stop applying the
+    # external wrench for that env immediately.  Otherwise the policy can keep
+    # receiving standing rewards while being held upright by the curriculum
+    # force, which does not transfer to the play/no-assist environment.
+    episode_force_scale = state["episode_force_scale"][env_ids]
+    active = (
+      past_startup
+      & oriented
+      & (state["force_n"][env_ids] > 0.0)
+      & (episode_force_scale > 0.0)
+      & ~state["episode_success"][env_ids]
+    )
+    taper_span = max(float(taper_end_height) - float(taper_start_height), 1e-6)
+    assist_fraction = torch.clamp(
+      (float(taper_end_height) - torso_height) / taper_span,
+      min=0.0,
+      max=1.0,
+    )
 
     forces = torch.zeros((env_ids.numel(), self._num_bodies, 3), device=env.device)
     torques = torch.zeros_like(forces)
-    forces[active, :, 2] = state["force_n"][env_ids][active].unsqueeze(1)
+    forces[active, :, 2] = (
+      state["force_n"][env_ids][active] * episode_force_scale[active] * assist_fraction[active]
+    ).unsqueeze(1)
     asset.write_external_wrench_to_sim(forces, torques, env_ids=env_ids, body_ids=asset_cfg.body_ids)
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
@@ -392,9 +487,10 @@ class apply_host_getup_assist_force:
     if env_ids_t.numel() == 0:
       return
 
-    succeeded = state["max_torso_height"][env_ids_t] > self._success_height_threshold
+    height_success = state["max_torso_height"][env_ids_t] > self._success_height_threshold
+    succeeded = height_success
     if self._stable_success_required:
-      succeeded &= _stable_getup_success_mask(
+      current_stable_success = height_success & _stable_getup_success_mask(
         self._env,
         env_ids_t,
         asset=self._asset,
@@ -406,6 +502,7 @@ class apply_host_getup_assist_force:
         min_feet_contact_count=self._min_feet_contact_count,
         max_body_support_count=self._max_body_support_count,
       )
+      succeeded = state["episode_success"][env_ids_t] | current_stable_success
     if torch.any(succeeded):
       selected = env_ids_t[succeeded]
       state["force_n"][selected] = torch.clamp(
@@ -417,6 +514,21 @@ class apply_host_getup_assist_force:
         min=self._min_action_scale,
       )
     state["max_torso_height"][env_ids_t] = 0.0
+    state["episode_success"][env_ids_t] = False
+    no_assist_probability = _scheduled_no_assist_probability(
+      state["force_n"][env_ids_t],
+      initial_force_n=self._initial_force_n,
+      min_force_n=self._min_force_n,
+      initial_probability=self._no_assist_probability_initial,
+      max_probability=self._no_assist_probability,
+      ramp_start_progress=self._no_assist_ramp_start_progress,
+      ramp_end_progress=self._no_assist_ramp_end_progress,
+    )
+    if torch.any(no_assist_probability > 0.0):
+      keep_assist = torch.rand(env_ids_t.numel(), device=self._device) >= no_assist_probability
+      state["episode_force_scale"][env_ids_t] = keep_assist.to(dtype=torch.float32)
+    else:
+      state["episode_force_scale"][env_ids_t] = 1.0
 
     forces = torch.zeros((env_ids_t.numel(), self._num_bodies, 3), device=self._device)
     torques = torch.zeros_like(forces)
