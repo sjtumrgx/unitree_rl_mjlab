@@ -775,6 +775,57 @@ class _FakeRewardEnv:
     }
 
 
+
+def test_host_task_reward_keeps_soft_foot_posture_signal_before_strict_success() -> None:
+  from types import SimpleNamespace
+
+  from src.tasks.velocity import mdp
+
+  env = _FakeRewardEnv()
+  env.scene["robot"] = _FakeRewardRobot(
+    torso_height=torch.tensor([0.58, 0.58]),
+    projected_gravity_b=torch.tensor([[0.0, 0.0, -0.90], [0.0, 0.0, -0.99]]),
+  )
+  env.scene["feet_ground_contact"] = _FakeContactSensor(torch.ones(2, 2, 1))
+  env.scene["hand_ground_contact"] = _FakeContactSensor(torch.zeros(2, 2, 1))
+  env.scene["foot_geom_ground_contact"] = _FakeContactSensor(
+    torch.tensor([
+      [[1.0], [1.0], [0.0], [0.0], [0.0], [0.0], [0.0], [1.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0]],
+      [[1.0], [1.0], [1.0], [0.0], [0.0], [0.0], [0.0], [1.0], [1.0], [1.0], [0.0], [0.0], [0.0], [0.0]],
+    ])
+  )
+  env.scene["robot"].data.root_link_quat_w = torch.tensor([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]])
+  env.scene["robot"].data.body_link_quat_w = torch.tensor(
+    [
+      [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+      [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+    ]
+  )
+
+  reward = mdp.host_getup_task_reward(
+    env,
+    feet_sensor_name="feet_ground_contact",
+    body_sensor_name="support_body_contact",
+    hand_sensor_name="hand_ground_contact",
+    foot_geom_sensor_name="foot_geom_ground_contact",
+    min_feet_contact_count=2.0,
+    max_body_support_count=0.0,
+    max_hand_contact_count=0.0,
+    min_foot_flatness=0.6,
+    min_foot_heading_alignment=0.6,
+    min_foot_geom_contact_spread=0.5,
+    foot_asset_cfg=SceneEntityCfg("robot", body_ids=[0, 1]),
+    asset_cfg=SceneEntityCfg("robot", body_names=("torso_link",)),
+    orientation_threshold=0.99,
+    orientation_margin=0.05,
+    target_base_height_phase1=0.45,
+    target_base_height_phase3=0.65,
+  )
+
+  assert reward[0].item() > 0.0
+  assert reward[1].item() > reward[0].item()
+
+
 def test_host_task_reward_does_not_pay_upright_torso_without_feet_supported_height() -> None:
   from src.tasks.velocity import mdp
 

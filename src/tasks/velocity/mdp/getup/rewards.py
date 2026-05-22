@@ -103,6 +103,19 @@ def _contact_norm(env: ManagerBasedRlEnv, sensor_name: str | None, normalize_cou
   return torch.clamp(count / max(normalize_count, 1e-6), min=0.0, max=1.0)
 
 
+def _soft_threshold_multiplier(
+  value: torch.Tensor,
+  threshold: float | None,
+  *,
+  min_multiplier: float = 0.25,
+) -> torch.Tensor:
+  """Keep terminal posture shaping dense before the strict success boundary."""
+
+  if threshold is None:
+    return torch.ones_like(value)
+  return torch.clamp(value / max(float(threshold), 1e-6), min=float(min_multiplier), max=1.0)
+
+
 def _body_quat_w(asset: Entity) -> torch.Tensor:
   quat = getattr(asset.data, "body_link_quat_w", None)
   if quat is not None:
@@ -195,8 +208,19 @@ def _host_orientation_term(
   *,
   orientation_threshold: float = 0.99,
   margin: float = 0.05,
+  min_alignment: float | None = None,
 ) -> torch.Tensor:
   alignment = _upright_alignment(projected_gravity_b)
+  if min_alignment is not None:
+    progress = torch.clamp(
+      (alignment - float(min_alignment)) / max(orientation_threshold - float(min_alignment), 1e-6),
+      min=0.0,
+      max=1.0,
+    )
+    near_terminal = torch.exp(
+      -torch.square(torch.clamp(orientation_threshold - alignment, min=0.0) / max(margin, 1e-6))
+    )
+    return torch.maximum(progress, near_terminal)
   miss = torch.clamp(orientation_threshold - alignment, min=0.0)
   return torch.exp(-torch.square(miss / max(margin, 1e-6)))
 
@@ -234,12 +258,12 @@ def host_getup_task_reward(
   foot_asset_cfg: SceneEntityCfg = _FOOT_ASSET_CFG,
   asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
 ) -> torch.Tensor:
-  """Strict HoST end-state reward (kept multiplicative for anti-reward-hack).
+  """Soft HoST end-state reward for learning stable standing.
 
-  Paid only when the policy is simultaneously upright, tall, on its feet and
-  not body-supported.  This is the *terminal* part of the get-up curriculum.
-  Use ``host_getup_lift_progress_reward`` for the dense progress signal that
-  shapes exploration from the fallen state.
+  The strict success contract lives in ``stable_getup_success_mask`` and
+  ``getup_completion_bonus``.  This reward must stay dense enough to teach the
+  policy how to rotate feet flat and spread sole contact before it reaches that
+  terminal boundary.
   """
 
   asset: Entity = env.scene[asset_cfg.name]
@@ -247,6 +271,7 @@ def host_getup_task_reward(
     asset.data.projected_gravity_b,
     orientation_threshold=orientation_threshold,
     margin=orientation_margin,
+    min_alignment=max(0.0, orientation_threshold - 2.0 * orientation_margin),
   )
   torso_height = _torso_height(env, asset_cfg=asset_cfg)
   height = _host_height_term(
@@ -264,34 +289,41 @@ def host_getup_task_reward(
   reward = orientation * height * feet_gate * body_gate
   if hand_sensor_name is not None and max_hand_contact_count is not None:
     hand_count = _contact_count(env, hand_sensor_name)
-    reward = reward * (hand_count <= float(max_hand_contact_count)).float()
+    allowed = float(max_hand_contact_count)
+    if allowed <= 0.0:
+      reward = reward * torch.clamp(1.0 - hand_count / 2.0, min=0.25, max=1.0)
+    else:
+      reward = reward * torch.clamp(1.0 - hand_count / max(2.0 * allowed, 1e-6), min=0.25, max=1.0)
   if min_foot_flatness is not None:
-    reward = reward * (host_foot_flat_reward(
+    foot_flatness = host_foot_flat_reward(
       env,
       feet_sensor_name=feet_sensor_name,
       min_height=target_base_height_phase1,
-      min_alignment=orientation_threshold,
+      min_alignment=max(0.5, orientation_threshold - orientation_margin),
       foot_asset_cfg=foot_asset_cfg,
       torso_asset_cfg=asset_cfg,
-    ) >= float(min_foot_flatness)).float()
+    )
+    reward = reward * _soft_threshold_multiplier(foot_flatness, min_foot_flatness)
   if min_foot_heading_alignment is not None:
-    reward = reward * (host_foot_heading_reward(
+    foot_heading = host_foot_heading_reward(
       env,
       feet_sensor_name=feet_sensor_name,
       min_height=target_base_height_phase1,
-      min_alignment=orientation_threshold,
+      min_alignment=max(0.5, orientation_threshold - orientation_margin),
       foot_asset_cfg=foot_asset_cfg,
       torso_asset_cfg=asset_cfg,
-    ) >= float(min_foot_heading_alignment)).float()
+    )
+    reward = reward * _soft_threshold_multiplier(foot_heading, min_foot_heading_alignment)
   if foot_geom_sensor_name is not None and min_foot_geom_contact_spread is not None:
-    reward = reward * (host_foot_contact_spread_reward(
+    foot_spread = host_foot_contact_spread_reward(
       env,
       foot_geom_sensor_name=foot_geom_sensor_name,
       feet_sensor_name=feet_sensor_name,
       min_height=target_base_height_phase1,
       target_contacts_per_foot=3.0,
       asset_cfg=asset_cfg,
-    ) >= float(min_foot_geom_contact_spread)).float()
+    )
+    reward = reward * _soft_threshold_multiplier(foot_spread, min_foot_geom_contact_spread)
   return reward
 
 
