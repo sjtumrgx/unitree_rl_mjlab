@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from mjlab.envs.mdp.actions import JointPositionAction, JointPositionActionCfg
+from src.tasks.velocity.mdp.anti_fall.events import disturbance_window_mask
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -220,6 +221,15 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
       tilt > float(self.cfg.fallen_tilt_threshold)
     )
 
+  def _recovery_mask(self) -> torch.Tensor:
+    """Use current-pose recovery deltas while fallen or inside the push recovery window."""
+
+    fallen = self._fallen_mask()
+    window_s = float(self.cfg.recovery_window_s)
+    if window_s <= 0.0:
+      return fallen
+    return fallen | disturbance_window_mask(self._env, window_s)
+
   def _compute_recovery_deltas(self, actions: torch.Tensor) -> torch.Tensor:
     deltas = actions * float(self.cfg.recovery_action_scale)
     if self.cfg.max_delta is not None:
@@ -234,7 +244,7 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     self._walking_targets[:] = self._processed_actions
     self._recovery_deltas[:] = self._compute_recovery_deltas(actions)
 
-    recovery_mask = self._fallen_mask().unsqueeze(1)
+    recovery_mask = self._recovery_mask().unsqueeze(1)
     effective = torch.where(recovery_mask, self._recovery_deltas, self._raw_actions)
     self._prev_prev_effective_actions[:] = self._prev_effective_actions
     self._prev_effective_actions[:] = self._effective_actions
@@ -244,7 +254,7 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
   def apply_actions(self) -> None:
     current_joint_pos = self._entity.data.joint_pos[:, self._target_ids]
     encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
-    recovery_mask = self._fallen_mask().unsqueeze(1)
+    recovery_mask = self._recovery_mask().unsqueeze(1)
     recovery_target = current_joint_pos + self._recovery_deltas
     target = torch.where(recovery_mask, recovery_target, self._walking_targets)
     written_delta = target - current_joint_pos
