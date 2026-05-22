@@ -555,7 +555,12 @@ class _FakeRobot:
     self.data = SimpleNamespace(
       joint_pos=torch.zeros(num_envs, 3),
       encoder_bias=torch.zeros(num_envs, 3),
+      default_joint_pos=torch.tensor([[1.0, -1.0, 0.5]]).repeat(num_envs, 1),
+      root_link_pos_w=torch.tensor([[0.0, 0.0, 0.8]]).repeat(num_envs, 1),
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 0.8]]]).repeat(num_envs, 1, 1),
+      projected_gravity_b=torch.tensor([[0.0, 0.0, -1.0]]).repeat(num_envs, 1),
     )
+    self.body_names = ["torso_link"]
     self.targets: torch.Tensor | None = None
 
   def find_joints_by_actuator_names(self, actuator_names):
@@ -571,8 +576,10 @@ class _FakeActionEnv:
   def __init__(self):
     self.num_envs = 2
     self.device = "cpu"
+    self.step_dt = 0.02
+    self.common_step_counter = 0
     self.episode_length_buf = torch.tensor([0, 31], dtype=torch.long)
-    self.scene = {"robot": _FakeRobot(self.num_envs)}
+    self.scene = {"robot": _FakeRobot(self.num_envs), "env_origins": torch.zeros(self.num_envs, 3)}
 
 
 def test_host_relative_action_zeros_delta_during_unactuated_startup() -> None:
@@ -682,6 +689,39 @@ def test_no_assist_episode_uses_play_action_scale_instead_of_curriculum_rescale(
     env._host_getup_joint_position_delta,
     torch.tensor([[0.8, -0.4, 0.2], [0.2, -0.1, 0.05]]),
   )
+
+
+def test_recovery_hybrid_action_preserves_default_offset_for_upright_walking_and_delta_for_fallen() -> None:
+  from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
+
+  env = _FakeActionEnv()
+  env.scene["robot"].data.body_link_pos_w[:, 0, 2] = torch.tensor([0.80, 0.20])
+  env.scene["robot"].data.root_link_pos_w[:, 2] = torch.tensor([0.80, 0.20])
+  action = RecoveryHybridJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=0.5,
+    use_default_offset=True,
+    recovery_use_default_offset=False,
+    recovery_window_s=0.0,
+    fallen_height_threshold=0.35,
+    fallen_tilt_threshold=0.75,
+    recovery_action_scale=1.0,
+    max_delta=0.75,
+  ).build(env)
+
+  raw = torch.tensor([[0.4, -0.4, 0.2], [2.0, -2.0, 0.5]])
+  action.process_actions(raw)
+  action.apply_actions()
+
+  target = env.scene["robot"].targets
+  assert target is not None
+  torch.testing.assert_close(target[0], torch.tensor([1.2, -1.2, 0.6]))
+  torch.testing.assert_close(target[1], torch.tensor([0.75, -0.75, 0.5]))
+  torch.testing.assert_close(env._host_getup_joint_position_delta[0], torch.tensor([1.2, -1.2, 0.6]))
+  torch.testing.assert_close(env._host_getup_joint_position_delta[1], torch.tensor([0.75, -0.75, 0.5]))
+  torch.testing.assert_close(action.effective_action[0], raw[0])
+  torch.testing.assert_close(action.effective_action[1], torch.tensor([0.75, -0.75, 0.5]))
 
 
 class _FakeContactSensor:
@@ -997,3 +1037,100 @@ def test_bfm_penalty_terms_are_negative_and_stronger_for_toe_tip_final_stance() 
   assert foot_penalty[1].item() > 0.8
   assert ankle_penalty[0].item() < 0.05
   assert ankle_penalty[1].item() > 0.5
+
+
+def test_getup_completion_bonus_requires_stable_final_foot_support_when_configured() -> None:
+  from types import SimpleNamespace
+
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+  from mjlab.utils.lab_api.math import quat_from_euler_xyz
+  from src.tasks.velocity.mdp.getup import rewards
+
+  identity = quat_from_euler_xyz(torch.tensor([0.0]), torch.tensor([0.0]), torch.tensor([0.0]))[0]
+  rolled = quat_from_euler_xyz(torch.tensor([torch.pi / 2]), torch.tensor([0.0]), torch.tensor([0.0]))[0]
+  yawed = quat_from_euler_xyz(torch.tensor([0.0]), torch.tensor([0.0]), torch.tensor([torch.pi / 2]))[0]
+  robot = SimpleNamespace(
+    data=SimpleNamespace(
+      root_link_quat_w=identity.reshape(1, 4).repeat(3, 1),
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 0.70]], [[0.0, 0.0, 0.70]], [[0.0, 0.0, 0.70]]]),
+      body_link_quat_w=torch.stack(
+        [
+          torch.stack([identity, identity], dim=0),
+          torch.stack([rolled, yawed], dim=0),
+          torch.stack([identity, identity], dim=0),
+        ],
+        dim=0,
+      ),
+      projected_gravity_b=torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]),
+    )
+  )
+  foot_geom = torch.zeros(3, 14, 1)
+  foot_geom[0, [0, 1, 2, 7, 8, 9], 0] = 1.0
+  foot_geom[1, [0, 7], 0] = 1.0
+  foot_geom[2, [0, 1, 2, 7, 8, 9], 0] = 1.0
+  env = SimpleNamespace(
+    num_envs=3,
+    device="cpu",
+    scene={
+      "robot": robot,
+      "env_origins": torch.zeros(3, 3),
+      "feet_ground_contact": SimpleNamespace(data=SimpleNamespace(found=torch.ones(3, 2, 1))),
+      "support_body_contact": SimpleNamespace(
+        data=SimpleNamespace(found=torch.tensor([[[0.0]], [[0.0]], [[1.0]]]))
+      ),
+      "hand_ground_contact": SimpleNamespace(
+        data=SimpleNamespace(found=torch.tensor([[[0.0], [0.0]], [[0.0], [0.0]], [[1.0], [0.0]]]))
+      ),
+      "foot_geom_ground_contact": SimpleNamespace(data=SimpleNamespace(found=foot_geom)),
+    },
+  )
+
+  bonus = rewards.getup_completion_bonus(
+    env,
+    torso_height_threshold=0.55,
+    feet_sensor_name="feet_ground_contact",
+    body_sensor_name="support_body_contact",
+    hand_sensor_name="hand_ground_contact",
+    foot_geom_sensor_name="foot_geom_ground_contact",
+    min_feet_contact_count=2.0,
+    max_body_support_count=0.0,
+    max_hand_contact_count=0.0,
+    min_foot_flatness=0.6,
+    min_foot_heading_alignment=0.6,
+    min_foot_geom_contact_spread=0.5,
+    foot_asset_cfg=SceneEntityCfg("robot", body_ids=[0, 1]),
+    asset_cfg=SceneEntityCfg("robot", body_ids=[0]),
+  )
+
+  assert bonus.tolist() == [pytest.approx(1.0), pytest.approx(0.0), pytest.approx(0.0)]
+
+
+def test_getup_reward_and_success_metrics_use_strict_stable_stance_contract() -> None:
+  from src.tasks.velocity import mdp
+  from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_TERRAIN_VARIANTS, unitree_g1_getup_env_cfg
+
+  for terrain in GETUP_TERRAIN_VARIANTS:
+    cfg = unitree_g1_getup_env_cfg(terrain=terrain)
+    completion = cfg.rewards["getup_completion_bonus"]
+    assert completion.func is mdp.getup_completion_bonus
+    assert completion.weight >= 5.0
+    assert completion.params["feet_sensor_name"] == "feet_ground_contact"
+    assert completion.params["body_sensor_name"] == "support_body_contact"
+    assert completion.params["hand_sensor_name"] == "hand_ground_contact"
+    assert completion.params["foot_geom_sensor_name"] == "foot_geom_ground_contact"
+    assert completion.params["min_feet_contact_count"] >= 2.0
+    assert completion.params["max_body_support_count"] <= 0.0
+    assert completion.params["max_hand_contact_count"] <= 0.0
+    assert completion.params["min_foot_flatness"] >= 0.6
+    assert completion.params["min_foot_heading_alignment"] >= 0.6
+    assert completion.params["min_foot_geom_contact_spread"] >= 0.5
+
+    assert cfg.metrics["getup_upright"].params["feet_sensor_name"] == "feet_ground_contact"
+    assert cfg.metrics["getup_success_count"].params["foot_geom_sensor_name"] == "foot_geom_ground_contact"
+    assert cfg.metrics["getup_latency"].params["max_hand_contact_count"] <= 0.0
+
+    assert cfg.rewards["host_task_reward"].params["min_feet_contact_count"] >= 2.0
+    assert cfg.rewards["host_task_reward"].params["max_body_support_count"] <= 0.0
+    assert cfg.rewards["host_foot_flat"].weight >= 3.0
+    assert cfg.rewards["host_foot_contact_spread"].weight >= 2.0
+    assert cfg.rewards["host_foot_heading"].weight >= 1.0

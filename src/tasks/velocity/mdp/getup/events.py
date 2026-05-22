@@ -14,7 +14,7 @@ from src.tasks.velocity.mdp.anti_fall.events import (
   get_antifall_state,
   reset_antifall_state,
 )
-from .metrics import _upright_alignment
+from .metrics import _upright_alignment, stable_getup_success_mask
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -210,24 +210,43 @@ def _stable_getup_success_mask(
   upright_alignment_threshold: float,
   feet_sensor_name: str | None,
   body_sensor_name: str | None,
+  hand_sensor_name: str | None = None,
+  foot_geom_sensor_name: str | None = None,
   min_feet_contact_count: float,
   max_body_support_count: float,
+  max_hand_contact_count: float | None = None,
+  min_foot_flatness: float | None = None,
+  min_foot_heading_alignment: float | None = None,
+  min_foot_geom_contact_spread: float | None = None,
+  foot_asset_cfg: SceneEntityCfg | None = None,
 ) -> torch.Tensor:
-  torso_height = _relative_torso_height(env, asset, body_ids, env_ids)
-  height_ok = torso_height > float(success_height_threshold)
-  upright = _upright_alignment(asset.data.projected_gravity_b[env_ids]) >= float(upright_alignment_threshold)
-  support_ok = torch.ones_like(height_ok, dtype=torch.bool, device=env.device)
-  if feet_sensor_name:
-    feet_found = env.scene[feet_sensor_name].data.found
-    assert feet_found is not None
-    feet_count = (feet_found[env_ids] > 0).float().flatten(start_dim=1).sum(dim=1)
-    support_ok &= feet_count >= float(min_feet_contact_count)
-  if body_sensor_name:
-    body_found = env.scene[body_sensor_name].data.found
-    assert body_found is not None
-    body_count = (body_found[env_ids] > 0).float().flatten(start_dim=1).sum(dim=1)
-    support_ok &= body_count <= float(max_body_support_count)
-  return height_ok & upright & support_ok
+  del asset
+  if isinstance(body_ids, torch.Tensor):
+    torso_asset_cfg = SceneEntityCfg("robot", body_ids=body_ids.detach().cpu().tolist())
+  else:
+    torso_asset_cfg = SceneEntityCfg("robot", body_ids=body_ids)
+  tilt_threshold = math.acos(max(min(float(upright_alignment_threshold), 1.0), -1.0))
+  return stable_getup_success_mask(
+    env,
+    env_ids,
+    tilt_threshold=tilt_threshold,
+    torso_height_threshold=success_height_threshold,
+    feet_sensor_name=feet_sensor_name,
+    body_sensor_name=body_sensor_name,
+    hand_sensor_name=hand_sensor_name,
+    foot_geom_sensor_name=foot_geom_sensor_name,
+    min_feet_contact_count=min_feet_contact_count,
+    max_body_support_count=max_body_support_count,
+    max_hand_contact_count=max_hand_contact_count,
+    min_foot_flatness=min_foot_flatness,
+    min_foot_heading_alignment=min_foot_heading_alignment,
+    min_foot_geom_contact_spread=min_foot_geom_contact_spread,
+    foot_asset_cfg=foot_asset_cfg or SceneEntityCfg(
+      "robot",
+      body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
+    ),
+    asset_cfg=torso_asset_cfg,
+  )
 
 
 def _mark_recovery_reset(
@@ -359,8 +378,26 @@ class apply_host_getup_assist_force:
     self._upright_alignment_threshold = float(cfg.params.get("upright_alignment_threshold", 0.85))
     self._feet_sensor_name = cfg.params.get("feet_sensor_name")
     self._body_sensor_name = cfg.params.get("body_sensor_name")
+    self._hand_sensor_name = cfg.params.get("hand_sensor_name")
+    self._foot_geom_sensor_name = cfg.params.get("foot_geom_sensor_name")
     self._min_feet_contact_count = float(cfg.params.get("min_feet_contact_count", 1.0))
     self._max_body_support_count = float(cfg.params.get("max_body_support_count", 1.0))
+    self._max_hand_contact_count = cfg.params.get("max_hand_contact_count")
+    if self._max_hand_contact_count is not None:
+      self._max_hand_contact_count = float(self._max_hand_contact_count)
+    self._min_foot_flatness = cfg.params.get("min_foot_flatness")
+    if self._min_foot_flatness is not None:
+      self._min_foot_flatness = float(self._min_foot_flatness)
+    self._min_foot_heading_alignment = cfg.params.get("min_foot_heading_alignment")
+    if self._min_foot_heading_alignment is not None:
+      self._min_foot_heading_alignment = float(self._min_foot_heading_alignment)
+    self._min_foot_geom_contact_spread = cfg.params.get("min_foot_geom_contact_spread")
+    if self._min_foot_geom_contact_spread is not None:
+      self._min_foot_geom_contact_spread = float(self._min_foot_geom_contact_spread)
+    self._foot_asset_cfg = cfg.params.get(
+      "foot_asset_cfg",
+      SceneEntityCfg("robot", body_names=("left_ankle_roll_link", "right_ankle_roll_link")),
+    )
     self._no_assist_probability = float(cfg.params.get("no_assist_probability", 0.0))
     self._no_assist_probability_initial = float(
       cfg.params.get(
@@ -394,8 +431,15 @@ class apply_host_getup_assist_force:
     upright_alignment_threshold: float = 0.85,
     feet_sensor_name: str | None = None,
     body_sensor_name: str | None = None,
+    hand_sensor_name: str | None = None,
+    foot_geom_sensor_name: str | None = None,
     min_feet_contact_count: float = 1.0,
     max_body_support_count: float = 1.0,
+    max_hand_contact_count: float | None = None,
+    min_foot_flatness: float | None = None,
+    min_foot_heading_alignment: float | None = None,
+    min_foot_geom_contact_spread: float | None = None,
+    foot_asset_cfg: SceneEntityCfg | None = None,
     taper_start_height: float = 0.45,
     taper_end_height: float = 0.70,
     no_assist_probability: float = 0.0,
@@ -433,8 +477,15 @@ class apply_host_getup_assist_force:
         upright_alignment_threshold=upright_alignment_threshold,
         feet_sensor_name=feet_sensor_name,
         body_sensor_name=body_sensor_name,
+        hand_sensor_name=hand_sensor_name,
+        foot_geom_sensor_name=foot_geom_sensor_name,
         min_feet_contact_count=min_feet_contact_count,
         max_body_support_count=max_body_support_count,
+        max_hand_contact_count=max_hand_contact_count,
+        min_foot_flatness=min_foot_flatness,
+        min_foot_heading_alignment=min_foot_heading_alignment,
+        min_foot_geom_contact_spread=min_foot_geom_contact_spread,
+        foot_asset_cfg=foot_asset_cfg,
       )
     else:
       succeeded_now = torso_height > float(success_height_threshold)
@@ -499,8 +550,15 @@ class apply_host_getup_assist_force:
         upright_alignment_threshold=self._upright_alignment_threshold,
         feet_sensor_name=self._feet_sensor_name,
         body_sensor_name=self._body_sensor_name,
+        hand_sensor_name=self._hand_sensor_name,
+        foot_geom_sensor_name=self._foot_geom_sensor_name,
         min_feet_contact_count=self._min_feet_contact_count,
         max_body_support_count=self._max_body_support_count,
+        max_hand_contact_count=self._max_hand_contact_count,
+        min_foot_flatness=self._min_foot_flatness,
+        min_foot_heading_alignment=self._min_foot_heading_alignment,
+        min_foot_geom_contact_spread=self._min_foot_geom_contact_spread,
+        foot_asset_cfg=self._foot_asset_cfg,
       )
       succeeded = state["episode_success"][env_ids_t] | current_stable_success
     if torch.any(succeeded):

@@ -12,7 +12,7 @@ from src.tasks.velocity import mdp
 from src.tasks.velocity.config.g1.env_cfgs import (
   unitree_g1_flat_env_cfg,
 )
-from src.tasks.velocity.mdp.getup.actions import HostRelativeJointPositionActionCfg
+from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
 
 _ALLOWED_ACTOR_TERMS = (
   "base_ang_vel",
@@ -174,12 +174,18 @@ def _configure_push_profile(
   *,
   interval_range_s: tuple[float, float],
   velocity_range: dict[str, tuple[float, float]],
+  recovery_window_s: float | None = None,
+  active: bool | None = None,
 ) -> None:
   push_event = cfg.events.get("push_robot")
   if push_event is None:
     return
   push_event.interval_range_s = interval_range_s
   push_event.params["velocity_range"] = dict(velocity_range)
+  if recovery_window_s is not None:
+    push_event.params["recovery_window_s"] = float(recovery_window_s)
+  if active is not None:
+    push_event.params["active"] = bool(active)
 
 
 def _current_reset_ranges(
@@ -467,6 +473,7 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
     _HOST_GETUP_INITIAL_ACTION_SCALE,
     _HOST_GETUP_MAX_ACTION_DELTA,
     _HOST_GETUP_MIN_ACTION_SCALE,
+    _HOST_GETUP_STABLE_SUCCESS_PARAMS,
     _HOST_GETUP_UNACTUATED_TIMESTEPS,
     _add_getup_stall_guard,
     _add_support_body_contact_sensor,
@@ -484,11 +491,17 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
   cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 256)
   cfg.host_unactuated_timesteps = _HOST_GETUP_UNACTUATED_TIMESTEPS  # type: ignore[attr-defined]
   cfg.host_reward_groups = ("task", "regu", "style", "target", "antifall")  # type: ignore[attr-defined]
-  cfg.actions["joint_pos"] = HostRelativeJointPositionActionCfg(
+  stage4b_action = unitree_g1_antifall_stage4b_env_cfg(play=True).actions["joint_pos"]
+  cfg.actions["joint_pos"] = RecoveryHybridJointPositionActionCfg(
     entity_name="robot",
     actuator_names=(".*",),
-    scale=1.0,
-    unactuated_timesteps=_HOST_GETUP_UNACTUATED_TIMESTEPS,
+    scale=stage4b_action.scale,
+    use_default_offset=True,
+    recovery_use_default_offset=False,
+    recovery_window_s=_RECOVERY_WINDOW_S,
+    fallen_height_threshold=0.35,
+    fallen_tilt_threshold=0.75,
+    recovery_action_scale=1.0,
     max_delta=_HOST_GETUP_MAX_ACTION_DELTA,
   )
   _tune_command_ranges(
@@ -516,6 +529,8 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
       "pitch": (-1.2, 1.2),
       "yaw": (-1.4, 1.4),
     },
+    recovery_window_s=_RECOVERY_WINDOW_S,
+    active=True,
   )
   _add_support_depth_camera(cfg)
   _add_support_body_contact_sensor(cfg)
@@ -547,10 +562,7 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
         "no_orientation_gate": True,
         "stable_success_required": True,
         "upright_alignment_threshold": 0.85,
-        "feet_sensor_name": "feet_ground_contact",
-        "body_sensor_name": "support_body_contact",
-        "min_feet_contact_count": 1.0,
-        "max_body_support_count": 1.0,
+        **_HOST_GETUP_STABLE_SUCCESS_PARAMS,
         "taper_start_height": 0.35,
         "taper_end_height": GETUP_SUCCESS_TORSO_HEIGHT,
         "no_assist_probability_initial": 0.10,

@@ -156,6 +156,24 @@ _HOST_GETUP_TARGET_JOINT_ANGLES = {
 }
 _HOST_GETUP_STYLE_JOINT_NAMES = tuple(_HOST_GETUP_TARGET_JOINT_ANGLES)
 
+_HOST_GETUP_STABLE_SUCCESS_PARAMS = {
+  "feet_sensor_name": "feet_ground_contact",
+  "body_sensor_name": "support_body_contact",
+  "hand_sensor_name": "hand_ground_contact",
+  "foot_geom_sensor_name": "foot_geom_ground_contact",
+  "min_feet_contact_count": 2.0,
+  "max_body_support_count": 0.0,
+  "max_hand_contact_count": 0.0,
+  "min_foot_flatness": 0.6,
+  "min_foot_heading_alignment": 0.6,
+  "min_foot_geom_contact_spread": 0.5,
+  "foot_asset_cfg": SceneEntityCfg(
+    "robot",
+    body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
+  ),
+  "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+}
+
 
 
 _HOST_GETUP_TERRAINS = (
@@ -363,24 +381,15 @@ def _add_support_body_contact_sensor(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.metrics["getup_upright"] = MetricsTermCfg(
     func=mdp.getup_upright,
-    params={
-      "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
+    params={"torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT, **_HOST_GETUP_STABLE_SUCCESS_PARAMS},
   )
   cfg.metrics["getup_success_count"] = MetricsTermCfg(
     func=mdp.getup_success_count,
-    params={
-      "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
+    params={"torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT, **_HOST_GETUP_STABLE_SUCCESS_PARAMS},
   )
   cfg.metrics["getup_latency"] = MetricsTermCfg(
     func=mdp.getup_latency,
-    params={
-      "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
-    },
+    params={"torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT, **_HOST_GETUP_STABLE_SUCCESS_PARAMS},
   )
   cfg.metrics["pelvis_clearance_violation"] = MetricsTermCfg(
     func=mdp.pelvis_clearance_violation,
@@ -453,15 +462,11 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
     func=mdp.host_getup_task_reward,
     weight=2.5,
     params={
-      "feet_sensor_name": "feet_ground_contact",
-      "body_sensor_name": "support_body_contact",
+      **_HOST_GETUP_STABLE_SUCCESS_PARAMS,
       "orientation_threshold": 0.99,
       "orientation_margin": 0.05,
       "target_base_height_phase1": 0.45,
       "target_base_height_phase3": 0.65,
-      "min_feet_contact_count": 1.0,
-      "max_body_support_count": 1.0,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )
   # Dense progress signal that survives the fallen-state zero-gradient trap.
@@ -573,7 +578,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_foot_contact_spread"] = RewardTermCfg(
     func=mdp.host_foot_contact_spread_reward,
-    weight=1.4,
+    weight=2.0,
     params={
       "foot_geom_sensor_name": "foot_geom_ground_contact",
       "feet_sensor_name": "feet_ground_contact",
@@ -584,7 +589,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_foot_flat"] = RewardTermCfg(
     func=mdp.host_foot_flat_reward,
-    weight=2.0,
+    weight=3.0,
     params={
       "feet_sensor_name": "feet_ground_contact",
       "min_height": 0.45,
@@ -598,7 +603,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_foot_heading"] = RewardTermCfg(
     func=mdp.host_foot_heading_reward,
-    weight=0.6,
+    weight=1.0,
     params={
       "feet_sensor_name": "feet_ground_contact",
       "min_height": 0.45,
@@ -612,7 +617,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_natural_stand_pose"] = RewardTermCfg(
     func=mdp.host_natural_stand_pose_reward,
-    weight=2.0,
+    weight=2.5,
     params={
       "joint_names": _HOST_GETUP_STYLE_JOINT_NAMES,
       "target_joint_angles": dict(_HOST_GETUP_TARGET_JOINT_ANGLES),
@@ -675,10 +680,11 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["getup_completion_bonus"] = RewardTermCfg(
     func=mdp.getup_completion_bonus,
-    weight=3.0,
+    weight=5.0,
     params={
+      "tilt_threshold": 0.3,
       "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
-      "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+      **_HOST_GETUP_STABLE_SUCCESS_PARAMS,
     },
   )
 
@@ -735,10 +741,7 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
         "no_orientation_gate": True,
         "stable_success_required": True,
         "upright_alignment_threshold": 0.85,
-        "feet_sensor_name": "feet_ground_contact",
-        "body_sensor_name": "support_body_contact",
-        "min_feet_contact_count": 1.0,
-        "max_body_support_count": 1.0,
+        **_HOST_GETUP_STABLE_SUCCESS_PARAMS,
         # Taper the crutch before the success band.  This keeps the vertical
         # pull useful for early exploration but prevents train-only external
         # force from carrying the policy through the actual upright success.

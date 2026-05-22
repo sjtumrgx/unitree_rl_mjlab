@@ -124,8 +124,11 @@ def push_by_setting_velocity_with_history(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,
   velocity_range: dict[str, tuple[float, float]],
+  recovery_window_s: float | None = None,
+  active: bool = False,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
+  del recovery_window_s
   if env_ids.numel() == 0:
     return
   asset = env.scene[asset_cfg.name]
@@ -145,7 +148,7 @@ def push_by_setting_velocity_with_history(
     env_ids,
     magnitude=magnitude,
     kind=DISTURBANCE_PUSH,
-    active=False,
+    active=active,
   )
 
 

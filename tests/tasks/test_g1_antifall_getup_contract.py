@@ -33,7 +33,7 @@ def test_antifall_getup_env_combines_walking_push_and_fallen_recovery_contracts(
   assert reset_params["hard_pose_range"]["roll"][0] <= -2.0
   assert reset_params["hard_pose_range"]["pitch"][1] >= 2.0
 
-  assert cfg.actions["joint_pos"].__class__.__name__ == "HostRelativeJointPositionActionCfg"
+  assert cfg.actions["joint_pos"].__class__.__name__ == "RecoveryHybridJointPositionActionCfg"
   assert cfg.actions["joint_pos"].max_delta <= 1.0
   assert cfg.observations["actor"].terms["actions"].func is mdp.host_effective_actions
 
@@ -65,3 +65,27 @@ def test_antifall_getup_play_cfg_preserves_evaluation_disturbances_and_contact_h
   assert "push_robot" in cfg.events
   assert cfg.sim.nconmax >= 256
   assert cfg.events["reset_base"].params["hard_reset_prob"] >= 0.25
+
+
+def test_antifall_getup_uses_hybrid_action_to_preserve_warmstart_walking() -> None:
+  from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
+
+  cfg = load_env_cfg(TASK_ID)
+  action = cfg.actions["joint_pos"]
+
+  assert isinstance(action, RecoveryHybridJointPositionActionCfg)
+  assert action.use_default_offset is True
+  assert action.recovery_use_default_offset is False
+  assert action.recovery_window_s >= 2.0
+  assert action.fallen_height_threshold <= 0.4
+  assert action.fallen_tilt_threshold >= 0.7
+  assert action.max_delta <= 1.0
+  assert action.scale != 1.0
+
+
+def test_antifall_getup_push_profile_marks_bfm_style_recovery_window() -> None:
+  cfg = load_env_cfg(TASK_ID)
+  push = cfg.events["push_robot"]
+
+  assert push.params["recovery_window_s"] >= 2.0
+  assert push.params["active"] is True

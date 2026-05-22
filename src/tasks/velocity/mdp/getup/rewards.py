@@ -219,12 +219,19 @@ def host_getup_task_reward(
   env: ManagerBasedRlEnv,
   feet_sensor_name: str,
   body_sensor_name: str,
+  hand_sensor_name: str | None = None,
+  foot_geom_sensor_name: str | None = None,
   orientation_threshold: float = 0.99,
   orientation_margin: float = 0.05,
   target_base_height_phase1: float = 0.45,
   target_base_height_phase3: float = 0.65,
   min_feet_contact_count: float = 1.0,
   max_body_support_count: float = 1.0,
+  max_hand_contact_count: float | None = None,
+  min_foot_flatness: float | None = None,
+  min_foot_heading_alignment: float | None = None,
+  min_foot_geom_contact_spread: float | None = None,
+  foot_asset_cfg: SceneEntityCfg = _FOOT_ASSET_CFG,
   asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
 ) -> torch.Tensor:
   """Strict HoST end-state reward (kept multiplicative for anti-reward-hack).
@@ -250,8 +257,42 @@ def host_getup_task_reward(
   feet_contact = _contact_count(env, feet_sensor_name)
   body_support = _contact_count(env, body_sensor_name)
   feet_gate = torch.clamp(feet_contact / max(min_feet_contact_count, 1e-6), min=0.0, max=1.0)
-  body_gate = 1.0 - torch.clamp(body_support / max(max_body_support_count, 1e-6), min=0.0, max=1.0)
-  return orientation * height * feet_gate * body_gate
+  if max_body_support_count <= 0.0:
+    body_gate = (body_support <= 0.0).float()
+  else:
+    body_gate = 1.0 - torch.clamp(body_support / max(max_body_support_count, 1e-6), min=0.0, max=1.0)
+  reward = orientation * height * feet_gate * body_gate
+  if hand_sensor_name is not None and max_hand_contact_count is not None:
+    hand_count = _contact_count(env, hand_sensor_name)
+    reward = reward * (hand_count <= float(max_hand_contact_count)).float()
+  if min_foot_flatness is not None:
+    reward = reward * (host_foot_flat_reward(
+      env,
+      feet_sensor_name=feet_sensor_name,
+      min_height=target_base_height_phase1,
+      min_alignment=orientation_threshold,
+      foot_asset_cfg=foot_asset_cfg,
+      torso_asset_cfg=asset_cfg,
+    ) >= float(min_foot_flatness)).float()
+  if min_foot_heading_alignment is not None:
+    reward = reward * (host_foot_heading_reward(
+      env,
+      feet_sensor_name=feet_sensor_name,
+      min_height=target_base_height_phase1,
+      min_alignment=orientation_threshold,
+      foot_asset_cfg=foot_asset_cfg,
+      torso_asset_cfg=asset_cfg,
+    ) >= float(min_foot_heading_alignment)).float()
+  if foot_geom_sensor_name is not None and min_foot_geom_contact_spread is not None:
+    reward = reward * (host_foot_contact_spread_reward(
+      env,
+      foot_geom_sensor_name=foot_geom_sensor_name,
+      feet_sensor_name=feet_sensor_name,
+      min_height=target_base_height_phase1,
+      target_contacts_per_foot=3.0,
+      asset_cfg=asset_cfg,
+    ) >= float(min_foot_geom_contact_spread)).float()
+  return reward
 
 
 def host_getup_lift_progress_reward(
@@ -1210,11 +1251,33 @@ def getup_completion_bonus(
   env: ManagerBasedRlEnv,
   tilt_threshold: float = 0.3,
   torso_height_threshold: float = 0.55,
+  feet_sensor_name: str | None = None,
+  body_sensor_name: str | None = None,
+  hand_sensor_name: str | None = None,
+  foot_geom_sensor_name: str | None = None,
+  min_feet_contact_count: float = 0.0,
+  max_body_support_count: float | None = None,
+  max_hand_contact_count: float | None = None,
+  min_foot_flatness: float | None = None,
+  min_foot_heading_alignment: float | None = None,
+  min_foot_geom_contact_spread: float | None = None,
+  foot_asset_cfg: SceneEntityCfg = _FOOT_ASSET_CFG,
   asset_cfg: SceneEntityCfg = _TORSO_ASSET_CFG,
 ) -> torch.Tensor:
   return getup_upright(
     env,
     tilt_threshold=tilt_threshold,
     torso_height_threshold=torso_height_threshold,
+    feet_sensor_name=feet_sensor_name,
+    body_sensor_name=body_sensor_name,
+    hand_sensor_name=hand_sensor_name,
+    foot_geom_sensor_name=foot_geom_sensor_name,
+    min_feet_contact_count=min_feet_contact_count,
+    max_body_support_count=max_body_support_count,
+    max_hand_contact_count=max_hand_contact_count,
+    min_foot_flatness=min_foot_flatness,
+    min_foot_heading_alignment=min_foot_heading_alignment,
+    min_foot_geom_contact_spread=min_foot_geom_contact_spread,
+    foot_asset_cfg=foot_asset_cfg,
     asset_cfg=asset_cfg,
   )
