@@ -724,7 +724,6 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
   actor_obs.history_length = None
   for term in actor_obs.terms.values():
     term.history_length = int(actor_history_length or 1)
-  _restore_getup_actor_height_scan(cfg, history_length=int(actor_history_length or 1))
   cfg.host_unactuated_timesteps = _HOST_GETUP_UNACTUATED_TIMESTEPS  # type: ignore[attr-defined]
   cfg.host_reward_groups = ("task", "regu", "style", "target")  # type: ignore[attr-defined]
   cfg.actions["joint_pos"] = HostRelativeJointPositionActionCfg(
@@ -739,6 +738,7 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
   cfg.curriculum.pop("command_vel", None)
   _add_support_depth_camera(cfg)
   _add_support_body_contact_sensor(cfg)
+  _restore_getup_actor_height_scan(cfg, history_length=int(actor_history_length or 1))
   _add_getup_stall_guard(cfg)
   _apply_getup_nan_safety(cfg)
   _apply_host_effective_action_observations(cfg)

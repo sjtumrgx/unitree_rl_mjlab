@@ -71,6 +71,10 @@ def test_getup_actor_observes_height_scan_for_single_policy_terrain_transfer():
     assert actor_term.params == critic_term.params
     assert actor_term.history_length == 6
 
+    actor_term_names = list(cfg.observations["actor"].terms)
+    assert actor_term_names[-1] == "height_scan"
+    assert actor_term_names.index("height_scan") > actor_term_names.index("bfm_local_body_state")
+
 
 def test_getup_config_exposes_hand_and_foot_posture_contracts():
   from src.tasks.velocity import mdp
