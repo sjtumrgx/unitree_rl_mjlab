@@ -278,17 +278,21 @@ def test_configured_assist_is_zero_by_reported_getup_success_height() -> None:
   assert assist_params["taper_end_height"] <= reported_success_height
 
 
-def test_configured_assist_prioritizes_no_assist_play_transfer() -> None:
+def test_configured_assist_uses_gradual_no_assist_curriculum_after_reset_order_fix() -> None:
   cfg = unitree_g1_getup_env_cfg("ground")
   assist_params = cfg.events["getup_assist_force"].params
 
-  assert assist_params["initial_force_n"] <= 80.0
+  assert assist_params["initial_force_n"] == pytest.approx(120.0)
   assert assist_params["action_scale_decay"] == pytest.approx(0.0)
   assert assist_params["min_action_scale"] == pytest.approx(1.0)
-  assert assist_params["no_assist_probability_initial"] >= 0.6
-  assert assist_params["no_assist_probability"] == pytest.approx(1.0)
-  assert assist_params["no_assist_ramp_start_progress"] == pytest.approx(0.0)
-  assert assist_params["no_assist_ramp_end_progress"] <= 0.5
+  # After the play reset-order fix, keep the empirically stable gradual schedule:
+  # early training still gets assisted recovery examples, while late training
+  # ramps mostly to no-assist play dynamics instead of immediately dropping
+  # the bootstrap and catastrophically forgetting platform recovery.
+  assert assist_params["no_assist_probability_initial"] == pytest.approx(0.05)
+  assert assist_params["no_assist_probability"] == pytest.approx(0.8)
+  assert assist_params["no_assist_ramp_start_progress"] == pytest.approx(0.5)
+  assert assist_params["no_assist_ramp_end_progress"] == pytest.approx(1.0)
 
 
 def test_no_assist_episode_mix_ramps_with_assist_force_decay() -> None:

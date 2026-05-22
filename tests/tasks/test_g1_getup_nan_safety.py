@@ -503,7 +503,7 @@ def test_getup_assist_uses_host_curriculum_not_fixed_force_crutch() -> None:
   assert hasattr(mdp, "apply_host_getup_assist_force")
   assist = cfg.events["getup_assist_force"]
   assert assist.func is mdp.apply_host_getup_assist_force
-  assert assist.params["initial_force_n"] == 80.0
+  assert assist.params["initial_force_n"] == 120.0
   assert assist.params["force_decay_n"] == 20
   assert assist.params["action_scale_decay"] == 0.0
   assert assist.params["min_action_scale"] == 1.0

@@ -46,7 +46,7 @@ HOST_SOURCE_TASKS = {
 def _getup_initial_assist_force(terrain: str) -> float:
   """Small bootstrap force; play-like no-assist episodes remain the main path."""
 
-  return min(float(HOST_TERRAIN_PARITY[terrain]["pull_force_n"]), 80.0)
+  return float(HOST_TERRAIN_PARITY[terrain]["pull_force_n"])
 
 
 HOST_TERRAIN_PARITY = {
@@ -809,10 +809,10 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
         # terrain while play-like/no-assist rollouts stayed around 0.6 success.
         # Bias episodes toward BFM-style unassisted recovery and keep the action
         # scale identical to play mode.
-        "no_assist_probability_initial": 0.60,
-        "no_assist_probability": 1.0,
-        "no_assist_ramp_start_progress": 0.0,
-        "no_assist_ramp_end_progress": 0.5,
+        "no_assist_probability_initial": 0.05,
+        "no_assist_probability": 0.8,
+        "no_assist_ramp_start_progress": 0.5,
+        "no_assist_ramp_end_progress": 1.0,
         "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
       },
     )
