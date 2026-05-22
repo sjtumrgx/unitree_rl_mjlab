@@ -167,12 +167,24 @@ _HOST_GETUP_STABLE_SUCCESS_PARAMS = {
   "min_foot_flatness": 0.6,
   "min_foot_heading_alignment": 0.6,
   "min_foot_geom_contact_spread": 0.5,
-  "foot_asset_cfg": SceneEntityCfg(
-    "robot",
-    body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
-  ),
-  "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
 }
+
+
+def _host_getup_stable_success_params() -> dict:
+  """Return fresh stable-success params.
+
+  SceneEntityCfg.resolve() mutates resolved ids in-place during manager setup, so
+  reward/metric/event terms must not share the same SceneEntityCfg instances.
+  """
+
+  return {
+    **_HOST_GETUP_STABLE_SUCCESS_PARAMS,
+    "foot_asset_cfg": SceneEntityCfg(
+      "robot",
+      body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
+    ),
+    "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+  }
 
 
 
@@ -381,15 +393,15 @@ def _add_support_body_contact_sensor(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.metrics["getup_upright"] = MetricsTermCfg(
     func=mdp.getup_upright,
-    params={"torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT, **_HOST_GETUP_STABLE_SUCCESS_PARAMS},
+    params={"torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT, **_host_getup_stable_success_params()},
   )
   cfg.metrics["getup_success_count"] = MetricsTermCfg(
     func=mdp.getup_success_count,
-    params={"torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT, **_HOST_GETUP_STABLE_SUCCESS_PARAMS},
+    params={"torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT, **_host_getup_stable_success_params()},
   )
   cfg.metrics["getup_latency"] = MetricsTermCfg(
     func=mdp.getup_latency,
-    params={"torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT, **_HOST_GETUP_STABLE_SUCCESS_PARAMS},
+    params={"torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT, **_host_getup_stable_success_params()},
   )
   cfg.metrics["pelvis_clearance_violation"] = MetricsTermCfg(
     func=mdp.pelvis_clearance_violation,
@@ -462,7 +474,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
     func=mdp.host_getup_task_reward,
     weight=2.5,
     params={
-      **_HOST_GETUP_STABLE_SUCCESS_PARAMS,
+      **_host_getup_stable_success_params(),
       "orientation_threshold": 0.99,
       "orientation_margin": 0.05,
       "target_base_height_phase1": 0.45,
@@ -684,7 +696,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
     params={
       "tilt_threshold": 0.3,
       "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
-      **_HOST_GETUP_STABLE_SUCCESS_PARAMS,
+      **_host_getup_stable_success_params(),
     },
   )
 
@@ -741,7 +753,7 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
         "no_orientation_gate": True,
         "stable_success_required": True,
         "upright_alignment_threshold": 0.85,
-        **_HOST_GETUP_STABLE_SUCCESS_PARAMS,
+        **_host_getup_stable_success_params(),
         # Taper the crutch before the success band.  This keeps the vertical
         # pull useful for early exploration but prevents train-only external
         # force from carrying the policy through the actual upright success.

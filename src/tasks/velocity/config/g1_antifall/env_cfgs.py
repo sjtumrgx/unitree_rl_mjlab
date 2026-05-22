@@ -473,7 +473,6 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
     _HOST_GETUP_INITIAL_ACTION_SCALE,
     _HOST_GETUP_MAX_ACTION_DELTA,
     _HOST_GETUP_MIN_ACTION_SCALE,
-    _HOST_GETUP_STABLE_SUCCESS_PARAMS,
     _HOST_GETUP_UNACTUATED_TIMESTEPS,
     _add_getup_stall_guard,
     _add_support_body_contact_sensor,
@@ -481,6 +480,7 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
     _apply_getup_nan_safety,
     _apply_host_effective_action_observations,
     _apply_host_getup_reward_stack,
+    _host_getup_stable_success_params,
   )
 
   cfg = unitree_g1_antifall_stage4b_env_cfg(play=play)
@@ -562,7 +562,7 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
         "no_orientation_gate": True,
         "stable_success_required": True,
         "upright_alignment_threshold": 0.85,
-        **_HOST_GETUP_STABLE_SUCCESS_PARAMS,
+        **_host_getup_stable_success_params(),
         "taper_start_height": 0.35,
         "taper_end_height": GETUP_SUCCESS_TORSO_HEIGHT,
         "no_assist_probability_initial": 0.10,

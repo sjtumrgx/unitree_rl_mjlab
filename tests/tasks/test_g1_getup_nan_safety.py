@@ -1105,6 +1105,33 @@ def test_getup_completion_bonus_requires_stable_final_foot_support_when_configur
   assert bonus.tolist() == [pytest.approx(1.0), pytest.approx(0.0), pytest.approx(0.0)]
 
 
+
+def test_getup_stable_success_terms_do_not_share_mutable_scene_entity_cfgs() -> None:
+  from src.tasks.velocity.config.g1_getup.env_cfgs import unitree_g1_getup_env_cfg
+
+  cfg = unitree_g1_getup_env_cfg("ground")
+  terms = [
+    cfg.rewards["host_task_reward"],
+    cfg.rewards["getup_completion_bonus"],
+    cfg.events["getup_assist_force"],
+    cfg.metrics["getup_upright"],
+    cfg.metrics["getup_success_count"],
+    cfg.metrics["getup_latency"],
+  ]
+
+  foot_cfgs = [term.params["foot_asset_cfg"] for term in terms]
+  torso_cfgs = [term.params["asset_cfg"] for term in terms]
+
+  assert len({id(cfg) for cfg in foot_cfgs}) == len(foot_cfgs)
+  assert len({id(cfg) for cfg in torso_cfgs}) == len(torso_cfgs)
+
+  first_foot_cfg = foot_cfgs[0]
+  first_foot_cfg.body_ids = [6, 12]
+
+  for other_foot_cfg in foot_cfgs[1:]:
+    assert getattr(other_foot_cfg, "body_ids", None) != [6, 12]
+
+
 def test_getup_reward_and_success_metrics_use_strict_stable_stance_contract() -> None:
   from src.tasks.velocity import mdp
   from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_TERRAIN_VARIANTS, unitree_g1_getup_env_cfg

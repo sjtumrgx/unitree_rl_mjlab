@@ -60,6 +60,31 @@ def test_antifall_getup_env_combines_walking_push_and_fallen_recovery_contracts(
   assert {"support_body_contact", "hand_ground_contact", "foot_geom_ground_contact"}.issubset(sensor_names)
 
 
+
+def test_antifall_getup_stable_success_terms_do_not_share_mutable_scene_entity_cfgs() -> None:
+  cfg = load_env_cfg(TASK_ID)
+  terms = [
+    cfg.rewards["host_task_reward"],
+    cfg.rewards["getup_completion_bonus"],
+    cfg.events["getup_assist_force"],
+    cfg.metrics["getup_upright"],
+    cfg.metrics["getup_success_count"],
+    cfg.metrics["getup_latency"],
+  ]
+
+  foot_cfgs = [term.params["foot_asset_cfg"] for term in terms]
+  torso_cfgs = [term.params["asset_cfg"] for term in terms]
+
+  assert len({id(cfg) for cfg in foot_cfgs}) == len(foot_cfgs)
+  assert len({id(cfg) for cfg in torso_cfgs}) == len(torso_cfgs)
+
+  first_torso_cfg = torso_cfgs[0]
+  first_torso_cfg.body_ids = [1]
+
+  for other_torso_cfg in torso_cfgs[1:]:
+    assert getattr(other_torso_cfg, "body_ids", None) != [1]
+
+
 def test_antifall_getup_play_cfg_preserves_evaluation_disturbances_and_contact_headroom() -> None:
   cfg = load_env_cfg(TASK_ID, play=True)
   assert "push_robot" in cfg.events
