@@ -52,6 +52,26 @@ def test_getup_actor_and_critic_include_bfm_local_body_state_observation():
   assert actor_terms["bfm_local_body_state"].history_length == 0
 
 
+
+def test_getup_actor_observes_height_scan_for_single_policy_terrain_transfer():
+  from src.tasks.velocity import mdp
+  from src.tasks.velocity.config.g1_getup.env_cfgs import (
+    GETUP_TERRAIN_VARIANTS,
+    unitree_g1_getup_env_cfg,
+  )
+
+  for terrain in GETUP_TERRAIN_VARIANTS:
+    cfg = unitree_g1_getup_env_cfg(terrain=terrain)
+    actor_term = cfg.observations["actor"].terms.get("height_scan")
+    critic_term = cfg.observations["critic"].terms.get("height_scan")
+
+    assert actor_term is not None
+    assert critic_term is not None
+    assert actor_term.func is mdp.height_scan
+    assert actor_term.params == critic_term.params
+    assert actor_term.history_length == 6
+
+
 def test_getup_config_exposes_hand_and_foot_posture_contracts():
   from src.tasks.velocity import mdp
   from src.tasks.velocity.config.g1_getup.env_cfgs import unitree_g1_getup_env_cfg
@@ -408,7 +428,10 @@ def _joint_names_from_reward_params(cfg) -> set[str]:
 
 
 def test_getup_actor_history_and_unactuated_contract_match_host_ground() -> None:
-  from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_TERRAIN_VARIANTS, unitree_g1_getup_env_cfg
+  from src.tasks.velocity.config.g1_getup.env_cfgs import (
+    GETUP_TERRAIN_VARIANTS,
+    unitree_g1_getup_env_cfg,
+  )
   from src.tasks.velocity.mdp.getup.actions import HostRelativeJointPositionActionCfg
 
   for terrain in GETUP_TERRAIN_VARIANTS:
@@ -537,7 +560,10 @@ def test_getup_reward_stack_replaces_reward_hacks_with_host_composite_terms() ->
 
 
 def test_getup_configured_joint_names_exist_in_active_23dof_model() -> None:
-  from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_TERRAIN_VARIANTS, unitree_g1_getup_env_cfg
+  from src.tasks.velocity.config.g1_getup.env_cfgs import (
+    GETUP_TERRAIN_VARIANTS,
+    unitree_g1_getup_env_cfg,
+  )
 
   active_joint_names = _active_g1_23dof_joint_names()
   assert "waist_pitch_joint" not in active_joint_names  # guards against using scene/full model by mistake
@@ -1222,7 +1248,10 @@ def test_getup_stable_success_terms_do_not_share_mutable_scene_entity_cfgs() -> 
 
 def test_getup_reward_and_success_metrics_use_strict_stable_stance_contract() -> None:
   from src.tasks.velocity import mdp
-  from src.tasks.velocity.config.g1_getup.env_cfgs import GETUP_TERRAIN_VARIANTS, unitree_g1_getup_env_cfg
+  from src.tasks.velocity.config.g1_getup.env_cfgs import (
+    GETUP_TERRAIN_VARIANTS,
+    unitree_g1_getup_env_cfg,
+  )
 
   for terrain in GETUP_TERRAIN_VARIANTS:
     cfg = unitree_g1_getup_env_cfg(terrain=terrain)

@@ -409,6 +409,18 @@ def _add_support_body_contact_sensor(cfg: ManagerBasedRlEnvCfg) -> None:
   )
 
 
+def _restore_getup_actor_height_scan(cfg: ManagerBasedRlEnvCfg, *, history_length: int) -> None:
+  """Expose terrain geometry to the GetUp actor for one-policy terrain transfer."""
+
+  critic_height_scan = cfg.observations["critic"].terms.get("height_scan")
+  if critic_height_scan is None:
+    return
+  cfg.observations["actor"].terms["height_scan"] = replace(
+    critic_height_scan,
+    history_length=history_length,
+  )
+
+
 
 def _add_getup_stall_guard(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.terminations.pop("fell_over", None)
@@ -712,6 +724,7 @@ def _make_g1_getup_env_cfg(terrain: str = GETUP_TRAIN_MIX_TERRAIN, play: bool = 
   actor_obs.history_length = None
   for term in actor_obs.terms.values():
     term.history_length = int(actor_history_length or 1)
+  _restore_getup_actor_height_scan(cfg, history_length=int(actor_history_length or 1))
   cfg.host_unactuated_timesteps = _HOST_GETUP_UNACTUATED_TIMESTEPS  # type: ignore[attr-defined]
   cfg.host_reward_groups = ("task", "regu", "style", "target")  # type: ignore[attr-defined]
   cfg.actions["joint_pos"] = HostRelativeJointPositionActionCfg(
