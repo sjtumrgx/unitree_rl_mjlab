@@ -23,8 +23,26 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
   sys.path.insert(0, str(_REPO_ROOT))
 
+from src.tasks.velocity import mdp  # noqa: E402
+
 SCHEMA_VERSION = "g1-antifall-getup-rollout-v1"
 TASK_ID = "Unitree-G1-AntiFall-GetUp"
+FORCED_FALL_POSE_RANGE = {
+  "x": (0.0, 0.0),
+  "y": (0.0, 0.0),
+  "z": (0.0, 0.05),
+  "roll": (-2.6, 2.6),
+  "pitch": (-2.6, 2.6),
+  "yaw": (-3.14, 3.14),
+}
+FORCED_FALL_VELOCITY_RANGE = {
+  "x": (-0.2, 0.2),
+  "y": (-0.2, 0.2),
+  "z": (-0.1, 0.1),
+  "roll": (-0.2, 0.2),
+  "pitch": (-0.2, 0.2),
+  "yaw": (-0.2, 0.2),
+}
 
 
 def _scalar(value: Any, default: float | None = None) -> float | None:
@@ -229,6 +247,38 @@ def _make_dummy_policy(agent: str, env) -> Any:
   return _Policy()
 
 
+def force_fall_reset(env: Any, *, prob: float = 1.0) -> None:
+  """Inject a deterministic near-failure reset during gate diagnostics."""
+
+  env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+  mdp.reset_root_state_mixed(
+    env,
+    env_ids,
+    nominal_pose_range=FORCED_FALL_POSE_RANGE,
+    nominal_velocity_range=FORCED_FALL_VELOCITY_RANGE,
+    hard_pose_range=FORCED_FALL_POSE_RANGE,
+    hard_velocity_range=FORCED_FALL_VELOCITY_RANGE,
+    hard_reset_prob=float(prob),
+  )
+
+
+def build_metadata_record(args: argparse.Namespace, *, num_envs: int, clip_actions: float) -> dict[str, Any]:
+  return {
+    "schema_version": SCHEMA_VERSION,
+    "type": "metadata",
+    "status": "ok",
+    "task_id": TASK_ID,
+    "mode": "train-like" if args.train_like else "play-like",
+    "agent": args.agent,
+    "checkpoint_file": str(args.checkpoint_file) if args.checkpoint_file else None,
+    "num_envs": int(num_envs),
+    "steps_requested": int(args.steps),
+    "clip_actions": clip_actions,
+    "forced_fall_step": int(args.force_fall_step) if args.force_fall_step is not None else None,
+    "forced_fall_prob": float(args.force_fall_prob),
+  }
+
+
 def _make_trained_policy(args: argparse.Namespace, env, agent_cfg):
   if args.checkpoint_file is None:
     raise ValueError("--checkpoint-file is required when --agent=trained")
@@ -281,21 +331,13 @@ def run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
   try:
     policy = _make_trained_policy(args, env, agent_cfg) if args.agent == "trained" else _make_dummy_policy(args.agent, env)
     records: list[dict[str, Any]] = [
-      {
-        "schema_version": SCHEMA_VERSION,
-        "type": "metadata",
-        "status": "ok",
-        "task_id": TASK_ID,
-        "mode": "train-like" if args.train_like else "play-like",
-        "agent": args.agent,
-        "checkpoint_file": str(args.checkpoint_file) if args.checkpoint_file else None,
-        "num_envs": int(args.num_envs),
-        "steps_requested": int(args.steps),
-        "clip_actions": agent_cfg.clip_actions,
-      }
+      build_metadata_record(args, num_envs=int(args.num_envs), clip_actions=agent_cfg.clip_actions)
     ]
     obs = env.get_observations()
     for step_index in range(int(args.steps)):
+      if args.force_fall_step is not None and step_index == int(args.force_fall_step):
+        force_fall_reset(raw_env, prob=float(args.force_fall_prob))
+        obs = env.get_observations()
       with torch.no_grad():
         action = policy(obs)
       obs, rewards, dones, extras = env.step(action)
@@ -318,6 +360,8 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--train-like", action="store_true")
   parser.add_argument("--stop-on-done", action="store_true")
   parser.add_argument("--success-threshold", type=float, default=0.8)
+  parser.add_argument("--force-fall-step", type=int, default=None)
+  parser.add_argument("--force-fall-prob", type=float, default=1.0)
   parser.add_argument("--output", type=Path, default=None)
   return parser
 

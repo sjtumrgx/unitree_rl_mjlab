@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from scripts import diagnose_antifall_getup_rollout as diag
@@ -98,3 +100,40 @@ def test_antifall_getup_summary_gates_on_tracking_not_controllable_locomotion() 
   assert summary["final_tracking_rate"] == pytest.approx(0.84)
   assert summary["post_disturbance_controllable_rate"] == pytest.approx(0.29)
   assert summary["final_controllable_rate"] == pytest.approx(0.29)
+
+
+def test_antifall_getup_forced_fall_options_are_recorded_in_metadata() -> None:
+  args = diag.build_parser().parse_args(
+    [
+      "--agent",
+      "zero",
+      "--force-fall-step",
+      "25",
+      "--force-fall-prob",
+      "0.75",
+    ]
+  )
+
+  metadata = diag.build_metadata_record(args, num_envs=4, clip_actions=2.0)
+
+  assert metadata["forced_fall_step"] == 25
+  assert metadata["forced_fall_prob"] == pytest.approx(0.75)
+
+
+def test_antifall_getup_force_fall_reset_marks_near_failure_disturbance(monkeypatch) -> None:
+  calls = []
+
+  def fake_reset_root_state_mixed(env, env_ids, **kwargs):
+    calls.append((env, env_ids, kwargs))
+
+  monkeypatch.setattr(diag.mdp, "reset_root_state_mixed", fake_reset_root_state_mixed)
+  env = SimpleNamespace(num_envs=3, device="cpu")
+
+  diag.force_fall_reset(env, prob=0.5)
+
+  assert len(calls) == 1
+  _, env_ids, kwargs = calls[0]
+  assert env_ids.tolist() == [0, 1, 2]
+  assert kwargs["hard_reset_prob"] == pytest.approx(0.5)
+  assert kwargs["hard_pose_range"]["roll"][0] <= -2.0
+  assert kwargs["hard_pose_range"]["pitch"][1] >= 2.0
