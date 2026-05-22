@@ -709,11 +709,11 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_foot_flat"] = RewardTermCfg(
     func=mdp.host_foot_flat_reward,
-    weight=3.0,
+    weight=4.0,
     params={
       "feet_sensor_name": "feet_ground_contact",
-      "min_height": 0.45,
-      "min_alignment": 0.5,
+      "min_height": 0.4,
+      "min_alignment": 0.35,
       "foot_asset_cfg": SceneEntityCfg(
         "robot",
         body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
@@ -723,11 +723,11 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_foot_heading"] = RewardTermCfg(
     func=mdp.host_foot_heading_reward,
-    weight=1.0,
+    weight=2.0,
     params={
       "feet_sensor_name": "feet_ground_contact",
-      "min_height": 0.45,
-      "min_alignment": 0.5,
+      "min_height": 0.4,
+      "min_alignment": 0.35,
       "foot_asset_cfg": SceneEntityCfg(
         "robot",
         body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
@@ -750,11 +750,11 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_foot_orientation_penalty"] = RewardTermCfg(
     func=mdp.host_foot_orientation_penalty,
-    weight=-0.8,
+    weight=-1.0,
     params={
       "feet_sensor_name": "feet_ground_contact",
-      "min_height": 0.50,
-      "min_alignment": 0.75,
+      "min_height": 0.45,
+      "min_alignment": 0.65,
       "foot_asset_cfg": SceneEntityCfg(
         "robot",
         body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
@@ -764,7 +764,7 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_ankle_deviation_penalty"] = RewardTermCfg(
     func=mdp.host_ankle_deviation_penalty,
-    weight=-1.0,
+    weight=-1.2,
     params={
       "joint_names": (
         "left_ankle_pitch_joint",
@@ -779,8 +779,8 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
         "right_ankle_roll_joint": _HOST_GETUP_TARGET_JOINT_ANGLES["right_ankle_roll_joint"],
       },
       "std": 0.35,
-      "min_height": 0.50,
-      "min_alignment": 0.75,
+      "min_height": 0.45,
+      "min_alignment": 0.65,
       "asset_cfg": SceneEntityCfg("robot"),
       "torso_asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },

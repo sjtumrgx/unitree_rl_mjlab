@@ -1031,6 +1031,28 @@ def test_getup_reward_stack_targets_no_assist_transfer_before_full_stand() -> No
   assert assist_params["no_assist_probability"] >= 0.25
 
 
+def test_getup_reward_stack_activates_foot_style_before_strict_final_upright_gate() -> None:
+  from src.tasks.velocity.config.g1_getup.env_cfgs import unitree_g1_getup_env_cfg
+
+  cfg = unitree_g1_getup_env_cfg("ground")
+
+  assert cfg.rewards["host_foot_flat"].weight >= 4.0
+  assert cfg.rewards["host_foot_flat"].params["min_height"] <= 0.4
+  assert cfg.rewards["host_foot_flat"].params["min_alignment"] <= 0.35
+
+  assert cfg.rewards["host_foot_heading"].weight >= 2.0
+  assert cfg.rewards["host_foot_heading"].params["min_height"] <= 0.4
+  assert cfg.rewards["host_foot_heading"].params["min_alignment"] <= 0.35
+
+  assert cfg.rewards["host_foot_orientation_penalty"].weight <= -1.0
+  assert cfg.rewards["host_foot_orientation_penalty"].params["min_height"] <= 0.45
+  assert cfg.rewards["host_foot_orientation_penalty"].params["min_alignment"] <= 0.65
+
+  assert cfg.rewards["host_ankle_deviation_penalty"].weight <= -1.2
+  assert cfg.rewards["host_ankle_deviation_penalty"].params["min_height"] <= 0.45
+  assert cfg.rewards["host_ankle_deviation_penalty"].params["min_alignment"] <= 0.65
+
+
 def test_host_action_smoothness_penalty_ignores_raw_policy_actions_not_executed_in_warmup() -> None:
   from src.tasks.velocity import mdp
 
