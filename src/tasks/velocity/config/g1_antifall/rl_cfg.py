@@ -35,6 +35,14 @@ def unitree_g1_antifall_getup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   return cfg
 
 
+def unitree_g1_antifall_getup_recovery_warmup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  cfg = unitree_g1_antifall_getup_ppo_runner_cfg()
+  cfg.run_name = "recovery_warmup"
+  cfg.algorithm.learning_rate = min(cfg.algorithm.learning_rate, 1.0e-4)
+  cfg.algorithm.desired_kl = min(cfg.algorithm.desired_kl, 0.003)
+  return cfg
+
+
 @dataclass
 class AntiFallCurriculumRunnerCfg(RslRlOnPolicyRunnerCfg):
   curriculum: AntiFallCurriculumCfg = field(default_factory=AntiFallCurriculumCfg)

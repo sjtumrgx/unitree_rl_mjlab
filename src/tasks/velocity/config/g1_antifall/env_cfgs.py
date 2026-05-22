@@ -757,3 +757,66 @@ def unitree_g1_antifall_getup_env_cfg(
     "asset_cfg": SceneEntityCfg("robot"),
   }
   return cfg
+
+
+def unitree_g1_antifall_getup_recovery_warmup_env_cfg(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Create a fallen-start recovery warmup with the final AntiFall-GetUp actor contract.
+
+  This is the missing bridge between the Stage4b walking actor and the full
+  walking+fall+resume task: it keeps the exact final actor/action tensor shapes
+  but removes walking commands and interval pushes so PPO first learns a floor
+  recovery prior from paired fallen presets.
+  """
+
+  from src.tasks.velocity.config.g1_getup.env_cfgs import (
+    GETUP_FALLEN_ROOT_PRESETS,
+    _GETUP_HARD_VELOCITY_RANGE,
+    _GETUP_TRAIN_PRESET_WEIGHT_STAGES,
+    _apply_zero_command_profile,
+  )
+
+  cfg = unitree_g1_antifall_getup_env_cfg(play=play, hard_reset_prob=1.0)
+  _apply_zero_command_profile(cfg)
+  cfg.events.pop("push_robot", None)
+  cfg.events.pop("mid_episode_forced_fall", None)
+  cfg.events["reset_base"].func = mdp.reset_root_state_from_presets
+  cfg.events["reset_base"].params = {
+    "presets": GETUP_FALLEN_ROOT_PRESETS,
+    "preset_weight_stages": _GETUP_TRAIN_PRESET_WEIGHT_STAGES,
+    "velocity_range": _GETUP_HARD_VELOCITY_RANGE,
+  }
+  cfg.events["reset_robot_joints"].func = mdp.reset_joints_from_presets
+  cfg.events["reset_robot_joints"].params = {
+    "position_noise_range": (-0.05, 0.05),
+    "velocity_range": (-0.5, 0.5),
+    "asset_cfg": SceneEntityCfg("robot"),
+  }
+  cfg.terminations["stalled_getup"].params["recovery_grace_s"] = 0.0
+
+  for reward_name in (
+    "track_linear_velocity",
+    "track_angular_velocity",
+    "standing_stability",
+    "upright_recoverability",
+    "recovery_quality",
+    "recovery_completion_bonus",
+    "post_recovery_resume_locomotion",
+  ):
+    cfg.rewards.pop(reward_name, None)
+
+  for reward_name, term in list(cfg.rewards.items()):
+    if term.func is mdp.recovery_phase_reward:
+      term.func = term.params.pop("reward_func")
+      for key in (
+        "fallen_height_threshold",
+        "fallen_tilt_threshold",
+        "window_s",
+        "include_disturbance_window",
+        "include_near_failure_reset_window",
+      ):
+        term.params.pop(key, None)
+
+  cfg.host_reward_groups = ("task", "regu", "style", "target")  # type: ignore[attr-defined]
+  return cfg

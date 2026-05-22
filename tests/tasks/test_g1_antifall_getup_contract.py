@@ -8,6 +8,7 @@ from src.tasks.velocity import mdp
 from src.tasks.velocity.rl.antifall_runner import AntiFallOnPolicyRunner
 
 TASK_ID = "Unitree-G1-AntiFall-GetUp"
+WARMUP_TASK_ID = "Unitree-G1-AntiFall-GetUp-RecoveryWarmup"
 
 
 def test_antifall_getup_task_is_registered_with_own_experiment() -> None:
@@ -16,6 +17,47 @@ def test_antifall_getup_task_is_registered_with_own_experiment() -> None:
   rl_cfg = load_rl_cfg(TASK_ID)
   assert rl_cfg.experiment_name == "g1_antifall_getup"
   assert rl_cfg.run_name == "antifall_getup"
+
+
+def test_antifall_getup_recovery_warmup_task_is_registered() -> None:
+  assert WARMUP_TASK_ID in list_tasks()
+  assert load_runner_cls(WARMUP_TASK_ID) is AntiFallOnPolicyRunner
+  rl_cfg = load_rl_cfg(WARMUP_TASK_ID)
+  assert rl_cfg.experiment_name == "g1_antifall_getup"
+  assert rl_cfg.run_name == "recovery_warmup"
+  assert rl_cfg.algorithm.learning_rate <= 1.0e-4
+
+
+def test_antifall_getup_recovery_warmup_keeps_final_actor_contract() -> None:
+  warmup = load_env_cfg(WARMUP_TASK_ID)
+  final = load_env_cfg(TASK_ID)
+
+  assert tuple(warmup.observations["actor"].terms) == tuple(final.observations["actor"].terms)
+  assert warmup.observations["actor"].history_length == final.observations["actor"].history_length
+  assert warmup.actions["joint_pos"].__class__ is final.actions["joint_pos"].__class__
+  assert warmup.actions["joint_pos"].max_delta == final.actions["joint_pos"].max_delta
+
+
+def test_antifall_getup_recovery_warmup_is_fallen_recovery_only() -> None:
+  cfg = load_env_cfg(WARMUP_TASK_ID)
+
+  twist = cfg.commands["twist"]
+  assert twist.rel_standing_envs == 1.0
+  assert twist.ranges.lin_vel_x == (0.0, 0.0)
+  assert twist.ranges.lin_vel_y == (0.0, 0.0)
+  assert twist.ranges.ang_vel_z == (0.0, 0.0)
+  assert "push_robot" not in cfg.events
+  assert "mid_episode_forced_fall" not in cfg.events
+
+  reset_base = cfg.events["reset_base"]
+  assert reset_base.func is mdp.reset_root_state_from_presets
+  assert reset_base.params["preset_weight_stages"][0]["weights"][-1] > 0.0
+  assert cfg.events["reset_robot_joints"].func is mdp.reset_joints_from_presets
+  assert cfg.terminations["stalled_getup"].params["recovery_grace_s"] == 0.0
+
+  assert cfg.rewards["host_lift_progress"].func is not mdp.recovery_phase_reward
+  assert "track_linear_velocity" not in cfg.rewards
+  assert "post_recovery_resume_locomotion" not in cfg.rewards
 
 
 
