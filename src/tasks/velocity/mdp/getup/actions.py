@@ -212,24 +212,13 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
       torso_height = torso_height - env_origins[:, 2]
     return torso_height
 
-  def _recovery_mask(self) -> torch.Tensor:
-    device = self._raw_actions.device
-    mask = torch.zeros(self.num_envs, dtype=torch.bool, device=device)
-    if float(self.cfg.recovery_window_s) > 0.0:
-      try:
-        from src.tasks.velocity.mdp.anti_fall.events import disturbance_window_mask
-
-        mask |= disturbance_window_mask(self._env, float(self.cfg.recovery_window_s)).to(device=device)
-      except Exception:
-        pass
-
+  def _fallen_mask(self) -> torch.Tensor:
     torso_height = self._relative_torso_height()
     projected_gravity = self._entity.data.projected_gravity_b
     tilt = torch.linalg.norm(projected_gravity[:, :2], dim=1)
-    fallen = (torso_height < float(self.cfg.fallen_height_threshold)) | (
+    return (torso_height < float(self.cfg.fallen_height_threshold)) | (
       tilt > float(self.cfg.fallen_tilt_threshold)
     )
-    return mask | fallen
 
   def _compute_recovery_deltas(self, actions: torch.Tensor) -> torch.Tensor:
     deltas = actions * float(self.cfg.recovery_action_scale)
@@ -245,7 +234,7 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     self._walking_targets[:] = self._processed_actions
     self._recovery_deltas[:] = self._compute_recovery_deltas(actions)
 
-    recovery_mask = self._recovery_mask().unsqueeze(1)
+    recovery_mask = self._fallen_mask().unsqueeze(1)
     effective = torch.where(recovery_mask, self._recovery_deltas, self._raw_actions)
     self._prev_prev_effective_actions[:] = self._prev_effective_actions
     self._prev_effective_actions[:] = self._effective_actions
@@ -255,7 +244,7 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
   def apply_actions(self) -> None:
     current_joint_pos = self._entity.data.joint_pos[:, self._target_ids]
     encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
-    recovery_mask = self._recovery_mask().unsqueeze(1)
+    recovery_mask = self._fallen_mask().unsqueeze(1)
     recovery_target = current_joint_pos + self._recovery_deltas
     target = torch.where(recovery_mask, recovery_target, self._walking_targets)
     written_delta = target - current_joint_pos

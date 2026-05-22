@@ -535,6 +535,7 @@ def unitree_g1_antifall_getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCf
   _add_support_depth_camera(cfg)
   _add_support_body_contact_sensor(cfg)
   _add_getup_stall_guard(cfg)
+  cfg.terminations["stalled_getup"].params["recovery_grace_s"] = _RECOVERY_WINDOW_S
   _apply_getup_nan_safety(cfg)
   _apply_host_effective_action_observations(cfg)
   _apply_antifall_helpers(

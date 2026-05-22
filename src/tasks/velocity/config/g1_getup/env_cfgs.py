@@ -423,6 +423,7 @@ def _add_getup_stall_guard(cfg: ManagerBasedRlEnvCfg) -> None:
       "min_steps_before_check": GETUP_STALL_MIN_STEPS,
       "progress_threshold": 0.2,
       "target_height": 0.55,
+      "recovery_grace_s": 0.0,
       "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
     },
   )

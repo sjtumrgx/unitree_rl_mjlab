@@ -403,6 +403,17 @@ def _reward_terms(env: Any) -> dict[str, float]:
   return out
 
 
+def _should_stop_on_done(dones: torch.Tensor) -> bool:
+  """Return True only when every vectorized env has reached a done state.
+
+  Diagnostics run many envs in parallel.  Stopping on any single done env can
+  truncate the whole batch before the remaining envs have enough time to get up.
+  """
+
+  done_tensor = torch.as_tensor(dones).bool()
+  return bool(done_tensor.numel() > 0 and done_tensor.all().item())
+
+
 def _termination_terms(env: Any) -> dict[str, bool]:
   manager = getattr(env, "termination_manager", None)
   dones = getattr(manager, "_term_dones", None)
@@ -1296,7 +1307,7 @@ def _run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
       )
       previous_clipped_action = clipped.detach().clone()
       obs = next_obs
-      if bool(args.stop_on_done) and torch.as_tensor(dones).bool().any().item():
+      if bool(args.stop_on_done) and _should_stop_on_done(dones):
         break
     records.append(summarize_records(records))
     return records

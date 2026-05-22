@@ -114,3 +114,9 @@ def test_antifall_getup_push_profile_marks_bfm_style_recovery_window() -> None:
 
   assert push.params["recovery_window_s"] >= 2.0
   assert push.params["active"] is True
+
+def test_antifall_getup_stall_guard_ignores_bfm_style_recovery_window() -> None:
+  cfg = load_env_cfg(TASK_ID)
+  stalled = cfg.terminations["stalled_getup"]
+
+  assert stalled.params["recovery_grace_s"] >= 2.0

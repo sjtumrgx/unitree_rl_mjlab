@@ -665,3 +665,7 @@ def test_make_trained_policy_uses_compatible_actor_input_expansion(monkeypatch, 
   assert captured["load_actor"]["load_cfg"] == {"actor": True}
   assert captured["load_actor"]["map_location"] == "cuda:0"
   assert captured["inference_device"] == "cuda:0"
+
+def test_stop_on_done_breaks_only_after_all_vector_envs_are_done() -> None:
+  assert rollout._should_stop_on_done(torch.tensor([True, False])) is False
+  assert rollout._should_stop_on_done(torch.tensor([True, True])) is True

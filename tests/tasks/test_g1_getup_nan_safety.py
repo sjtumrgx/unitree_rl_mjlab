@@ -724,6 +724,43 @@ def test_recovery_hybrid_action_preserves_default_offset_for_upright_walking_and
   torch.testing.assert_close(action.effective_action[1], torch.tensor([0.75, -0.75, 0.5]))
 
 
+def test_recovery_hybrid_action_keeps_walking_offset_during_upright_push_window() -> None:
+  from src.tasks.velocity.mdp.anti_fall.events import get_antifall_state
+  from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
+
+  env = _FakeActionEnv()
+  env.common_step_counter = 10
+  env.scene["robot"].data.body_link_pos_w[:, 0, 2] = torch.tensor([0.80, 0.80])
+  env.scene["robot"].data.root_link_pos_w[:, 2] = torch.tensor([0.80, 0.80])
+  env.scene["robot"].data.projected_gravity_b[:] = torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]])
+  state = get_antifall_state(env)
+  state["last_disturbance_step"][:] = 9
+  state["disturbance_count"][:] = 1
+
+  action = RecoveryHybridJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=0.5,
+    use_default_offset=True,
+    recovery_use_default_offset=False,
+    recovery_window_s=2.0,
+    fallen_height_threshold=0.35,
+    fallen_tilt_threshold=0.75,
+    recovery_action_scale=1.0,
+    max_delta=0.75,
+  ).build(env)
+
+  raw = torch.tensor([[0.4, -0.4, 0.2], [0.4, -0.4, 0.2]])
+  action.process_actions(raw)
+  action.apply_actions()
+
+  target = env.scene["robot"].targets
+  assert target is not None
+  expected_walking_target = torch.tensor([[1.2, -1.2, 0.6], [1.2, -1.2, 0.6]])
+  torch.testing.assert_close(target, expected_walking_target)
+  torch.testing.assert_close(action.effective_action, raw)
+
+
 class _FakeContactSensor:
   def __init__(self, found: torch.Tensor):
     self.data = SimpleNamespace(found=found)
