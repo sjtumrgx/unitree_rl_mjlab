@@ -38,12 +38,17 @@ def unitree_g1_antifall_getup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
 
 def unitree_g1_antifall_getup_recovery_warmup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   # This branch is a fallen-start GetUp bootstrap using the final AntiFall-GetUp
-  # actor/action tensor contract.  Keep the PPO/action-clipping settings aligned
-  # with the standalone GetUp task that reliably escapes the floor; the final
-  # walking+recovery task below stays conservative to protect Stage4b walking.
+  # actor/action tensor contract.  It is normally actor-only resumed from the
+  # proven standalone GetUp policy, so keep the physical action clip but make
+  # the first PPO updates much smaller than the from-scratch GetUp bootstrap.
+  # Local probes showed the 1e-3 GetUp LR can erase the recovery prior within
+  # the first saved update, while a 1e-5 / 0.001 KL update preserves rollout
+  # get-up behavior and still lets the 29-DoF recovery branch adapt.
   cfg = unitree_g1_getup_ppo_runner_cfg(terrain="mixed")
   cfg.experiment_name = "g1_antifall_getup"
   cfg.run_name = "recovery_warmup"
+  cfg.algorithm.learning_rate = 1.0e-5
+  cfg.algorithm.desired_kl = 0.001
   return cfg
 
 

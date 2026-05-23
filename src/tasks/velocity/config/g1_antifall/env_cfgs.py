@@ -1,6 +1,7 @@
 """Stage-configured Unitree G1 anti-fall velocity environment scaffolds."""
 
 from collections import OrderedDict
+from copy import deepcopy
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
@@ -13,6 +14,7 @@ from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity import mdp
 from src.tasks.velocity.config.g1.env_cfgs import (
   unitree_g1_flat_env_cfg,
+  unitree_g1_rough_env_cfg,
 )
 from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
 
@@ -273,6 +275,53 @@ def _move_randomize_terrain_before_root_reset(cfg: ManagerBasedRlEnvCfg) -> None
     if name != "randomize_terrain":
       ordered[name] = term
   cfg.events = ordered
+
+
+def _restore_antifall_getup_actor_contract(
+  cfg: ManagerBasedRlEnvCfg,
+  *,
+  history_length: int = 6,
+) -> None:
+  """Keep AntiFall-GetUp recovery observations aligned with standalone GetUp.
+
+  The ordinary AntiFall stages intentionally use a compact 3-frame proprio actor
+  contract.  AntiFall-GetUp, however, is bootstrapped from the proven GetUp
+  recovery policy; dropping its six-frame history and terrain scan destroys that
+  recovery prior before PPO can combine it with walking.  Keep this richer
+  contract local to the GetUp hybrid task so the Stage4b walking tasks remain
+  unchanged.
+  """
+
+  actor_obs = cfg.observations["actor"]
+  actor_obs.history_length = None
+  for term_name in (
+    "base_ang_vel",
+    "projected_gravity",
+    "command",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+    "getup_progress",
+  ):
+    term = actor_obs.terms.get(term_name)
+    if term is not None:
+      term.history_length = history_length
+
+  bfm_term = actor_obs.terms.get("bfm_local_body_state")
+  if bfm_term is not None:
+    bfm_term.history_length = 0
+
+  if "height_scan" not in actor_obs.terms:
+    rough_ref = unitree_g1_rough_env_cfg(play=False)
+    if not any(sensor.name == "terrain_scan" for sensor in (cfg.scene.sensors or ())):
+      terrain_scan = next(
+        sensor for sensor in (rough_ref.scene.sensors or ()) if sensor.name == "terrain_scan"
+      )
+      cfg.scene.sensors = (cfg.scene.sensors or ()) + (deepcopy(terrain_scan),)
+    actor_obs.terms["height_scan"] = deepcopy(
+      rough_ref.observations["actor"].terms["height_scan"]
+    )
+  actor_obs.terms["height_scan"].history_length = history_length
 
 
 def _make_antifall_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -653,6 +702,7 @@ def unitree_g1_antifall_getup_env_cfg(
   )
   _add_support_depth_camera(cfg)
   _add_support_body_contact_sensor(cfg)
+  _restore_antifall_getup_actor_contract(cfg)
   _add_getup_stall_guard(cfg)
   cfg.terminations["stalled_getup"].params["recovery_grace_s"] = _RECOVERY_WINDOW_S
   _apply_getup_nan_safety(cfg)

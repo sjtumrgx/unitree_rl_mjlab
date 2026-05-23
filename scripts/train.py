@@ -550,7 +550,7 @@ def _g1_getup_actor_layout() -> tuple[_ObsTermLayout, ...]:
   )
 
 
-def _g1_antifall_getup_actor_layout() -> tuple[_ObsTermLayout, ...]:
+def _g1_antifall_stage_actor_layout() -> tuple[_ObsTermLayout, ...]:
   return (
     _ObsTermLayout("base_ang_vel", _scalar_features("base_ang_vel", 3), 3),
     _ObsTermLayout("projected_gravity", _scalar_features("projected_gravity", 3), 3),
@@ -558,8 +558,35 @@ def _g1_antifall_getup_actor_layout() -> tuple[_ObsTermLayout, ...]:
     _ObsTermLayout("joint_pos", _joint_features("joint_pos", _G1_ACTION_JOINT_NAMES), 3),
     _ObsTermLayout("joint_vel", _joint_features("joint_vel", _G1_ACTION_JOINT_NAMES), 3),
     _ObsTermLayout("actions", _joint_features("actions", _G1_ACTION_JOINT_NAMES), 3),
+  )
+
+
+def _g1_antifall_getup_legacy_actor_layout() -> tuple[_ObsTermLayout, ...]:
+  """Actor layout used by early AntiFall-GetUp checkpoints.
+
+  Keep this for compatible resume from local experiments created before the
+  richer recovery observation contract restored GetUp's six-frame history and
+  terrain height scan.
+  """
+
+  return (
+    *_g1_antifall_stage_actor_layout(),
     _ObsTermLayout("getup_progress", _scalar_features("getup_progress", 5), 3),
     _ObsTermLayout("bfm_local_body_state", _bfm_body_state_features(_G1_ANTIFALL_29DOF_BODY_NAMES), 3),
+  )
+
+
+def _g1_antifall_getup_actor_layout() -> tuple[_ObsTermLayout, ...]:
+  return (
+    _ObsTermLayout("base_ang_vel", _scalar_features("base_ang_vel", 3), 6),
+    _ObsTermLayout("projected_gravity", _scalar_features("projected_gravity", 3), 6),
+    _ObsTermLayout("command", _scalar_features("command", 3), 6),
+    _ObsTermLayout("joint_pos", _joint_features("joint_pos", _G1_ACTION_JOINT_NAMES), 6),
+    _ObsTermLayout("joint_vel", _joint_features("joint_vel", _G1_ACTION_JOINT_NAMES), 6),
+    _ObsTermLayout("actions", _joint_features("actions", _G1_ACTION_JOINT_NAMES), 6),
+    _ObsTermLayout("getup_progress", _scalar_features("getup_progress", 5), 6),
+    _ObsTermLayout("bfm_local_body_state", _bfm_body_state_features(_G1_ANTIFALL_29DOF_BODY_NAMES), 1),
+    _ObsTermLayout("height_scan", _scalar_features("height_scan", 187), 6),
   )
 
 
@@ -662,9 +689,17 @@ def _infer_observation_projection(
   target_cols: int,
 ) -> _ObservationProjection | None:
   getup_actor = _g1_getup_actor_layout()
+  antifall_stage_actor = _g1_antifall_stage_actor_layout()
+  legacy_antifall_getup_actor = _g1_antifall_getup_legacy_actor_layout()
   antifall_actor = _g1_antifall_getup_actor_layout()
   if old_cols == _layout_width(getup_actor) and target_cols == _layout_width(antifall_actor):
     return _build_observation_projection(getup_actor, antifall_actor)
+  if old_cols == _layout_width(getup_actor) and target_cols == _layout_width(legacy_antifall_getup_actor):
+    return _build_observation_projection(getup_actor, legacy_antifall_getup_actor)
+  if old_cols == _layout_width(antifall_stage_actor) and target_cols == _layout_width(antifall_actor):
+    return _build_observation_projection(antifall_stage_actor, antifall_actor)
+  if old_cols == _layout_width(legacy_antifall_getup_actor) and target_cols == _layout_width(antifall_actor):
+    return _build_observation_projection(legacy_antifall_getup_actor, antifall_actor)
   return None
 
 

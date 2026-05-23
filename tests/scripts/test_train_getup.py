@@ -461,11 +461,11 @@ def test_expand_actor_checkpoint_input_projects_getup_terms_for_antifall_resume(
   }
   original_first_layer = checkpoint_state["mlp.0.weight"].clone()
   target_state = {
-    "obs_normalizer._mean": torch.zeros(1, 1647),
-    "obs_normalizer._var": torch.ones(1, 1647),
-    "obs_normalizer._std": torch.ones(1, 1647),
+    "obs_normalizer._mean": torch.zeros(1, 2176),
+    "obs_normalizer._var": torch.ones(1, 2176),
+    "obs_normalizer._std": torch.ones(1, 2176),
     "distribution.std_param": torch.full((29,), 0.5),
-    "mlp.0.weight": torch.full((512, 1647), -7.0),
+    "mlp.0.weight": torch.full((512, 2176), -7.0),
     "mlp.0.bias": torch.full((512,), -3.0),
     "mlp.6.weight": torch.full((29, 4), -9.0),
     "mlp.6.bias": torch.full((29,), -3.0),
@@ -474,44 +474,47 @@ def test_expand_actor_checkpoint_input_projects_getup_terms_for_antifall_resume(
   expanded = _expand_model_input_state(checkpoint_state, target_state)
 
   assert expanded is True
-  assert checkpoint_state["obs_normalizer._mean"].shape == (1, 1647)
-  assert checkpoint_state["mlp.0.weight"].shape == (512, 1647)
+  assert checkpoint_state["obs_normalizer._mean"].shape == (1, 2176)
+  assert checkpoint_state["mlp.0.weight"].shape == (512, 2176)
 
-  # GetUp actor observations are not a prefix of AntiFall-GetUp observations:
-  # GetUp keeps six per-term history frames plus terrain height-scan columns,
-  # while AntiFall keeps three history frames and a larger 29-DoF body/action
-  # layout.  Compatible resume must therefore align by term/feature name and
-  # newest history frames, not by blindly truncating the first 1647 columns.
+  # AntiFall-GetUp keeps GetUp's six-frame recovery history and height scan,
+  # while widening joint/body features to the 29-DoF walking robot. Compatible
+  # resume must therefore align by term/feature name and preserve matching
+  # history frames rather than blindly truncating or prefix-copying columns.
   torch.testing.assert_close(
-    checkpoint_state["obs_normalizer._mean"][:, 0:9],
-    torch.arange(9, 18, dtype=torch.float32).reshape(1, 9),
+    checkpoint_state["obs_normalizer._mean"][:, 0:18],
+    torch.arange(18, dtype=torch.float32).reshape(1, 18),
   )
   torch.testing.assert_close(
-    checkpoint_state["obs_normalizer._var"][:, 0:9],
-    torch.arange(9, 18, dtype=torch.float32).reshape(1, 9) + 10.0,
+    checkpoint_state["obs_normalizer._var"][:, 0:18],
+    torch.arange(18, dtype=torch.float32).reshape(1, 18) + 10.0,
   )
   torch.testing.assert_close(
-    checkpoint_state["obs_normalizer._std"][:, 0:9],
-    torch.arange(9, 18, dtype=torch.float32).reshape(1, 9) + 20.0,
+    checkpoint_state["obs_normalizer._std"][:, 0:18],
+    torch.arange(18, dtype=torch.float32).reshape(1, 18) + 20.0,
   )
-  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 0:9], original_first_layer[:, 9:18])
-  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 27], original_first_layer[:, 123])
-  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 39], original_first_layer[:, 135])
-  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 40], torch.zeros(512))
-  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 42], original_first_layer[:, 136])
-  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 288:303], original_first_layer[:, 483:498])
-  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 303], torch.zeros(512))
-  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 1199], original_first_layer[:, 498])
-  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 303], torch.tensor([498.0]))
-  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 1199], torch.tensor([498.0]))
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 0:18], original_first_layer[:, 0:18])
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 54], original_first_layer[:, 54])
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 66], original_first_layer[:, 66])
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 67], torch.zeros(512))
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 69], original_first_layer[:, 67])
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 576:591], original_first_layer[:, 468:483])
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 606], original_first_layer[:, 498])
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 1054], original_first_layer[:, 856])
+  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 606], torch.tensor([498.0]))
+  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 1054], torch.tensor([856.0]))
   # The 23-DoF GetUp XML names the hand endpoint as *_wrist_roll_rubber_hand,
   # while the 29-DoF AntiFall XML carries the rubber hand geometry under
   # *_wrist_yaw_link.  The transfer must preserve those endpoint body-state
   # features by semantic alias rather than treating them as missing bodies.
-  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 367], torch.tensor([550.0]))
-  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 388], torch.tensor([565.0]))
-  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 1263], original_first_layer[:, 550])
-  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 1284], original_first_layer[:, 565])
+  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 670], torch.tensor([550.0]))
+  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 691], torch.tensor([565.0]))
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 670], original_first_layer[:, 550])
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 691], original_first_layer[:, 565])
+  torch.testing.assert_close(
+    checkpoint_state["obs_normalizer._mean"][:, -1122:],
+    torch.arange(856, 1978, dtype=torch.float32).reshape(1, 1122),
+  )
   assert checkpoint_state["distribution.std_param"].shape == (29,)
   assert checkpoint_state["mlp.6.weight"].shape == (29, 4)
   torch.testing.assert_close(checkpoint_state["mlp.6.weight"][0], torch.arange(4, dtype=torch.float32))

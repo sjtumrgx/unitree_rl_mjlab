@@ -39,21 +39,21 @@ def test_antifall_getup_recovery_warmup_keeps_final_actor_contract() -> None:
 
 
 
-def test_antifall_getup_recovery_warmup_uses_getup_bootstrap_ppo_settings() -> None:
+def test_antifall_getup_recovery_warmup_uses_conservative_warmstart_hyperparams() -> None:
   warmup_cfg = load_rl_cfg(WARMUP_TASK_ID)
   getup_cfg = load_rl_cfg("Unitree-G1-GetUp")
   final_cfg = load_rl_cfg(TASK_ID)
 
-  # Recovery warmup is the fallen-start bootstrap branch, so it should keep the
-  # action clipping and exploration pressure that made the standalone GetUp task
-  # leave the floor.  The final walking+recovery fine-tune remains conservative
-  # to protect the Stage4b walking warm start.
+  # Recovery warmup is normally actor-only resumed from the standalone GetUp
+  # policy.  Keep the physical action envelope, but make PPO updates smaller
+  # than both the from-scratch GetUp bootstrap and the final walking+recovery
+  # fine-tune so a short warmup cannot erase the proven floor-recovery prior.
   assert warmup_cfg.clip_actions == getup_cfg.clip_actions == 5.0
-  assert warmup_cfg.algorithm.entropy_coef == getup_cfg.algorithm.entropy_coef
-  assert warmup_cfg.algorithm.learning_rate == getup_cfg.algorithm.learning_rate
-  assert warmup_cfg.algorithm.desired_kl == getup_cfg.algorithm.desired_kl
-  assert final_cfg.algorithm.learning_rate < warmup_cfg.algorithm.learning_rate
-  assert final_cfg.algorithm.desired_kl < warmup_cfg.algorithm.desired_kl
+  assert warmup_cfg.algorithm.learning_rate <= 1.0e-5
+  assert warmup_cfg.algorithm.desired_kl <= 0.001
+  assert warmup_cfg.algorithm.learning_rate < final_cfg.algorithm.learning_rate < getup_cfg.algorithm.learning_rate
+  assert warmup_cfg.algorithm.desired_kl < final_cfg.algorithm.desired_kl < getup_cfg.algorithm.desired_kl
+  assert warmup_cfg.actor.distribution_cfg["init_std"] <= getup_cfg.actor.distribution_cfg["init_std"]
 
 def test_antifall_getup_recovery_warmup_is_fallen_recovery_only() -> None:
   cfg = load_env_cfg(WARMUP_TASK_ID)
@@ -76,6 +76,45 @@ def test_antifall_getup_recovery_warmup_is_fallen_recovery_only() -> None:
   assert "track_linear_velocity" not in cfg.rewards
   assert "post_recovery_resume_locomotion" not in cfg.rewards
 
+
+
+
+def test_antifall_getup_preserves_getup_recovery_actor_observation_contract() -> None:
+  final = load_env_cfg(TASK_ID)
+  warmup = load_env_cfg(WARMUP_TASK_ID)
+  getup = load_env_cfg("Unitree-G1-GetUp")
+
+  for cfg in (final, warmup):
+    actor = cfg.observations["actor"]
+    assert actor.history_length is None
+    assert "height_scan" in actor.terms
+    assert any(sensor.name == "terrain_scan" for sensor in cfg.scene.sensors or ())
+
+    for term_name in (
+      "base_ang_vel",
+      "projected_gravity",
+      "command",
+      "joint_pos",
+      "joint_vel",
+      "actions",
+      "getup_progress",
+      "height_scan",
+    ):
+      assert actor.terms[term_name].history_length == getup.observations["actor"].terms[term_name].history_length
+
+    assert actor.terms["bfm_local_body_state"].history_length == getup.observations["actor"].terms["bfm_local_body_state"].history_length
+
+
+def test_antifall_getup_projection_layout_keeps_getup_history_and_height_scan() -> None:
+  from scripts.train import _g1_antifall_getup_actor_layout, _layout_width
+
+  layout = {term.name: term for term in _g1_antifall_getup_actor_layout()}
+
+  assert _layout_width(tuple(layout.values())) == 2176
+  assert layout["height_scan"].history == 6
+  assert layout["bfm_local_body_state"].history == 1
+  for term_name in ("base_ang_vel", "projected_gravity", "command", "joint_pos", "joint_vel", "actions", "getup_progress"):
+    assert layout[term_name].history == 6
 
 
 def test_antifall_getup_runner_uses_conservative_warmstart_finetune_hyperparams() -> None:

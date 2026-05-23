@@ -38,13 +38,32 @@ def _actor_term_dim(term_name: str, *, joint_dim: int) -> int:
   if term_name in ("joint_pos", "joint_vel", "actions"):
     return joint_dim
   if term_name == "getup_progress":
-    return 8
+    return 5
   if term_name == "bfm_local_body_state":
-    # Current 29-DoF G1 body-state layout: root height (1), root-relative
-    # positions without root (28*3), 6D rotations (29*6), local linear
-    # velocities (29*3), and local angular velocities (29*3).
-    return 1 + 28 * 3 + 29 * 6 + 29 * 3 + 29 * 3
+    # Current AntiFall-GetUp 29-DoF G1 body-state layout uses the 30-body XML:
+    # root height (1), root-relative positions without root ((30-1)*3), 6D
+    # rotations (30*6), local linear velocities (30*3), and local angular
+    # velocities (30*3).  Keep this synchronized with scripts.train's
+    # _G1_ANTIFALL_29DOF_BODY_NAMES projection layout.
+    body_dim = joint_dim + 1
+    return 1 + (body_dim - 1) * 3 + body_dim * 6 + body_dim * 3 + body_dim * 3
+  if term_name == "height_scan":
+    return 187
   raise KeyError(f"Unsupported anti-fall actor term: {term_name}")
+
+
+def _actor_term_history_length(env: ManagerBasedRlEnv, term_name: str) -> int:
+  actor_group = env.cfg.observations["actor"]
+  group_history = actor_group.history_length
+  if group_history is not None:
+    return int(group_history)
+
+  term = actor_group.terms[term_name]
+  term_history = getattr(term, "history_length", None)
+  if term_history is None:
+    return 1
+  term_history = int(term_history)
+  return term_history if term_history > 0 else 1
 
 
 def build_antifall_deploy_cfg(env: ManagerBasedRlEnv) -> dict[str, Any]:
@@ -54,7 +73,6 @@ def build_antifall_deploy_cfg(env: ManagerBasedRlEnv) -> dict[str, Any]:
   joint_dim = len(base_metadata["joint_names"])
   twist_cmd = env.cfg.commands["twist"]
   actor_terms = tuple(env.observation_manager.active_terms["actor"])
-  actor_history = int(env.cfg.observations["actor"].history_length or 1)
 
   deploy_cfg: dict[str, Any] = {
     "joint_ids_map": _joint_ids_map(env),
@@ -88,7 +106,7 @@ def build_antifall_deploy_cfg(env: ManagerBasedRlEnv) -> dict[str, Any]:
         "params": ({"command_name": "base_velocity"} if term == "command" else {}),
         "clip": None,
         "scale": [1.0] * _actor_term_dim(term, joint_dim=joint_dim),
-        "history_length": actor_history,
+        "history_length": _actor_term_history_length(env, term),
       }
       for term in actor_terms
     },
