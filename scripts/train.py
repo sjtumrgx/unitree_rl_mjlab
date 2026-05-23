@@ -1073,6 +1073,21 @@ def _expanded_actor_state_for_target(
   return expanded
 
 
+def _actor_branch_state(
+  source_state: dict[str, torch.Tensor],
+  branch_name: str,
+) -> dict[str, torch.Tensor]:
+  """Return an unprefixed branch state from a gated actor checkpoint if present."""
+
+  prefix = f"{branch_name}."
+  branch_state = {
+    key[len(prefix):]: value
+    for key, value in source_state.items()
+    if key.startswith(prefix)
+  }
+  return branch_state or source_state
+
+
 def _fuse_antifall_getup_actor_state(
   walking_state: dict[str, torch.Tensor],
   recovery_state: dict[str, torch.Tensor],
@@ -1169,9 +1184,12 @@ def _load_fused_antifall_getup_actor(
   if hasattr(policy, "walking_actor") and hasattr(policy, "recovery_actor"):
     walking_actor_state = policy.walking_actor.state_dict()
     recovery_actor_state = policy.recovery_actor.state_dict()
-    walking_expanded = _expanded_actor_state_for_target(walking_state, walking_actor_state)
+    walking_expanded = _expanded_actor_state_for_target(
+      _actor_branch_state(walking_state, "walking_actor"),
+      walking_actor_state,
+    )
     recovery_expanded = _expanded_actor_state_for_target(
-      recovery_state,
+      _actor_branch_state(recovery_state, "recovery_actor"),
       recovery_actor_state,
       action_output_scale=recovery_action_output_scale,
     )

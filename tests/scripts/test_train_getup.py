@@ -824,6 +824,67 @@ def test_load_fused_antifall_getup_actor_loads_gated_policy_branches(tmp_path) -
   torch.testing.assert_close(policy.distribution.std_param, torch.full((29,), 0.11))
 
 
+def test_load_fused_antifall_getup_actor_extracts_prefixed_recovery_branch(tmp_path) -> None:
+  from tensordict import TensorDict
+
+  from scripts import train
+  from src.tasks.velocity.rl.gated_actor import GatedAntiFallGetUpActor
+
+  target_width = train._layout_width(train._g1_antifall_getup_actor_layout())
+  obs = TensorDict({"actor": torch.zeros(1, target_width)}, batch_size=[1])
+  policy = GatedAntiFallGetUpActor(
+    obs,
+    {"actor": ("actor",)},
+    "actor",
+    output_dim=29,
+    hidden_dims=(2, 3, 4),
+    distribution_cfg={"class_name": "GaussianDistribution", "init_std": 0.5},
+  )
+
+  def _filled_like(state: dict[str, torch.Tensor], fill: float) -> dict[str, torch.Tensor]:
+    return {
+      key: torch.full_like(value, fill) if torch.is_tensor(value) and value.is_floating_point() else value.clone()
+      for key, value in state.items()
+    }
+
+  walking_state = _filled_like(policy.walking_actor.state_dict(), 1.0)
+  recovery_branch_state = _filled_like(policy.recovery_actor.state_dict(), 7.0)
+  wrong_walking_branch_state = _filled_like(policy.walking_actor.state_dict(), -3.0)
+  prefixed_recovery_checkpoint_state = {
+    **{f"walking_actor.{key}": value for key, value in wrong_walking_branch_state.items()},
+    **{f"recovery_actor.{key}": value for key, value in recovery_branch_state.items()},
+  }
+
+  walking_checkpoint = tmp_path / "walking.pt"
+  recovery_checkpoint = tmp_path / "prefixed_recovery.pt"
+  torch.save({"actor_state_dict": walking_state}, walking_checkpoint)
+  torch.save({"actor_state_dict": prefixed_recovery_checkpoint_state}, recovery_checkpoint)
+
+  class _FakeAlg:
+    def get_policy(self):
+      return policy
+
+  class _FakeRunner:
+    alg = _FakeAlg()
+
+  train._load_fused_antifall_getup_actor(
+    _FakeRunner(),
+    walking_resume_path=walking_checkpoint,
+    recovery_resume_path=recovery_checkpoint,
+    map_location="cpu",
+  )
+
+  loaded_walking = policy.walking_actor.state_dict()
+  loaded_recovery = policy.recovery_actor.state_dict()
+  torch.testing.assert_close(loaded_walking["mlp.0.bias"], walking_state["mlp.0.bias"])
+  torch.testing.assert_close(loaded_recovery["mlp.0.bias"], recovery_branch_state["mlp.0.bias"])
+  torch.testing.assert_close(loaded_recovery["mlp.6.bias"], recovery_branch_state["mlp.6.bias"])
+  torch.testing.assert_close(
+    loaded_recovery["distribution.std_param"],
+    recovery_branch_state["distribution.std_param"],
+  )
+
+
 def test_recovery_action_output_scale_infers_legacy_getup_scale_for_antifall_target(tmp_path) -> None:
   from scripts import train
 
