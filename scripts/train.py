@@ -797,21 +797,24 @@ def _build_observation_projection(
           weight_cols.append(source_weights.get(key))
           continue
 
+        source_history_offset = target_term.history - source_term.history
+        if target_history < source_history_offset:
+          stats_cols.append(None)
+          weight_cols.append(None)
+          continue
+        source_history_idx = target_history - source_history_offset
         stats_key = _first_layout_key(
           source_stats,
           target_term.name,
           feature_names,
-          min(target_history, source_term.history - 1),
+          source_history_idx,
         )
         stats_cols.append(source_stats.get(stats_key))
-        if target_history < target_term.history - source_term.history:
-          weight_cols.append(None)
-          continue
         weight_key = _first_layout_key(
           source_weights,
           target_term.name,
           feature_names,
-          target_history - (target_term.history - source_term.history),
+          source_history_idx,
         )
         weight_cols.append(source_weights.get(weight_key))
   return _ObservationProjection(
@@ -1106,7 +1109,14 @@ def _fuse_antifall_getup_actor_state(
   if projection is None:
     raise RuntimeError("Cannot fuse actors: target actor layout is not AntiFall-GetUp.")
 
-  recovery_stats_columns = [idx for idx, source_idx in enumerate(projection.stats_source_by_target) if source_idx is None]
+  walking_terms = {term.name for term in _g1_antifall_stage_actor_layout()}
+  recovery_stats_columns: list[int] = []
+  offset = 0
+  for term in _g1_antifall_getup_actor_layout():
+    width = term.width
+    if term.name not in walking_terms:
+      recovery_stats_columns.extend(range(offset, offset + width))
+    offset += width
   if not recovery_stats_columns:
     raise RuntimeError("Cannot fuse actors: no recovery-only observation columns found.")
 

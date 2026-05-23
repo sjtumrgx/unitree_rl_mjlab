@@ -973,6 +973,52 @@ def test_expand_legacy_antifall_getup_actor_adds_neutral_recovery_phase_column()
   )
 
 
+def test_expand_antifall_stage_actor_uses_neutral_stats_for_new_history_columns() -> None:
+  from scripts import train
+
+  source_layout = train._g1_antifall_stage_actor_layout()
+  target_layout = train._g1_antifall_getup_actor_layout()
+  source_width = train._layout_width(source_layout)
+  target_width = train._layout_width(target_layout)
+  projection = train._build_observation_projection(source_layout, target_layout)
+  source_stats, source_weights = train._flatten_layout_indices(source_layout)
+  target_stats, target_weights = train._flatten_layout_indices(target_layout)
+  old_base0 = source_stats[("base_ang_vel", "base_ang_vel/0", 0)]
+  old_latest = source_stats[("base_ang_vel", "base_ang_vel/0", 2)]
+  new_history_col = target_stats[("base_ang_vel", "base_ang_vel/0", 0)]
+  copied_history_col = target_stats[("base_ang_vel", "base_ang_vel/0", 3)]
+
+  assert projection.weight_source_by_target[new_history_col] is None
+  assert projection.stats_source_by_target[new_history_col] is None
+  assert projection.stats_source_by_target[copied_history_col] == old_base0
+  assert projection.weight_source_by_target[
+    target_weights[("base_ang_vel", "base_ang_vel/0", 5)]
+  ] == old_latest
+
+  checkpoint_state = {
+    "obs_normalizer._mean": torch.arange(source_width, dtype=torch.float32).reshape(1, source_width),
+    "obs_normalizer._var": torch.arange(source_width, dtype=torch.float32).reshape(1, source_width) + 100.0,
+    "obs_normalizer._std": torch.arange(source_width, dtype=torch.float32).reshape(1, source_width) + 200.0,
+    "mlp.0.weight": torch.arange(2 * source_width, dtype=torch.float32).reshape(2, source_width),
+  }
+  target_state = {
+    "obs_normalizer._mean": torch.full((1, target_width), -7.0),
+    "obs_normalizer._var": torch.full((1, target_width), -7.0),
+    "obs_normalizer._std": torch.full((1, target_width), -7.0),
+    "mlp.0.weight": torch.full((2, target_width), -7.0),
+  }
+
+  assert train._expand_model_input_state(checkpoint_state, target_state) is True
+  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, new_history_col], torch.zeros(1))
+  torch.testing.assert_close(checkpoint_state["obs_normalizer._var"][:, new_history_col], torch.ones(1))
+  torch.testing.assert_close(checkpoint_state["obs_normalizer._std"][:, new_history_col], torch.ones(1))
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, new_history_col], torch.zeros(2))
+  torch.testing.assert_close(
+    checkpoint_state["obs_normalizer._mean"][:, copied_history_col],
+    torch.tensor([float(old_base0)]),
+  )
+
+
 def test_fuse_antifall_getup_actor_state_keeps_walking_columns_and_recovers_getup_columns() -> None:
   from scripts import train
 
@@ -986,21 +1032,25 @@ def test_fuse_antifall_getup_actor_state_keeps_walking_columns_and_recovers_getu
     col for col, source_col in enumerate(projection.weight_source_by_target) if source_col is not None
   )
   walking_weight_source_col = projection.weight_source_by_target[walking_weight_col]
-  recovery_weight_col = next(
-    col for col, source_col in enumerate(projection.stats_source_by_target) if source_col is None
-  )
-  extra_common_history_col = next(
+  walking_terms = {term.name for term in stage_layout}
+  recovery_only_columns: list[int] = []
+  offset = 0
+  for term in target_layout:
+    if term.name not in walking_terms:
+      recovery_only_columns.extend(range(offset, offset + term.width))
+    offset += term.width
+  recovery_weight_col = recovery_only_columns[0]
+  neutral_history_col = next(
     col
     for col, source_col in enumerate(projection.weight_source_by_target)
-    if source_col is None and projection.stats_source_by_target[col] is not None
+    if source_col is None and projection.stats_source_by_target[col] is None
+    and col not in recovery_only_columns
   )
   walking_stats_col = next(
     col for col, source_col in enumerate(projection.stats_source_by_target) if source_col is not None
   )
   walking_stats_source_col = projection.stats_source_by_target[walking_stats_col]
-  recovery_stats_col = next(
-    col for col, source_col in enumerate(projection.stats_source_by_target) if source_col is None
-  )
+  recovery_stats_col = recovery_only_columns[0]
 
   walking_first_layer = torch.arange(2 * stage_width, dtype=torch.float32).reshape(2, stage_width) + 100.0
   recovery_first_layer = torch.arange(2 * target_width, dtype=torch.float32).reshape(2, target_width) + 200.0
@@ -1064,9 +1114,12 @@ def test_fuse_antifall_getup_actor_state_keeps_walking_columns_and_recovers_getu
     recovery_first_layer[:, recovery_weight_col],
   )
   torch.testing.assert_close(
-    fused["mlp.0.weight"][:, extra_common_history_col],
+    fused["mlp.0.weight"][:, neutral_history_col],
     torch.zeros(2),
   )
+  torch.testing.assert_close(fused["obs_normalizer._mean"][:, neutral_history_col], torch.zeros(1))
+  torch.testing.assert_close(fused["obs_normalizer._var"][:, neutral_history_col], torch.ones(1))
+  torch.testing.assert_close(fused["obs_normalizer._std"][:, neutral_history_col], torch.ones(1))
   torch.testing.assert_close(
     fused["obs_normalizer._mean"][:, walking_stats_col],
     walking_state["obs_normalizer._mean"][:, walking_stats_source_col],
