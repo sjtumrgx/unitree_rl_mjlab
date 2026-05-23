@@ -938,6 +938,54 @@ def test_recovery_hybrid_action_matches_host_assist_rescale_in_recovery() -> Non
   torch.testing.assert_close(action.effective_action[0], torch.tensor([0.15, -0.10, 0.05]))
   torch.testing.assert_close(action.effective_action[1], raw[1])
 
+
+def test_recovery_hybrid_action_uses_recovery_contract_during_near_failure_reset_window() -> None:
+  from src.tasks.velocity.mdp.anti_fall.events import (
+    DISTURBANCE_NEAR_FAILURE_RESET,
+    get_antifall_state,
+  )
+  from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
+
+  env = _FakeActionEnv()
+  env.common_step_counter = 10
+  # Simulate the first policy step immediately after a paired fallen reset.  In
+  # the real simulator body caches can still report the pre-reset upright pose
+  # for one step, but the anti-fall state has already marked a near-failure
+  # recovery reset.  The action contract must trust that reset window and stay
+  # in current-pose recovery instead of issuing walking default-offset targets.
+  env.scene["robot"].data.body_link_pos_w[:, 0, 2] = torch.tensor([0.80, 0.80])
+  env.scene["robot"].data.root_link_pos_w[:, 2] = torch.tensor([0.80, 0.80])
+  env.scene["robot"].data.projected_gravity_b[:] = torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]])
+  state = get_antifall_state(env)
+  state["last_disturbance_step"][:] = 10
+  state["disturbance_count"][:] = 1
+  state["disturbance_kind"][:] = DISTURBANCE_NEAR_FAILURE_RESET
+
+  action = RecoveryHybridJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=0.5,
+    use_default_offset=True,
+    recovery_use_default_offset=False,
+    recovery_window_s=2.0,
+    fallen_height_threshold=0.35,
+    fallen_tilt_threshold=0.75,
+    recovery_action_scale=1.0,
+    max_delta=0.75,
+  ).build(env)
+
+  raw = torch.tensor([[0.4, -0.4, 0.2], [2.0, -2.0, 0.5]])
+  action.process_actions(raw)
+  action.apply_actions()
+
+  target = env.scene["robot"].targets
+  assert target is not None
+  torch.testing.assert_close(env._host_getup_recovery_phase_active, torch.tensor([True, True]))
+  torch.testing.assert_close(action.effective_action[0], raw[0])
+  torch.testing.assert_close(action.effective_action[1], torch.tensor([0.75, -0.75, 0.5]))
+  torch.testing.assert_close(target[0], raw[0])
+  torch.testing.assert_close(target[1], torch.tensor([0.75, -0.75, 0.5]))
+
 def test_recovery_hybrid_action_preserves_default_offset_for_upright_walking_and_delta_for_fallen() -> None:
   from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
 

@@ -10,6 +10,11 @@ import torch
 
 from mjlab.envs.mdp.actions import JointPositionAction, JointPositionActionCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from src.tasks.velocity.mdp.anti_fall.events import (
+  DISTURBANCE_NEAR_FAILURE_RESET,
+  disturbance_window_mask,
+  get_antifall_state,
+)
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
@@ -330,17 +335,31 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     real fall happens, keep the HoST/current-pose recovery contract active until
     the torso is both high and near-upright, otherwise the controller flips back
     to walking offsets midway through the get-up transition.
+
+    Paired fallen resets are also part of the recovery lifecycle.  Immediately
+    after an artificial root+joint reset, simulator body caches can still expose
+    the previous upright pose for one policy step.  Trust the anti-fall
+    near-failure reset marker during that short window so the first command after
+    reset cannot be interpreted as a walking default-offset target.
     """
 
     previous_active = self._recovery_phase_active.clone()
-    candidate_active = self._recovery_phase_active | self._fallen_mask()
+    near_failure_reset = torch.zeros_like(self._recovery_phase_active)
+    state = getattr(self._env, "_anti_fall_state", None)
+    if isinstance(state, dict):
+      state = get_antifall_state(self._env)
+      near_failure_reset = (
+        disturbance_window_mask(self._env, float(self.cfg.recovery_window_s))
+        & (state["disturbance_kind"] == DISTURBANCE_NEAR_FAILURE_RESET)
+      ).to(device=self._recovery_phase_active.device)
+    candidate_active = self._recovery_phase_active | self._fallen_mask() | near_failure_reset
     stable = self._stable_upright_mask()
     hold_required = max(1, int(self.cfg.stable_upright_hold_steps))
     stable_candidate = candidate_active & stable
     self._stable_upright_steps[stable_candidate] += 1
     self._stable_upright_steps[~stable_candidate] = 0
     stable_exit = stable_candidate & (self._stable_upright_steps >= hold_required)
-    active = candidate_active & ~stable_exit
+    active = (candidate_active & ~stable_exit) | near_failure_reset
     newly_active = active & ~previous_active
     self._recovery_phase_active[:] = active
     self._last_recovery_mask[:] = active
