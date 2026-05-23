@@ -656,11 +656,15 @@ def unitree_g1_antifall_getup_env_cfg(
     recovery_window_s=_RECOVERY_WINDOW_S,
     fallen_height_threshold=0.35,
     fallen_tilt_threshold=0.75,
-    # Exit the current-pose recovery action contract as soon as the coarse
-    # torso/tilt gate says the robot is upright enough for the warm-started
-    # walking prior.  Recovery commands stay quiet for the fixed BFM-style
-    # disturbance window, then ramp briefly after this action phase exits.
-    stable_upright_hold_steps=1,
+    # Do not exit current-pose recovery on a one-frame coarse torso/tilt signal.
+    # Forced-fall traces showed the policy briefly looking upright, switching
+    # back to the walking prior, then falling again while still using
+    # hands/body/folded feet for support.  Reuse the same strict standing
+    # contract as rewards/assist decay and require a short sustained hold before
+    # the next observation exposes the default-offset walking branch again.
+    stable_upright_func=mdp.stable_getup_success_mask,
+    stable_upright_params=_host_getup_stable_success_params(),
+    stable_upright_hold_steps=5,
     # Match BFM-Zero G1 fall-recovery control: actions are normalized/clipped
     # upstream, then converted to joint deltas with a 0.25 physical scale.
     recovery_action_scale=0.25,

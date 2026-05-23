@@ -648,12 +648,17 @@ def test_antifall_getup_uses_hybrid_action_to_preserve_warmstart_walking() -> No
   assert action.recovery_window_s >= 2.0
   assert action.fallen_height_threshold <= 0.4
   assert action.fallen_tilt_threshold >= 0.7
-  # Recovery should hand control back to the warm-started walking branch as
-  # soon as the torso is high/upright enough.  The stricter HoST stable-success
-  # mask still belongs to rewards/assist decay, but using it here leaves the
-  # action stuck in current-pose recovery deltas after a successful get-up.
-  assert action.stable_upright_func is None
-  assert action.stable_upright_hold_steps <= 3
+  # Recovery must not hand control back to the warm-started walking branch on a
+  # one-frame coarse torso/tilt signal.  The forced-fall gate showed policies
+  # exiting current-pose recovery while still relying on folded feet/hands/body
+  # support, then falling again when the default-offset walking prior took over.
+  assert action.stable_upright_func is mdp.stable_getup_success_mask
+  assert action.stable_upright_hold_steps >= 5
+  assert action.stable_upright_params is not None
+  assert action.stable_upright_params["min_feet_contact_count"] >= 2.0
+  assert action.stable_upright_params["max_body_support_count"] == 0.0
+  assert action.stable_upright_params["max_hand_contact_count"] == 0.0
+  assert action.stable_upright_params["min_foot_flatness"] >= 0.6
   assert action.stable_upright_height_threshold <= 0.55
   assert action.stable_upright_tilt_threshold >= 0.30
   assert action.max_delta <= 1.0
