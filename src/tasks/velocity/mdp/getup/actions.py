@@ -150,6 +150,7 @@ class RecoveryHybridJointPositionActionCfg(JointPositionActionCfg):
   stable_upright_height_threshold: float = 0.55
   stable_upright_tilt_threshold: float = 0.30
   recovery_action_scale: float = 1.0
+  recovery_unactuated_timesteps: int = 0
   max_delta: float | None = None
   """Optional clamp for current-pose recovery deltas."""
 
@@ -259,6 +260,24 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
 
   def _compute_recovery_deltas(self, actions: torch.Tensor) -> torch.Tensor:
     deltas = actions * float(self.cfg.recovery_action_scale)
+    startup_steps = max(0, int(self.cfg.recovery_unactuated_timesteps))
+    if startup_steps > 0:
+      episode_length = getattr(self._env, "episode_length_buf", None)
+      if episode_length is not None:
+        active = (episode_length >= startup_steps).to(device=deltas.device, dtype=deltas.dtype)
+        deltas = deltas * active.unsqueeze(1)
+
+    state = getattr(self._env, "_host_getup_curriculum_state", None)
+    if isinstance(state, dict) and "action_rescale" in state:
+      action_rescale = state["action_rescale"].to(device=deltas.device, dtype=deltas.dtype)
+      episode_force_scale = state.get("episode_force_scale")
+      if episode_force_scale is not None:
+        no_assist_episode = episode_force_scale.to(device=deltas.device, dtype=deltas.dtype) <= 0.0
+        action_rescale = torch.where(no_assist_episode, torch.ones_like(action_rescale), action_rescale)
+      if action_rescale.ndim == 1:
+        action_rescale = action_rescale.unsqueeze(1)
+      deltas = deltas * action_rescale
+
     if self.cfg.max_delta is not None:
       max_delta = float(self.cfg.max_delta)
       if max_delta <= 0.0:

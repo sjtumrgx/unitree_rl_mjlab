@@ -588,6 +588,7 @@ def unitree_g1_antifall_getup_env_cfg(
     fallen_height_threshold=0.35,
     fallen_tilt_threshold=0.75,
     recovery_action_scale=1.0,
+    recovery_unactuated_timesteps=_HOST_GETUP_UNACTUATED_TIMESTEPS,
     max_delta=_HOST_GETUP_MAX_ACTION_DELTA,
   )
   _tune_command_ranges(

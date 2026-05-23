@@ -721,6 +721,44 @@ def test_no_assist_episode_uses_play_action_scale_instead_of_curriculum_rescale(
   )
 
 
+def test_recovery_hybrid_action_matches_host_startup_and_assist_rescale_in_recovery() -> None:
+  from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
+
+  env = _FakeActionEnv()
+  env.scene["robot"].data.body_link_pos_w[:, 0, 2] = torch.tensor([0.20, 0.20])
+  env.scene["robot"].data.root_link_pos_w[:, 2] = torch.tensor([0.20, 0.20])
+  env.episode_length_buf[:] = torch.tensor([0, 31], dtype=torch.long)
+  env._host_getup_curriculum_state = {
+    "action_rescale": torch.tensor([0.25, 0.25]),
+    "episode_force_scale": torch.tensor([1.0, 0.0]),
+  }
+  action = RecoveryHybridJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=0.5,
+    use_default_offset=True,
+    recovery_use_default_offset=False,
+    recovery_window_s=0.0,
+    fallen_height_threshold=0.35,
+    fallen_tilt_threshold=0.75,
+    recovery_action_scale=1.0,
+    recovery_unactuated_timesteps=30,
+    max_delta=0.75,
+  ).build(env)
+
+  raw = torch.tensor([[0.6, -0.4, 0.2], [0.6, -0.4, 0.2]])
+  action.process_actions(raw)
+  action.apply_actions()
+
+  target = env.scene["robot"].targets
+  assert target is not None
+  torch.testing.assert_close(env._host_getup_joint_position_delta[0], torch.zeros(3))
+  torch.testing.assert_close(env._host_getup_joint_position_delta[1], raw[1])
+  torch.testing.assert_close(target[0], torch.zeros(3))
+  torch.testing.assert_close(target[1], raw[1])
+  torch.testing.assert_close(action.effective_action[0], torch.zeros(3))
+  torch.testing.assert_close(action.effective_action[1], raw[1])
+
 def test_recovery_hybrid_action_preserves_default_offset_for_upright_walking_and_delta_for_fallen() -> None:
   from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
 
