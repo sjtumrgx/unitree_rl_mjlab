@@ -142,6 +142,98 @@ def quiet_velocity_command_for_recovery(
     time_left[ids] = float(quiet_s)
 
 
+def ramp_velocity_command_after_recovery_exit(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | slice | None = None,
+  command_name: str = "twist",
+  exit_attr: str = "_host_getup_exited_recovery_phase",
+  ramp_s: float = 1.0,
+) -> None:
+  """Ramp walking velocity commands shortly after GetUp exits recovery.
+
+  BFM-style recovery uses a fixed quiet window around the disturbance, but it
+  does not keep walking commands suppressed until every recovery-phase detail is
+  gone.  AntiFall-GetUp instead publishes a one-frame exit pulse from the action
+  term; this event captures the command available at that exit and writes back a
+  linear ramp of that saved target for a short window.  Saving the target avoids
+  repeatedly multiplying the already-ramped command, which would otherwise decay
+  exponentially if this step event runs every frame.
+  """
+
+  ramp_s = float(ramp_s)
+  if ramp_s <= 0.0:
+    return
+
+  command_manager = getattr(env, "command_manager", None)
+  get_term = getattr(command_manager, "get_term", None)
+  if not callable(get_term):
+    return
+  try:
+    term = get_term(command_name)
+  except Exception:
+    return
+
+  command = getattr(term, "vel_command_b", None)
+  if not torch.is_tensor(command):
+    return
+
+  ids = _resolve_env_ids(env, env_ids)
+  if ids.numel() == 0:
+    return
+
+  state = getattr(env, "_host_getup_command_resume_ramp", None)
+  needs_init = not isinstance(state, dict) or state.get("target") is None
+  if not needs_init:
+    target = state.get("target")
+    elapsed = state.get("elapsed")
+    active = state.get("active")
+    needs_init = (
+      not torch.is_tensor(target)
+      or not torch.is_tensor(elapsed)
+      or not torch.is_tensor(active)
+      or target.shape != command.shape
+      or elapsed.shape[0] != env.num_envs
+      or active.shape[0] != env.num_envs
+    )
+  if needs_init:
+    state = {
+      "target": torch.zeros_like(command),
+      "elapsed": torch.zeros(env.num_envs, dtype=command.dtype, device=command.device),
+      "active": torch.zeros(env.num_envs, dtype=torch.bool, device=command.device),
+    }
+    setattr(env, "_host_getup_command_resume_ramp", state)
+
+  target = state["target"]
+  elapsed = state["elapsed"]
+  active = state["active"]
+
+  exit_pulse = getattr(env, exit_attr, None)
+  if exit_pulse is not None:
+    exit_pulse = torch.as_tensor(exit_pulse, dtype=torch.bool, device=command.device).flatten()
+    if exit_pulse.numel() >= env.num_envs:
+      starting = ids[exit_pulse[ids]]
+      if starting.numel() > 0:
+        target[starting] = command[starting].clone()
+        elapsed[starting] = 0.0
+        active[starting] = True
+
+  active_ids = ids[active[ids]]
+  if active_ids.numel() == 0:
+    return
+
+  dt = float(getattr(env, "step_dt", 0.0) or 0.0)
+  if dt <= 0.0:
+    dt = ramp_s
+  elapsed[active_ids] += dt
+  scale = torch.clamp(elapsed[active_ids] / ramp_s, 0.0, 1.0).unsqueeze(1)
+  command[active_ids] = target[active_ids] * scale
+
+  done = active_ids[(elapsed[active_ids] >= ramp_s)]
+  if done.numel() > 0:
+    active[done] = False
+    command[done] = target[done]
+
+
 def _mark_disturbance(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | slice | None,

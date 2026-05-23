@@ -24,14 +24,20 @@ def unitree_g1_antifall_getup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg.experiment_name = "g1_antifall_getup"
   cfg.max_iterations = 10001
   cfg.save_interval = 100
-  # AntiFall-GetUp resumes the stage4b walking actor and only fine-tunes it for
-  # fall recovery.  The base velocity PPO defaults are intentionally aggressive
-  # for from-scratch walking, but they overwrite the warm-start too quickly here
-  # and make the policy lose pre-push tracking before recovery has a chance to
-  # improve.  Keep this branch conservative unless an explicit from-scratch
-  # GetUp curriculum is added.
-  cfg.algorithm.learning_rate = 1.0e-4
-  cfg.algorithm.desired_kl = 0.003
+  # AntiFall-GetUp resumes two already-useful priors: Stage4b walking and the
+  # fallen-start recovery warmup.  The final mixed task exists to teach the
+  # switch/resume boundary, not to relearn either prior from scratch.  Keep PPO
+  # updates at the same conservative scale as the recovery warmup; local
+  # forced-fall probes showed 1e-4 / 0.003 erodes both branches within a few
+  # saved updates even when the branch normalizers are gate-separated.
+  cfg.algorithm.learning_rate = 1.0e-5
+  cfg.algorithm.desired_kl = 0.001
+  # Keep the same raw-action envelope as BFM-Zero/GetUp.  Without this explicit
+  # clip the G1 walking base config leaves actions unclipped, so a rescaled
+  # recovery prior can emit very large raw values before the 0.25 physical
+  # recovery scale and env-side delta clamps see them.
+  cfg.clip_actions = 5.0
+  cfg.actor.class_name = "src.tasks.velocity.rl.gated_actor:GatedAntiFallGetUpActor"
   cfg.actor.distribution_cfg["init_std"] = 0.5
   return cfg
 

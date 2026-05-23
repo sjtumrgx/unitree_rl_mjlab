@@ -1184,7 +1184,10 @@ def test_recovery_hybrid_action_keeps_recovery_active_until_strict_stable_stance
   assert target is not None
   torch.testing.assert_close(env._host_getup_recovery_phase_active, torch.tensor([True, False]))
   torch.testing.assert_close(target[0], torch.tensor([0.75, -0.75, 0.5]))
-  torch.testing.assert_close(target[1], torch.tensor([1.1, -1.1, 0.55]))
+  # Env 1 has satisfied the exit gate, so the next observation is marked as
+  # walking.  The current action was still sampled from a recovery observation,
+  # therefore this decision frame must remain current-pose recovery deltas.
+  torch.testing.assert_close(target[1], torch.tensor([0.2, -0.2, 0.1]))
 
 
 def test_recovery_hybrid_walking_exit_clamp_does_not_rewrite_nominal_walking_targets() -> None:
@@ -1247,9 +1250,9 @@ def test_recovery_hybrid_action_rate_limits_first_walking_target_after_recovery_
   action.apply_actions()
   torch.testing.assert_close(env._host_getup_recovery_phase_active, torch.tensor([True, True]))
 
-  # On the first strict-stable step, the target switches back to walking
-  # default-offset semantics.  Clamp that transition too so recovery exit cannot
-  # create the >1 rad joint-target jumps seen in diagnostics.
+  # On the first strict-stable step, publish walking for the next observation
+  # but keep executing the current action as recovery-branch current-pose
+  # deltas.  The actor sampled this action before seeing recovery_phase=False.
   env.scene["robot"].data.body_link_pos_w[:, 0, 2] = torch.tensor([0.60, 0.60])
   env.scene["robot"].data.root_link_pos_w[:, 2] = torch.tensor([0.60, 0.60])
   env.scene["robot"].data.projected_gravity_b[:] = torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]])
@@ -1262,7 +1265,109 @@ def test_recovery_hybrid_action_rate_limits_first_walking_target_after_recovery_
   torch.testing.assert_close(env._host_getup_recovery_phase_active, torch.tensor([False, False]))
   torch.testing.assert_close(env._host_getup_joint_position_delta[0], torch.tensor([0.75, -0.75, 0.75]))
   torch.testing.assert_close(target[0], torch.tensor([0.75, -0.75, 0.75]))
-  torch.testing.assert_close(target[1], torch.tensor([0.75, -0.75, 0.55]))
+  torch.testing.assert_close(target[1], torch.tensor([0.2, -0.2, 0.1]))
+
+  # The following policy step is the first one sampled with
+  # recovery_phase=False.  Clamp that walking default-offset transition so
+  # recovery exit cannot create the >1 rad joint-target jumps seen in
+  # diagnostics.
+  env.scene["robot"].data.joint_pos[:] = target
+  action.process_actions(raw)
+  action.apply_actions()
+  target = env.scene["robot"].targets
+  assert target is not None
+  torch.testing.assert_close(env._host_getup_joint_position_delta[0], torch.tensor([0.75, -0.75, 0.75]))
+  torch.testing.assert_close(target[0], torch.tensor([1.5, -1.5, 1.5]))
+  torch.testing.assert_close(target[1], torch.tensor([0.95, -0.95, 0.55]))
+
+
+def test_recovery_hybrid_action_publishes_exit_phase_pulse_for_command_resume() -> None:
+  from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
+
+  env = _FakeActionEnv()
+  env.scene["robot"].data.body_link_pos_w[:, 0, 2] = torch.tensor([0.20, 0.20])
+  env.scene["robot"].data.root_link_pos_w[:, 2] = torch.tensor([0.20, 0.20])
+  action = RecoveryHybridJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=0.5,
+    use_default_offset=True,
+    recovery_use_default_offset=False,
+    recovery_window_s=2.0,
+    fallen_height_threshold=0.35,
+    fallen_tilt_threshold=0.75,
+    stable_upright_func=lambda env: torch.ones(env.num_envs, dtype=torch.bool, device=env.device),
+    recovery_action_scale=1.0,
+    max_delta=0.75,
+  ).build(env)
+
+  action.process_actions(torch.tensor([[2.0, -2.0, 0.5], [2.0, -2.0, 0.5]]))
+  action.apply_actions()
+  torch.testing.assert_close(env._host_getup_recovery_phase_active, torch.tensor([True, True]))
+  torch.testing.assert_close(env._host_getup_exited_recovery_phase, torch.tensor([False, False]))
+
+  env.scene["robot"].data.body_link_pos_w[:, 0, 2] = torch.tensor([0.60, 0.60])
+  env.scene["robot"].data.root_link_pos_w[:, 2] = torch.tensor([0.60, 0.60])
+  env.scene["robot"].data.projected_gravity_b[:] = torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]])
+  action.process_actions(torch.tensor([[0.2, -0.2, 0.1], [0.2, -0.2, 0.1]]))
+
+  torch.testing.assert_close(env._host_getup_recovery_phase_active, torch.tensor([False, False]))
+  torch.testing.assert_close(env._host_getup_exited_recovery_phase, torch.tensor([True, True]))
+
+  action.process_actions(torch.tensor([[0.2, -0.2, 0.1], [0.2, -0.2, 0.1]]))
+
+  torch.testing.assert_close(env._host_getup_recovery_phase_active, torch.tensor([False, False]))
+  torch.testing.assert_close(env._host_getup_exited_recovery_phase, torch.tensor([False, False]))
+
+
+def test_recovery_hybrid_action_executes_recovery_delta_on_exit_decision_frame() -> None:
+  from src.tasks.velocity.mdp.getup.actions import RecoveryHybridJointPositionActionCfg
+
+  env = _FakeActionEnv()
+  env.scene["robot"].data.joint_pos[:] = 0.0
+  env.scene["robot"].data.body_link_pos_w[:, 0, 2] = torch.tensor([0.20, 0.20])
+  env.scene["robot"].data.root_link_pos_w[:, 2] = torch.tensor([0.20, 0.20])
+  action = RecoveryHybridJointPositionActionCfg(
+    entity_name="robot",
+    actuator_names=(".*",),
+    scale=0.5,
+    use_default_offset=True,
+    recovery_use_default_offset=False,
+    recovery_window_s=2.0,
+    fallen_height_threshold=0.35,
+    fallen_tilt_threshold=0.75,
+    recovery_action_scale=1.0,
+    max_delta=0.75,
+    walking_exit_max_delta=0.75,
+  ).build(env)
+
+  action.process_actions(torch.tensor([[2.0, -2.0, 0.5], [2.0, -2.0, 0.5]]))
+  action.apply_actions()
+  torch.testing.assert_close(env._host_getup_recovery_phase_active, torch.tensor([True, True]))
+
+  env.scene["robot"].data.joint_pos[:] = torch.tensor([[0.25, -0.25, 0.15], [0.25, -0.25, 0.15]])
+  env.scene["robot"].data.body_link_pos_w[:, 0, 2] = torch.tensor([0.60, 0.60])
+  env.scene["robot"].data.root_link_pos_w[:, 2] = torch.tensor([0.60, 0.60])
+  env.scene["robot"].data.projected_gravity_b[:] = torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]])
+  exit_frame_raw = torch.tensor([[0.4, -0.4, 0.2], [0.2, -0.2, 0.1]])
+  action.process_actions(exit_frame_raw)
+  action.apply_actions()
+
+  target = env.scene["robot"].targets
+  assert target is not None
+  # The action was sampled from an observation whose recovery_phase flag was
+  # still true.  Mark the next observation as walking, but execute this frame as
+  # a current-pose recovery delta instead of misinterpreting the recovery branch
+  # output as a walking default-offset target.
+  torch.testing.assert_close(env._host_getup_recovery_phase_active, torch.tensor([False, False]))
+  torch.testing.assert_close(
+    env._host_getup_joint_position_delta,
+    torch.tensor([[0.4, -0.4, 0.2], [0.2, -0.2, 0.1]]),
+  )
+  torch.testing.assert_close(
+    target,
+    torch.tensor([[0.65, -0.65, 0.35], [0.45, -0.45, 0.25]]),
+  )
 
 
 def test_recovery_hybrid_action_rate_limits_post_recovery_walking_targets() -> None:
@@ -1305,8 +1410,8 @@ def test_recovery_hybrid_action_rate_limits_post_recovery_walking_targets() -> N
   target = env.scene["robot"].targets
   assert target is not None
   torch.testing.assert_close(env._host_getup_joint_position_delta[0], torch.tensor([0.75, -0.75, 0.75]))
-  torch.testing.assert_close(target[0], torch.tensor([1.50, -1.50, 1.30]))
-  torch.testing.assert_close(target[1], torch.tensor([1.10, -1.10, 0.55]))
+  torch.testing.assert_close(target[0], torch.tensor([0.95, -0.95, 0.85]))
+  torch.testing.assert_close(target[1], torch.tensor([0.95, -0.95, 0.55]))
 
 
 def test_recovery_hybrid_action_exits_recovery_after_stable_upright() -> None:
@@ -1342,7 +1447,7 @@ def test_recovery_hybrid_action_exits_recovery_after_stable_upright() -> None:
   target = env.scene["robot"].targets
   assert target is not None
   torch.testing.assert_close(env._host_getup_recovery_phase_active, torch.tensor([False, False]))
-  torch.testing.assert_close(target, torch.tensor([[1.2, -1.2, 0.6], [1.1, -1.1, 0.55]]))
+  torch.testing.assert_close(target, torch.tensor([[0.4, -0.4, 0.2], [0.2, -0.2, 0.1]]))
 
 
 class _FakeContactSensor:

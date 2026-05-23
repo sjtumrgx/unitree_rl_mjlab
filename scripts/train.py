@@ -3,6 +3,7 @@
 import ast
 import logging
 import os
+import re
 import sys
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
@@ -166,6 +167,7 @@ class TrainConfig:
   agent: RslRlBaseRunnerCfg
   motion_file: str | None = None
   resume_checkpoint_path: str | None = None
+  recovery_resume_checkpoint_path: str | None = None
   video: bool = False
   video_length: int = 200
   video_interval: int = 2000
@@ -267,6 +269,95 @@ def _parse_gpu_ids_arg(gpu_ids: str | None) -> list[int] | Literal["all"] | None
   return normalized
 
 
+def _env_recovery_action_scale(env_cfg: ManagerBasedRlEnvCfg) -> float | None:
+  """Return the target get-up/recovery physical action scale when available."""
+
+  actions = getattr(env_cfg, "actions", None)
+  if actions is None:
+    return None
+  action_cfg = actions.get("joint_pos") if isinstance(actions, dict) else getattr(actions, "joint_pos", None)
+  if action_cfg is None:
+    return None
+  recovery_scale = getattr(action_cfg, "recovery_action_scale", None)
+  if recovery_scale is not None:
+    return float(recovery_scale)
+  if action_cfg.__class__.__name__ == "HostRelativeJointPositionActionCfg":
+    return float(getattr(action_cfg, "scale", 1.0))
+  return None
+
+
+def _parse_saved_env_recovery_action_scale(checkpoint_path: Path) -> float | None:
+  env_yaml = checkpoint_path.parent / "params" / "env.yaml"
+  if not env_yaml.exists():
+    return None
+  text = env_yaml.read_text(errors="ignore")
+  match = re.search(r"(?m)^\s+recovery_action_scale:\s*([0-9eE.+-]+)\s*$", text)
+  if match is None:
+    return None
+  return float(match.group(1))
+
+
+def _actor_input_width_from_state(state: dict[str, torch.Tensor]) -> int | None:
+  first_layer = state.get("mlp.0.weight")
+  if not torch.is_tensor(first_layer) or first_layer.ndim != 2:
+    return None
+  return int(first_layer.shape[1])
+
+
+def _infer_checkpoint_recovery_action_scale(
+  checkpoint_path: Path,
+  *,
+  checkpoint_state: dict[str, torch.Tensor] | None = None,
+  map_location: str | None = "cpu",
+) -> float | None:
+  """Infer the physical delta scale that a recovery checkpoint was trained for.
+
+  Saved AntiFall-GetUp runs record ``recovery_action_scale`` in ``params/env``.
+  Standalone GetUp checkpoints predate that hybrid field but use the
+  HoST-relative action contract with ``scale=1.0`` and ``max_delta=1.0``.
+  """
+
+  saved_scale = _parse_saved_env_recovery_action_scale(checkpoint_path)
+  if saved_scale is not None:
+    return saved_scale
+
+  state = checkpoint_state
+  if state is None and checkpoint_path.exists():
+    try:
+      checkpoint = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
+    except Exception:
+      return None
+    loaded = checkpoint.get("actor_state_dict") if isinstance(checkpoint, dict) else None
+    state = loaded if isinstance(loaded, dict) else None
+  if state is None:
+    return None
+
+  input_width = _actor_input_width_from_state(state)
+  if input_width == _layout_width(_g1_getup_actor_layout()):
+    return 1.0
+  return None
+
+
+def _recovery_action_output_scale_for_checkpoint(
+  checkpoint_path: Path,
+  env_cfg: ManagerBasedRlEnvCfg,
+  *,
+  checkpoint_state: dict[str, torch.Tensor] | None = None,
+  map_location: str | None = "cpu",
+) -> float:
+  target_scale = _env_recovery_action_scale(env_cfg)
+  if target_scale is None or target_scale == 0.0:
+    return 1.0
+  source_scale = _infer_checkpoint_recovery_action_scale(
+    checkpoint_path,
+    checkpoint_state=checkpoint_state,
+    map_location=map_location,
+  )
+  if source_scale is None:
+    return 1.0
+  return float(source_scale) / float(target_scale)
+
+
 def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
   if cuda_visible == "":
@@ -314,6 +405,12 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     cfg.env.sim.nan_guard.enabled = True
     print(f"[INFO] NaN guard enabled, output dir: {cfg.env.sim.nan_guard.output_dir}")
 
+  if not cfg.agent.resume:
+    if cfg.resume_checkpoint_path is not None:
+      raise ValueError("resume_checkpoint_path requires agent.resume=True.")
+    if cfg.recovery_resume_checkpoint_path is not None:
+      raise ValueError("recovery_resume_checkpoint_path requires agent.resume=True.")
+
   if rank == 0:
     print(f"[INFO] Logging experiment in directory: {log_dir}")
 
@@ -324,21 +421,23 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   log_root_path = log_dir.parent  # Go up from specific run dir to experiment dir.
 
   resume_path: Path | None = None
+  recovery_resume_path: Path | None = None
   if cfg.agent.resume:
     if cfg.resume_checkpoint_path is not None:
       # Load an explicit local checkpoint path.  This is intentionally separate
       # from get_checkpoint_path(), whose run/checkpoint regex lookup is scoped
       # to the current experiment log root and cannot warm-start from another
       # experiment such as g1_getup -> g1_getup_amp.
-      resume_path = Path(cfg.resume_checkpoint_path).expanduser()
-      if not resume_path.is_absolute():
-        resume_path = Path.cwd() / resume_path
-      if not resume_path.exists():
-        raise FileNotFoundError(f"Resume checkpoint does not exist: {resume_path}")
+      resume_path = _resolve_checkpoint_path(cfg.resume_checkpoint_path, label="Resume")
     else:
       # Load checkpoint from local filesystem.
       resume_path = get_checkpoint_path(
         log_root_path, cfg.agent.load_run, cfg.agent.load_checkpoint
+      )
+    if cfg.recovery_resume_checkpoint_path is not None:
+      recovery_resume_path = _resolve_checkpoint_path(
+        cfg.recovery_resume_checkpoint_path,
+        label="Recovery resume",
       )
 
   # Only record videos on rank 0 to avoid multiple workers writing to the same files.
@@ -369,7 +468,18 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     if cfg.actor_only_resume and cfg.policy_only_resume:
       raise ValueError("actor_only_resume and policy_only_resume are mutually exclusive.")
-    if cfg.actor_only_resume:
+    if recovery_resume_path is not None:
+      if not cfg.actor_only_resume:
+        raise ValueError("recovery_resume_checkpoint_path requires actor_only_resume=True.")
+      print(f"[INFO]: Fusing walking actor checkpoint with recovery checkpoint: {recovery_resume_path}")
+      _load_fused_antifall_getup_actor(
+        runner,
+        walking_resume_path=resume_path,
+        recovery_resume_path=recovery_resume_path,
+        target_env_cfg=cfg.env,
+        map_location=device,
+      )
+    elif cfg.actor_only_resume:
       load_cfg = {"actor": True}
       print("[INFO]: Actor-only resume enabled; optimizer and critic are reinitialized.")
       _load_policy_with_compatible_input_expansion(
@@ -377,6 +487,11 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
         resume_path,
         load_cfg=load_cfg,
         map_location=device,
+        action_output_scale=_recovery_action_output_scale_for_checkpoint(
+          resume_path,
+          cfg.env,
+          map_location=device,
+        ),
       )
     elif cfg.policy_only_resume:
       load_cfg = {"actor": True, "critic": True, "optimizer": False, "iteration": False, "rnd": False}
@@ -389,7 +504,7 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
       )
     else:
       runner.load(str(resume_path), load_cfg=None)
-    if cfg.reset_actor_std_on_resume:
+    if cfg.reset_actor_std_on_resume or recovery_resume_path is not None:
       _reset_actor_distribution_std(runner, cfg.agent)
 
   # Only write config files from rank 0 to avoid race conditions.
@@ -402,6 +517,15 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   )
 
   env.close()
+
+
+def _resolve_checkpoint_path(path: str, *, label: str) -> Path:
+  checkpoint_path = Path(path).expanduser()
+  if not checkpoint_path.is_absolute():
+    checkpoint_path = Path.cwd() / checkpoint_path
+  if not checkpoint_path.exists():
+    raise FileNotFoundError(f"{label} checkpoint does not exist: {checkpoint_path}")
+  return checkpoint_path
 
 
 def _copy_observation_columns(
@@ -576,7 +700,7 @@ def _g1_antifall_getup_legacy_actor_layout() -> tuple[_ObsTermLayout, ...]:
   )
 
 
-def _g1_antifall_getup_actor_layout() -> tuple[_ObsTermLayout, ...]:
+def _g1_antifall_getup_actor_layout_without_recovery_phase() -> tuple[_ObsTermLayout, ...]:
   return (
     _ObsTermLayout("base_ang_vel", _scalar_features("base_ang_vel", 3), 6),
     _ObsTermLayout("projected_gravity", _scalar_features("projected_gravity", 3), 6),
@@ -587,6 +711,15 @@ def _g1_antifall_getup_actor_layout() -> tuple[_ObsTermLayout, ...]:
     _ObsTermLayout("getup_progress", _scalar_features("getup_progress", 5), 6),
     _ObsTermLayout("bfm_local_body_state", _bfm_body_state_features(_G1_ANTIFALL_29DOF_BODY_NAMES), 1),
     _ObsTermLayout("height_scan", _scalar_features("height_scan", 187), 6),
+  )
+
+
+def _g1_antifall_getup_actor_layout() -> tuple[_ObsTermLayout, ...]:
+  layout = _g1_antifall_getup_actor_layout_without_recovery_phase()
+  return (
+    *layout[:7],
+    _ObsTermLayout("recovery_phase", ("recovery_phase/active",), 1),
+    *layout[7:],
   )
 
 
@@ -692,8 +825,11 @@ def _infer_observation_projection(
   antifall_stage_actor = _g1_antifall_stage_actor_layout()
   legacy_antifall_getup_actor = _g1_antifall_getup_legacy_actor_layout()
   antifall_actor = _g1_antifall_getup_actor_layout()
+  antifall_actor_without_recovery_phase = _g1_antifall_getup_actor_layout_without_recovery_phase()
   if old_cols == _layout_width(getup_actor) and target_cols == _layout_width(antifall_actor):
     return _build_observation_projection(getup_actor, antifall_actor)
+  if old_cols == _layout_width(antifall_actor_without_recovery_phase) and target_cols == _layout_width(antifall_actor):
+    return _build_observation_projection(antifall_actor_without_recovery_phase, antifall_actor)
   if old_cols == _layout_width(getup_actor) and target_cols == _layout_width(legacy_antifall_getup_actor):
     return _build_observation_projection(getup_actor, legacy_antifall_getup_actor)
   if old_cols == _layout_width(antifall_stage_actor) and target_cols == _layout_width(antifall_actor):
@@ -710,22 +846,26 @@ def _expand_action_vector_by_name(
   source_action_names: Sequence[str],
   target_action_names: Sequence[str],
   fill_new_from_target: bool,
+  source_value_scale: float = 1.0,
 ) -> torch.Tensor | None:
   if old.shape == target.shape:
-    return old
+    if source_value_scale == 1.0:
+      return old
+    return old * float(source_value_scale)
   if old.ndim != 1 or target.ndim != 1:
     return None
   if old.shape[0] != len(source_action_names) or target.shape[0] != len(target_action_names):
     return None
 
   expanded = target.detach().clone() if fill_new_from_target else torch.zeros_like(target)
+  scale = float(source_value_scale)
   source_by_name = {str(name): idx for idx, name in enumerate(source_action_names)}
   copied = False
   for target_idx, name in enumerate(target_action_names):
     source_idx = source_by_name.get(str(name))
     if source_idx is None:
       continue
-    expanded[target_idx] = old[source_idx]
+    expanded[target_idx] = old[source_idx] * scale
     copied = True
   return expanded if copied else None
 
@@ -736,9 +876,12 @@ def _expand_output_head_by_name(
   *,
   source_action_names: Sequence[str],
   target_action_names: Sequence[str],
+  source_value_scale: float = 1.0,
 ) -> torch.Tensor | None:
   if old.shape == target.shape:
-    return old
+    if source_value_scale == 1.0:
+      return old
+    return old * float(source_value_scale)
   if old.ndim != 2 or target.ndim != 2:
     return None
   if old.shape[1] != target.shape[1]:
@@ -747,13 +890,14 @@ def _expand_output_head_by_name(
     return None
 
   expanded = torch.zeros_like(target)
+  scale = float(source_value_scale)
   source_by_name = {str(name): idx for idx, name in enumerate(source_action_names)}
   copied = False
   for target_idx, name in enumerate(target_action_names):
     source_idx = source_by_name.get(str(name))
     if source_idx is None:
       continue
-    expanded[target_idx] = old[source_idx]
+    expanded[target_idx] = old[source_idx] * scale
     copied = True
   return expanded if copied else None
 
@@ -764,10 +908,13 @@ def _expand_action_output_state(
   *,
   source_action_names: Sequence[str] | None = None,
   target_action_names: Sequence[str] | None = None,
+  action_output_scale: float = 1.0,
 ) -> bool:
   old_head = checkpoint_state.get("mlp.6.weight")
   target_head = target_state.get("mlp.6.weight")
-  if old_head is None or target_head is None or old_head.shape == target_head.shape:
+  if old_head is None or target_head is None:
+    return False
+  if old_head.shape == target_head.shape and float(action_output_scale) == 1.0:
     return False
 
   source_names = (
@@ -788,6 +935,7 @@ def _expand_action_output_state(
     target_head,
     source_action_names=source_names,
     target_action_names=target_names,
+    source_value_scale=action_output_scale,
   )
   if expanded_head is None:
     return False
@@ -802,6 +950,7 @@ def _expand_action_output_state(
       source_action_names=source_names,
       target_action_names=target_names,
       fill_new_from_target=False,
+      source_value_scale=action_output_scale,
     )
     if expanded_bias is None:
       return False
@@ -816,6 +965,7 @@ def _expand_action_output_state(
       source_action_names=source_names,
       target_action_names=target_names,
       fill_new_from_target=True,
+      source_value_scale=action_output_scale,
     )
     if expanded_std is None:
       return False
@@ -830,6 +980,7 @@ def _expand_model_input_state(
   *,
   source_action_names: Sequence[str] | None = None,
   target_action_names: Sequence[str] | None = None,
+  action_output_scale: float = 1.0,
 ) -> bool:
   """Resize legacy actor/critic tensors for compatible observation dims.
 
@@ -888,10 +1039,156 @@ def _expand_model_input_state(
     target_state,
     source_action_names=source_action_names,
     target_action_names=target_action_names,
+    action_output_scale=action_output_scale,
   ):
     changed = True
 
   return changed
+
+
+def _expanded_actor_state_for_target(
+  source_state: dict[str, torch.Tensor],
+  target_state: dict[str, torch.Tensor],
+  *,
+  action_output_scale: float = 1.0,
+) -> dict[str, torch.Tensor]:
+  expanded = {key: value.detach().clone() if torch.is_tensor(value) else value for key, value in source_state.items()}
+  _expand_model_input_state(expanded, target_state, action_output_scale=action_output_scale)
+  mismatched = [
+    key
+    for key, target_value in target_state.items()
+    if key in expanded and torch.is_tensor(expanded[key]) and torch.is_tensor(target_value) and expanded[key].shape != target_value.shape
+  ]
+  if mismatched:
+    raise RuntimeError(
+      "Cannot expand actor checkpoint to target policy shape for keys: "
+      + ", ".join(sorted(mismatched))
+    )
+  return expanded
+
+
+def _fuse_antifall_getup_actor_state(
+  walking_state: dict[str, torch.Tensor],
+  recovery_state: dict[str, torch.Tensor],
+  target_state: dict[str, torch.Tensor],
+  *,
+  recovery_action_output_scale: float = 1.0,
+) -> dict[str, torch.Tensor]:
+  """Fuse walking Stage4b columns with AntiFall-GetUp recovery columns.
+
+  The AntiFall-GetUp policy uses the same actor for two action semantics:
+  Stage4b-style default-offset walking while upright, and current-pose recovery
+  deltas after a real fall.  A pure recovery checkpoint preserves get-up but
+  weakens walking.  This fusion keeps the walking network as the backbone and
+  overwrites only target observation columns that do not exist in the walking
+  Stage4b layout with the recovery checkpoint columns.
+  """
+
+  walking_expanded = _expanded_actor_state_for_target(walking_state, target_state)
+  recovery_expanded = _expanded_actor_state_for_target(
+    recovery_state,
+    target_state,
+    action_output_scale=recovery_action_output_scale,
+  )
+  fused = {key: value.detach().clone() if torch.is_tensor(value) else value for key, value in walking_expanded.items()}
+
+  first_layer = fused.get("mlp.0.weight")
+  target_first_layer = target_state.get("mlp.0.weight")
+  if first_layer is None or target_first_layer is None:
+    raise RuntimeError("Cannot fuse actors: target policy has no mlp.0.weight.")
+  projection = _infer_observation_projection(
+    _layout_width(_g1_antifall_stage_actor_layout()),
+    int(target_first_layer.shape[1]),
+  )
+  if projection is None:
+    raise RuntimeError("Cannot fuse actors: target actor layout is not AntiFall-GetUp.")
+
+  recovery_stats_columns = [idx for idx, source_idx in enumerate(projection.stats_source_by_target) if source_idx is None]
+  if not recovery_stats_columns:
+    raise RuntimeError("Cannot fuse actors: no recovery-only observation columns found.")
+
+  recovery_weight = recovery_expanded.get("mlp.0.weight")
+  if recovery_weight is None or recovery_weight.shape != first_layer.shape:
+    raise RuntimeError("Cannot fuse actors: recovery mlp.0.weight is incompatible with target policy.")
+  fused["mlp.0.weight"][:, recovery_stats_columns] = recovery_weight[:, recovery_stats_columns]
+
+  for key in ("obs_normalizer._mean", "obs_normalizer._var", "obs_normalizer._std"):
+    fused_value = fused.get(key)
+    recovery_value = recovery_expanded.get(key)
+    if fused_value is None or recovery_value is None:
+      continue
+    if not (torch.is_tensor(fused_value) and torch.is_tensor(recovery_value)):
+      continue
+    if fused_value.shape != recovery_value.shape or fused_value.ndim != 2:
+      raise RuntimeError(f"Cannot fuse actors: {key} is incompatible with target policy.")
+    fused_value[:, recovery_stats_columns] = recovery_value[:, recovery_stats_columns]
+
+  return fused
+
+
+def _load_fused_antifall_getup_actor(
+  runner,
+  *,
+  walking_resume_path: Path,
+  recovery_resume_path: Path,
+  target_env_cfg: ManagerBasedRlEnvCfg | None = None,
+  map_location: str | None,
+) -> None:
+  walking_checkpoint = torch.load(walking_resume_path, map_location=map_location, weights_only=False)
+  recovery_checkpoint = torch.load(recovery_resume_path, map_location=map_location, weights_only=False)
+  walking_state = walking_checkpoint.get("actor_state_dict")
+  recovery_state = recovery_checkpoint.get("actor_state_dict")
+  if not isinstance(walking_state, dict):
+    raise RuntimeError(f"Walking checkpoint has no actor_state_dict: {walking_resume_path}")
+  if not isinstance(recovery_state, dict):
+    raise RuntimeError(f"Recovery checkpoint has no actor_state_dict: {recovery_resume_path}")
+
+  recovery_action_output_scale = 1.0
+  if target_env_cfg is not None:
+    recovery_action_output_scale = _recovery_action_output_scale_for_checkpoint(
+      recovery_resume_path,
+      target_env_cfg,
+      checkpoint_state=recovery_state,
+      map_location=map_location,
+    )
+
+  policy = runner.alg.get_policy()
+  if hasattr(policy, "walking_actor") and hasattr(policy, "recovery_actor"):
+    walking_actor_state = policy.walking_actor.state_dict()
+    recovery_actor_state = policy.recovery_actor.state_dict()
+    walking_expanded = _expanded_actor_state_for_target(walking_state, walking_actor_state)
+    recovery_expanded = _expanded_actor_state_for_target(
+      recovery_state,
+      recovery_actor_state,
+      action_output_scale=recovery_action_output_scale,
+    )
+    policy.walking_actor.load_state_dict(walking_expanded, strict=True)
+    policy.recovery_actor.load_state_dict(recovery_expanded, strict=True)
+
+    policy_distribution = getattr(policy, "distribution", None)
+    walking_distribution = getattr(policy.walking_actor, "distribution", None)
+    if policy_distribution is not None and walking_distribution is not None:
+      policy_distribution.load_state_dict(walking_distribution.state_dict(), strict=True)
+
+    print(
+      "[INFO]: Loaded gated AntiFall-GetUp actor; walking branch from "
+      f"{walking_resume_path} and recovery branch from {recovery_resume_path}. "
+      "Optimizer and critic are reinitialized."
+    )
+    return
+
+  fused = _fuse_antifall_getup_actor_state(
+    walking_state,
+    recovery_state,
+    policy.state_dict(),
+    recovery_action_output_scale=recovery_action_output_scale,
+  )
+  policy.load_state_dict(fused, strict=True)
+  print(
+    "[INFO]: Loaded fused AntiFall-GetUp actor; walking backbone from "
+    f"{walking_resume_path} and recovery-only input columns from {recovery_resume_path}. "
+    "Optimizer and critic are reinitialized."
+  )
 
 
 def _load_policy_with_compatible_input_expansion(
@@ -900,6 +1197,7 @@ def _load_policy_with_compatible_input_expansion(
   *,
   load_cfg: dict | None,
   map_location: str | None,
+  action_output_scale: float = 1.0,
 ) -> None:
   """Load actor/critic checkpoints, expanding input tensors for additive obs terms."""
 
@@ -920,7 +1218,11 @@ def _load_policy_with_compatible_input_expansion(
       if not isinstance(actor_state, dict):
         raise
       target_actor_state = runner.alg.get_policy().state_dict()
-      if _expand_model_input_state(actor_state, target_actor_state):
+      if _expand_model_input_state(
+        actor_state,
+        target_actor_state,
+        action_output_scale=action_output_scale,
+      ):
         changed_parts.append("actor")
       runner.alg.get_policy().load_state_dict(actor_state, strict=True)
 

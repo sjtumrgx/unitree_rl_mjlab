@@ -189,6 +189,16 @@ def getup_progress_features(
   return torch.stack(features, dim=1)
 
 
+def host_getup_recovery_phase(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Return the action term's current-pose recovery phase as a 1-D observation."""
+
+  phase = getattr(env, "_host_getup_recovery_phase_active", None)
+  if phase is None:
+    return torch.zeros(_batch_size(env), 1, device=getattr(env, "device", None) or "cpu")
+  phase = torch.as_tensor(phase, device=getattr(env, "device", None) or phase.device)
+  return phase.float().reshape(-1, 1)
+
+
 def host_effective_actions(env: ManagerBasedRlEnv, action_name: str = "joint_pos") -> torch.Tensor:
   """Return HoST get-up actions after unactuated warmup/curriculum gating.
 

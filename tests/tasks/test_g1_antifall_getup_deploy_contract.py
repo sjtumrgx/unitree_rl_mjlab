@@ -9,6 +9,7 @@ from src.tasks.velocity.rl import antifall_deploy_contract as deploy
 
 def test_antifall_getup_extra_actor_terms_have_explicit_deploy_dims() -> None:
   assert deploy._actor_term_dim("getup_progress", joint_dim=29) == 5
+  assert deploy._actor_term_dim("recovery_phase", joint_dim=29) == 1
   assert deploy._actor_term_dim("bfm_local_body_state", joint_dim=29) == 448
   assert deploy._actor_term_dim("height_scan", joint_dim=29) == 187
 

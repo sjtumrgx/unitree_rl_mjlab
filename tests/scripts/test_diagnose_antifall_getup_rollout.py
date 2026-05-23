@@ -207,6 +207,8 @@ def test_antifall_getup_forced_fall_options_are_recorded_in_metadata() -> None:
       "0.75",
       "--force-fall-command-quiet-s",
       "2.5",
+      "--seed",
+      "104",
       "--disable-interval-push",
     ]
   )
@@ -216,6 +218,7 @@ def test_antifall_getup_forced_fall_options_are_recorded_in_metadata() -> None:
   assert metadata["forced_fall_step"] == 25
   assert metadata["forced_fall_prob"] == pytest.approx(0.75)
   assert metadata["forced_fall_command_quiet_s"] == pytest.approx(2.5)
+  assert metadata["seed"] == 104
   assert metadata["disable_interval_push"] is True
 
 
@@ -229,6 +232,19 @@ def test_antifall_getup_disable_interval_push_removes_push_event() -> None:
   assert "push_robot" not in cfg.events
   assert "randomize_terrain" in cfg.events
 
+
+
+
+def test_antifall_getup_seed_option_configures_torch_rng(monkeypatch) -> None:
+  import torch
+
+  calls = []
+  monkeypatch.setattr(torch, "manual_seed", lambda seed: calls.append(int(seed)))
+  args = diag.build_parser().parse_args(["--agent", "zero", "--seed", "104"])
+
+  diag.configure_rollout_seed(args)
+
+  assert calls == [104]
 
 def test_antifall_getup_force_fall_reset_marks_near_failure_disturbance(monkeypatch) -> None:
   root_calls = []
@@ -309,6 +325,7 @@ def test_antifall_getup_step_record_includes_action_and_target_telemetry() -> No
   term = SimpleNamespace(
     _raw_actions=torch.tensor([[1.5, -0.5], [0.25, -0.75]]),
     _processed_actions=torch.tensor([[0.8, -0.4], [0.1, -0.6]]),
+    _recovery_phase_active=torch.tensor([True, False]),
   )
   env = SimpleNamespace(
     scene={"robot": asset},
@@ -338,9 +355,61 @@ def test_antifall_getup_step_record_includes_action_and_target_telemetry() -> No
   assert record["action"]["action_rate_max_abs"] == pytest.approx(0.75)
   assert record["action"]["term_raw_max_abs"] == pytest.approx(1.5)
   assert record["action"]["processed_max_abs"] == pytest.approx(0.8)
+  assert record["action"]["recovery_phase_active_rate"] == pytest.approx(0.5)
+  assert record["action_phase"]["recovery_phase_active_rate"] == pytest.approx(0.5)
+  assert record["action_phase"]["coarse_stable_rate"] == pytest.approx(0.5)
+  assert record["action_phase"]["stable_exit_ready_rate"] == pytest.approx(0.5)
   assert record["target"]["joint_target_delta_max"] == pytest.approx(0.4)
   assert record["target"]["joint_target_abs_max"] == pytest.approx(0.9)
 
+
+
+
+def test_antifall_getup_step_record_can_include_per_env_command_phase_trace() -> None:
+  import torch
+
+  asset = SimpleNamespace(
+    body_names=("torso_link",),
+    data=SimpleNamespace(
+      root_link_pos_w=torch.tensor([[0.0, 0.0, 0.5], [0.0, 0.0, 0.4]]),
+      body_link_pos_w=torch.tensor([[[0.0, 0.0, 0.7]], [[0.0, 0.0, 0.3]]]),
+      projected_gravity_b=torch.tensor([[0.0, 0.0, -1.0], [0.8, 0.0, -0.6]]),
+      root_link_lin_vel_b=torch.tensor([[0.2, 0.1, 0.0], [0.0, 0.0, 0.0]]),
+      root_link_ang_vel_b=torch.tensor([[0.0, 0.0, 0.2], [0.0, 0.0, -0.1]]),
+      joint_pos=torch.zeros(2, 2),
+    ),
+  )
+  term = SimpleNamespace(
+    _raw_actions=torch.zeros(2, 2),
+    _processed_actions=torch.zeros(2, 2),
+    _recovery_phase_active=torch.tensor([True, False]),
+  )
+  command = torch.tensor([[0.3, 0.1, 0.2], [0.6, 0.0, 0.4]])
+  env = SimpleNamespace(
+    scene={"robot": asset},
+    command_manager=SimpleNamespace(get_command=lambda name: command),
+    metrics_manager=None,
+    reward_manager=None,
+    action_manager=SimpleNamespace(_terms={"joint_pos": term}),
+  )
+
+  record = diag.build_step_record(
+    env,
+    step_index=9,
+    raw_action=torch.zeros(2, 2),
+    clipped_action=torch.zeros(2, 2),
+    previous_clipped_action=None,
+    clip_actions=None,
+    rewards=torch.zeros(2),
+    dones=torch.zeros(2, dtype=torch.bool),
+    extras={},
+    include_env_trace=True,
+  )
+
+  assert record["env_trace"]["fallen"] == [False, True]
+  assert record["env_trace"]["recovery_phase_active"] == [True, False]
+  assert record["env_trace"]["tracking"] == [True, False]
+  assert record["env_trace"]["command"] == [[0.3, 0.1, 0.2], [0.6, 0.0, 0.4]]
 
 def test_antifall_getup_step_record_includes_assist_telemetry() -> None:
   import torch

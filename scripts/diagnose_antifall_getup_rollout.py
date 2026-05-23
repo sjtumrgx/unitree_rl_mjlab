@@ -204,13 +204,85 @@ def _root_stats(env: Any, asset: Any) -> dict[str, float | None]:
   }
 
 
-def _action_term_tensors(env: Any) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+def _action_term_tensors(
+  env: Any,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
   action_manager = getattr(env, "action_manager", None)
   terms = getattr(action_manager, "_terms", {})
   term = terms.get("joint_pos") if isinstance(terms, dict) else None
   processed = getattr(term, "_processed_actions", None)
   raw = getattr(term, "_raw_actions", None)
-  return processed, raw
+  recovery_phase_active = getattr(term, "_recovery_phase_active", None)
+  return processed, raw, recovery_phase_active
+
+
+def _action_phase_state(env: Any, asset: Any) -> dict[str, float | None]:
+  """Expose the action term's recovery-exit gates for rollout triage.
+
+  AntiFall-GetUp can recover enough to receive anti-fall recovery metrics while
+  still staying in the current-pose GetUp action contract.  Recording the action
+  term's coarse torso/tilt gate, optional strict stable-stance gate, and hold
+  counter makes it clear whether poor post-fall walking is a policy-learning
+  issue or an exit-contract issue.
+  """
+
+  action_manager = getattr(env, "action_manager", None)
+  terms = getattr(action_manager, "_terms", {})
+  term = terms.get("joint_pos") if isinstance(terms, dict) else None
+  if term is None:
+    return {
+      "recovery_phase_active_rate": None,
+      "coarse_stable_rate": None,
+      "strict_stable_rate": None,
+      "stable_exit_ready_rate": None,
+      "stable_hold_steps_mean": None,
+    }
+
+  active = getattr(term, "_recovery_phase_active", None)
+  stable_steps = getattr(term, "_stable_upright_steps", None)
+  cfg = getattr(term, "cfg", None)
+  torso_height = _root_stats(env, asset)["torso_height_mean"]
+  # Scalar mean above is not enough for rates; recompute the same vector form.
+  root_z = _relative_z(env, asset.data.root_link_pos_w[:, 2])
+  torso_id = _body_id(asset, "torso_link")
+  if torso_id is not None and hasattr(asset.data, "body_link_pos_w"):
+    torso_height_vec = _relative_z(env, asset.data.body_link_pos_w[:, torso_id, 2])
+  else:
+    torso_height_vec = root_z
+  tilt = torch.linalg.norm(asset.data.projected_gravity_b[:, :2], dim=1)
+  height_threshold = float(getattr(cfg, "stable_upright_height_threshold", 0.55))
+  tilt_threshold = float(getattr(cfg, "stable_upright_tilt_threshold", 0.30))
+  coarse = (torso_height_vec >= height_threshold) & (tilt <= tilt_threshold)
+
+  strict = None
+  stable_func = getattr(cfg, "stable_upright_func", None)
+  if stable_func is not None:
+    params = getattr(term, "_stable_upright_params", None) or {}
+    try:
+      strict = torch.as_tensor(stable_func(env, **params), dtype=torch.bool, device=coarse.device)
+    except Exception:
+      strict = None
+
+  stable = coarse if strict is None else (coarse & strict)
+  hold_required = max(1, int(getattr(cfg, "stable_upright_hold_steps", 1)))
+  if torch.is_tensor(stable_steps):
+    exit_ready = stable & (stable_steps.to(device=stable.device) >= max(0, hold_required - 1))
+    hold_mean = _scalar(stable_steps.float().mean())
+  else:
+    exit_ready = stable
+    hold_mean = None
+
+  return {
+    "recovery_phase_active_rate": _scalar(active.float().mean()) if torch.is_tensor(active) else None,
+    "coarse_stable_rate": _scalar(coarse.float().mean()),
+    "strict_stable_rate": _scalar(strict.float().mean()) if torch.is_tensor(strict) else None,
+    "stable_exit_ready_rate": _scalar(exit_ready.float().mean()),
+    "stable_hold_steps_mean": hold_mean,
+    "stable_height_threshold": height_threshold,
+    "stable_tilt_threshold": tilt_threshold,
+    "stable_hold_required": float(hold_required),
+    "torso_height_mean": torso_height,
+  }
 
 
 def _joint_target_delta(env: Any, asset: Any) -> dict[str, float | None]:
@@ -236,6 +308,46 @@ def _joint_target_delta(env: Any, asset: Any) -> dict[str, float | None]:
   }
 
 
+def _env_trace(env: Any, asset: Any, command_name: str = "twist") -> dict[str, Any]:
+  command_manager = getattr(env, "command_manager", None)
+  command = command_manager.get_command(command_name) if command_manager is not None else None
+  lin_vel_b = getattr(asset.data, "root_link_lin_vel_b", None)
+  ang_vel_b = getattr(asset.data, "root_link_ang_vel_b", None)
+  root_z = _relative_z(env, asset.data.root_link_pos_w[:, 2])
+  torso_id = _body_id(asset, "torso_link")
+  if torso_id is not None and hasattr(asset.data, "body_link_pos_w"):
+    torso_height = _relative_z(env, asset.data.body_link_pos_w[:, torso_id, 2])
+  else:
+    torso_height = root_z
+  tilt = torch.linalg.norm(asset.data.projected_gravity_b[:, :2], dim=1)
+  fallen = (torso_height < 0.35) | (tilt > 0.75)
+
+  action_manager = getattr(env, "action_manager", None)
+  terms = getattr(action_manager, "_terms", {})
+  term = terms.get("joint_pos") if isinstance(terms, dict) else None
+  active = getattr(term, "_recovery_phase_active", None)
+  if not torch.is_tensor(active):
+    active = torch.zeros_like(fallen)
+
+  tracking = torch.zeros_like(fallen)
+  if torch.is_tensor(command) and lin_vel_b is not None and ang_vel_b is not None:
+    lin_error = torch.linalg.norm(command[:, :2] - lin_vel_b[:, :2], dim=1)
+    yaw_error = torch.abs(command[:, 2] - ang_vel_b[:, 2])
+    moving = (torch.linalg.norm(command[:, :2], dim=1) + torch.abs(command[:, 2])) > 0.1
+    tracking = (lin_error <= 0.5) & (yaw_error <= 0.75) & moving
+
+  out: dict[str, Any] = {
+    "fallen": fallen.detach().cpu().tolist(),
+    "recovery_phase_active": active.detach().bool().cpu().tolist(),
+    "tracking": tracking.detach().bool().cpu().tolist(),
+    "torso_height": [round(float(v), 4) for v in torso_height.detach().cpu().tolist()],
+    "tilt": [round(float(v), 4) for v in tilt.detach().cpu().tolist()],
+  }
+  if torch.is_tensor(command):
+    out["command"] = [[round(float(x), 4) for x in row] for row in command.detach().cpu().tolist()]
+  return out
+
+
 def build_step_record(
   env: Any,
   *,
@@ -247,13 +359,14 @@ def build_step_record(
   rewards: torch.Tensor,
   dones: torch.Tensor,
   extras: dict[str, Any],
+  include_env_trace: bool = False,
 ) -> dict[str, Any]:
   asset = _scene_get(env.scene, "robot")
-  processed_actions, term_raw_actions = _action_term_tensors(env)
+  processed_actions, term_raw_actions, recovery_phase_active = _action_term_tensors(env)
   action_rate = None
   if previous_clipped_action is not None:
     action_rate = clipped_action - previous_clipped_action
-  return {
+  record = {
     "schema_version": SCHEMA_VERSION,
     "type": "step",
     "status": "ok",
@@ -269,8 +382,12 @@ def build_step_record(
       "term_raw_max_abs": _max_abs(term_raw_actions),
       "processed_max_abs": _max_abs(processed_actions),
       "processed_l2_max": _l2_max(processed_actions),
+      "recovery_phase_active_rate": _scalar(recovery_phase_active.float().mean())
+      if torch.is_tensor(recovery_phase_active)
+      else None,
     },
     "target": _joint_target_delta(env, asset),
+    "action_phase": _action_phase_state(env, asset),
     "command": _command_stats(env, asset),
     "root": _root_stats(env, asset),
     "metrics": _metric_terms(env),
@@ -280,6 +397,9 @@ def build_step_record(
     "done_any": bool(torch.as_tensor(dones).bool().any().item()),
     "time_out_any": bool(torch.as_tensor(extras.get("time_outs", False)).bool().any().item()),
   }
+  if include_env_trace:
+    record["env_trace"] = _env_trace(env, asset)
+  return record
 
 
 def summarize_records(records: list[dict[str, Any]], *, success_threshold: float = 0.8) -> dict[str, Any]:
@@ -478,7 +598,9 @@ def build_metadata_record(args: argparse.Namespace, *, num_envs: int, clip_actio
     "forced_fall_step": int(args.force_fall_step) if args.force_fall_step is not None else None,
     "forced_fall_prob": float(args.force_fall_prob),
     "forced_fall_command_quiet_s": float(args.force_fall_command_quiet_s),
+    "seed": int(args.seed) if args.seed is not None else None,
     "disable_interval_push": bool(args.disable_interval_push),
+    "include_env_trace": bool(args.include_env_trace),
   }
 
 
@@ -513,6 +635,15 @@ def _make_trained_policy(args: argparse.Namespace, env, agent_cfg):
   return runner.get_inference_policy(device=args.device)
 
 
+def configure_rollout_seed(args: argparse.Namespace) -> None:
+  """Apply an optional deterministic seed for rollout diagnostics."""
+
+  seed = getattr(args, "seed", None)
+  if seed is None:
+    return
+  torch.manual_seed(int(seed))
+
+
 def run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
   import mjlab.tasks  # noqa: F401
   import src.tasks  # noqa: F401
@@ -523,6 +654,7 @@ def run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
   from src.tasks.velocity.config.g1_antifall.env_cfgs import unitree_g1_antifall_getup_env_cfg
 
   configure_torch_backends()
+  configure_rollout_seed(args)
   # Gate rollouts should prove the BFM-style lifecycle:
   # nominal walking first, explicit push/fall disturbance, then recovery.
   # The registered play config keeps a small hard-reset probability to preserve
@@ -573,6 +705,7 @@ def run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
           rewards=rewards.detach(),
           dones=dones.detach(),
           extras=extras,
+          include_env_trace=bool(getattr(args, "include_env_trace", False)),
         )
       )
       previous_clipped_action = clipped_action.detach().clone()
@@ -591,6 +724,7 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--num-envs", type=int, default=128)
   parser.add_argument("--steps", type=int, default=1000)
   parser.add_argument("--device", default="cpu")
+  parser.add_argument("--seed", type=int, default=None)
   parser.add_argument("--train-like", action="store_true")
   parser.add_argument("--stop-on-done", action="store_true")
   parser.add_argument("--success-threshold", type=float, default=0.8)
@@ -598,6 +732,7 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--force-fall-prob", type=float, default=1.0)
   parser.add_argument("--force-fall-command-quiet-s", type=float, default=2.0)
   parser.add_argument("--disable-interval-push", action="store_true")
+  parser.add_argument("--include-env-trace", action="store_true")
   parser.add_argument("--output", type=Path, default=None)
   return parser
 

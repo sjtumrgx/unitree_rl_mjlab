@@ -324,6 +324,26 @@ def _restore_antifall_getup_actor_contract(
   actor_obs.terms["height_scan"].history_length = history_length
 
 
+def _add_antifall_getup_recovery_phase_observations(
+  cfg: ManagerBasedRlEnvCfg,
+) -> None:
+  term = ObservationTermCfg(
+    func=mdp.host_getup_recovery_phase,
+    history_length=0,
+  )
+  actor_terms = OrderedDict()
+  inserted = False
+  for name, existing_term in cfg.observations["actor"].terms.items():
+    actor_terms[name] = existing_term
+    if name == "getup_progress":
+      actor_terms["recovery_phase"] = term
+      inserted = True
+  if not inserted:
+    actor_terms["recovery_phase"] = term
+  cfg.observations["actor"].terms = actor_terms
+  cfg.observations["critic"].terms["recovery_phase"] = term
+
+
 def _make_antifall_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = unitree_g1_flat_env_cfg(play=play)
   _apply_antifall_actor_contract(cfg)
@@ -636,13 +656,14 @@ def unitree_g1_antifall_getup_env_cfg(
     recovery_window_s=_RECOVERY_WINDOW_S,
     fallen_height_threshold=0.35,
     fallen_tilt_threshold=0.75,
-    stable_upright_hold_steps=10,
-    stable_upright_func=mdp.stable_getup_success_mask,
-    stable_upright_params={
-      "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
-      **_host_getup_stable_success_params(),
-    },
-    recovery_action_scale=1.0,
+    # Exit the current-pose recovery action contract as soon as the coarse
+    # torso/tilt gate says the robot is upright enough for the warm-started
+    # walking prior.  Recovery commands stay quiet for the fixed BFM-style
+    # disturbance window, then ramp briefly after this action phase exits.
+    stable_upright_hold_steps=1,
+    # Match BFM-Zero G1 fall-recovery control: actions are normalized/clipped
+    # upstream, then converted to joint deltas with a 0.25 physical scale.
+    recovery_action_scale=0.25,
     recovery_unactuated_timesteps=_HOST_GETUP_UNACTUATED_TIMESTEPS,
     walking_exit_max_delta=_HOST_GETUP_MAX_ACTION_DELTA,
     recovery_default_offset_joint_names=(
@@ -703,6 +724,9 @@ def unitree_g1_antifall_getup_env_cfg(
   _add_support_depth_camera(cfg)
   _add_support_body_contact_sensor(cfg)
   _restore_antifall_getup_actor_contract(cfg)
+  cfg.observations["actor"].terms["command"].func = mdp.recovery_phase_quiet_generated_commands
+  cfg.observations["actor"].terms["command"].params["phase_attr"] = "_host_getup_recovery_phase_active"
+  _add_antifall_getup_recovery_phase_observations(cfg)
   _add_getup_stall_guard(cfg)
   cfg.terminations["stalled_getup"].params["recovery_grace_s"] = _RECOVERY_WINDOW_S
   _apply_getup_nan_safety(cfg)
@@ -721,6 +745,11 @@ def unitree_g1_antifall_getup_env_cfg(
   cfg.events["reset_base"].params["preset_weight_stages"] = _GETUP_TRAIN_PRESET_WEIGHT_STAGES
   cfg.events["reset_base"].params["command_name"] = "twist"
   cfg.events["reset_base"].params["command_quiet_s"] = _RECOVERY_WINDOW_S
+  cfg.events["ramp_recovery_exit_command"] = EventTermCfg(
+    func=mdp.ramp_velocity_command_after_recovery_exit,
+    mode="step",
+    params={"command_name": "twist", "ramp_s": 1.0},
+  )
   _apply_host_getup_safe_regularizers(cfg)
   _apply_host_getup_reward_stack(cfg)
   _add_antifall_rewards_after_getup_stack(cfg, locomotion_reward_source)

@@ -17,6 +17,7 @@ def test_antifall_getup_task_is_registered_with_own_experiment() -> None:
   rl_cfg = load_rl_cfg(TASK_ID)
   assert rl_cfg.experiment_name == "g1_antifall_getup"
   assert rl_cfg.run_name == "antifall_getup"
+  assert rl_cfg.clip_actions == 5.0
 
 
 def test_antifall_getup_recovery_warmup_task_is_registered() -> None:
@@ -45,14 +46,17 @@ def test_antifall_getup_recovery_warmup_uses_conservative_warmstart_hyperparams(
   final_cfg = load_rl_cfg(TASK_ID)
 
   # Recovery warmup is normally actor-only resumed from the standalone GetUp
-  # policy.  Keep the physical action envelope, but make PPO updates smaller
-  # than both the from-scratch GetUp bootstrap and the final walking+recovery
-  # fine-tune so a short warmup cannot erase the proven floor-recovery prior.
-  assert warmup_cfg.clip_actions == getup_cfg.clip_actions == 5.0
+  # policy, and the final mixed task starts from both the walking and recovery
+  # priors.  Keep the physical action envelope, but make both warm-start update
+  # scales much smaller than from-scratch GetUp so short switch/resume fine-tunes
+  # cannot erase either prior.
+  assert final_cfg.clip_actions == warmup_cfg.clip_actions == getup_cfg.clip_actions == 5.0
   assert warmup_cfg.algorithm.learning_rate <= 1.0e-5
   assert warmup_cfg.algorithm.desired_kl <= 0.001
-  assert warmup_cfg.algorithm.learning_rate < final_cfg.algorithm.learning_rate < getup_cfg.algorithm.learning_rate
-  assert warmup_cfg.algorithm.desired_kl < final_cfg.algorithm.desired_kl < getup_cfg.algorithm.desired_kl
+  assert final_cfg.algorithm.learning_rate == warmup_cfg.algorithm.learning_rate
+  assert final_cfg.algorithm.desired_kl == warmup_cfg.algorithm.desired_kl
+  assert final_cfg.algorithm.learning_rate < getup_cfg.algorithm.learning_rate
+  assert final_cfg.algorithm.desired_kl < getup_cfg.algorithm.desired_kl
   assert warmup_cfg.actor.distribution_cfg["init_std"] <= getup_cfg.actor.distribution_cfg["init_std"]
 
 def test_antifall_getup_recovery_warmup_is_fallen_recovery_only() -> None:
@@ -89,6 +93,18 @@ def test_antifall_getup_preserves_getup_recovery_actor_observation_contract() ->
     assert actor.history_length is None
     assert "height_scan" in actor.terms
     assert any(sensor.name == "terrain_scan" for sensor in cfg.scene.sensors or ())
+    assert tuple(actor.terms) == (
+      "base_ang_vel",
+      "projected_gravity",
+      "command",
+      "joint_pos",
+      "joint_vel",
+      "actions",
+      "getup_progress",
+      "recovery_phase",
+      "bfm_local_body_state",
+      "height_scan",
+    )
 
     for term_name in (
       "base_ang_vel",
@@ -102,6 +118,7 @@ def test_antifall_getup_preserves_getup_recovery_actor_observation_contract() ->
     ):
       assert actor.terms[term_name].history_length == getup.observations["actor"].terms[term_name].history_length
 
+    assert actor.terms["recovery_phase"].history_length == 0
     assert actor.terms["bfm_local_body_state"].history_length == getup.observations["actor"].terms["bfm_local_body_state"].history_length
 
 
@@ -110,11 +127,12 @@ def test_antifall_getup_projection_layout_keeps_getup_history_and_height_scan() 
 
   layout = {term.name: term for term in _g1_antifall_getup_actor_layout()}
 
-  assert _layout_width(tuple(layout.values())) == 2176
+  assert _layout_width(tuple(layout.values())) == 2177
   assert layout["height_scan"].history == 6
   assert layout["bfm_local_body_state"].history == 1
   for term_name in ("base_ang_vel", "projected_gravity", "command", "joint_pos", "joint_vel", "actions", "getup_progress"):
     assert layout[term_name].history == 6
+  assert layout["recovery_phase"].history == 1
 
 
 def test_antifall_getup_runner_uses_conservative_warmstart_finetune_hyperparams() -> None:
@@ -145,6 +163,9 @@ def test_antifall_getup_env_combines_walking_push_and_fallen_recovery_contracts(
   assert cfg.actions["joint_pos"].__class__.__name__ == "RecoveryHybridJointPositionActionCfg"
   assert cfg.actions["joint_pos"].max_delta <= 1.0
   assert cfg.observations["actor"].terms["actions"].func is mdp.host_effective_actions
+  assert cfg.observations["actor"].terms["command"].func is mdp.recovery_phase_quiet_generated_commands
+  assert cfg.observations["actor"].terms["command"].params["phase_attr"] == "_host_getup_recovery_phase_active"
+  assert cfg.observations["actor"].terms["recovery_phase"].func is mdp.host_getup_recovery_phase
 
   for reward_name in (
     "track_linear_velocity",
@@ -212,6 +233,46 @@ def test_antifall_getup_uses_getup_safe_recovery_regularizers() -> None:
   assert "support_body_contact_penalty_after_lift" in cfg.rewards
   assert "pelvis_clearance_penalty" in cfg.rewards
 
+
+def test_antifall_getup_ramps_commands_after_recovery_phase_exit() -> None:
+  cfg = load_env_cfg(TASK_ID)
+
+  ramp = cfg.events["ramp_recovery_exit_command"]
+
+  assert ramp.mode == "step"
+  assert ramp.func is mdp.ramp_velocity_command_after_recovery_exit
+  assert ramp.params["command_name"] == "twist"
+  assert ramp.params["ramp_s"] == 1.0
+
+
+
+
+def test_recovery_phase_quiet_generated_commands_only_masks_actor_observation() -> None:
+  import torch
+  from types import SimpleNamespace
+
+  command = torch.tensor(
+    [
+      [0.8, -0.1, 0.2],
+      [0.6, 0.3, -0.4],
+      [-0.5, 0.2, 0.1],
+    ],
+    dtype=torch.float32,
+  )
+  env = SimpleNamespace(
+    device="cpu",
+    _host_getup_recovery_phase_active=torch.tensor([True, False, True]),
+    command_manager=SimpleNamespace(get_command=lambda name: command),
+  )
+
+  observed = mdp.recovery_phase_quiet_generated_commands(env, command_name="twist")
+
+  torch.testing.assert_close(observed[0], torch.zeros(3))
+  torch.testing.assert_close(observed[1], command[1])
+  torch.testing.assert_close(observed[2], torch.zeros(3))
+  torch.testing.assert_close(command[0], torch.tensor([0.8, -0.1, 0.2]))
+  torch.testing.assert_close(command[2], torch.tensor([-0.5, 0.2, 0.1]))
+
 def test_antifall_getup_training_has_mid_episode_paired_forced_fall_exposure() -> None:
   cfg = load_env_cfg(TASK_ID)
 
@@ -266,6 +327,53 @@ def test_recovery_command_quiet_window_zeros_velocity_until_resample() -> None:
   torch.testing.assert_close(term.vel_command_b[2], torch.zeros(3))
   torch.testing.assert_close(term.is_standing_env, torch.tensor([True, False, True]))
   torch.testing.assert_close(term.time_left, torch.tensor([2.0, 0.4, 2.0]))
+
+
+
+
+
+
+def test_recovery_exit_command_ramp_scales_saved_targets_without_extending_phase_hold() -> None:
+  import torch
+  from types import SimpleNamespace
+
+  term = SimpleNamespace(
+    vel_command_b=torch.tensor(
+      [
+        [0.8, -0.1, 0.2],
+        [0.6, 0.3, -0.4],
+        [-0.5, 0.2, 0.1],
+      ],
+      dtype=torch.float32,
+    ),
+    is_standing_env=torch.zeros(3, dtype=torch.bool),
+    time_left=torch.tensor([-0.1, -0.1, -0.1], dtype=torch.float32),
+  )
+  env = SimpleNamespace(
+    num_envs=3,
+    device="cpu",
+    step_dt=0.25,
+    _host_getup_exited_recovery_phase=torch.tensor([True, False, True]),
+    command_manager=SimpleNamespace(get_term=lambda name: term),
+  )
+
+  mdp.ramp_velocity_command_after_recovery_exit(env, None, command_name="twist", ramp_s=1.0)
+
+  torch.testing.assert_close(term.vel_command_b[0], torch.tensor([0.2, -0.025, 0.05]))
+  torch.testing.assert_close(term.vel_command_b[1], torch.tensor([0.6, 0.3, -0.4]))
+  torch.testing.assert_close(term.vel_command_b[2], torch.tensor([-0.125, 0.05, 0.025]))
+  torch.testing.assert_close(term.is_standing_env, torch.tensor([False, False, False]))
+  torch.testing.assert_close(term.time_left, torch.tensor([-0.1, -0.1, -0.1]))
+
+  term.vel_command_b[0] = torch.tensor([99.0, 99.0, 99.0])
+  term.vel_command_b[2] = torch.tensor([99.0, 99.0, 99.0])
+  env._host_getup_exited_recovery_phase[:] = False
+
+  mdp.ramp_velocity_command_after_recovery_exit(env, None, command_name="twist", ramp_s=1.0)
+
+  torch.testing.assert_close(term.vel_command_b[0], torch.tensor([0.4, -0.05, 0.1]))
+  torch.testing.assert_close(term.vel_command_b[1], torch.tensor([0.6, 0.3, -0.4]))
+  torch.testing.assert_close(term.vel_command_b[2], torch.tensor([-0.25, 0.1, 0.05]))
 
 
 def test_repeated_paired_fallen_resets_increment_disturbance_count(monkeypatch) -> None:
@@ -496,7 +604,19 @@ def test_antifall_getup_uses_hybrid_action_to_preserve_warmstart_walking() -> No
   assert action.recovery_window_s >= 2.0
   assert action.fallen_height_threshold <= 0.4
   assert action.fallen_tilt_threshold >= 0.7
+  # Recovery should hand control back to the warm-started walking branch as
+  # soon as the torso is high/upright enough.  The stricter HoST stable-success
+  # mask still belongs to rewards/assist decay, but using it here leaves the
+  # action stuck in current-pose recovery deltas after a successful get-up.
+  assert action.stable_upright_func is None
+  assert action.stable_upright_hold_steps <= 3
+  assert action.stable_upright_height_threshold <= 0.55
+  assert action.stable_upright_tilt_threshold >= 0.30
   assert action.max_delta <= 1.0
+  # BFM-Zero uses action_scale=0.25 for G1 fall recovery.  The recovery branch
+  # must preserve that physical scale instead of saturating the current-pose
+  # delta clamp as soon as raw policy output exceeds 1 rad.
+  assert action.recovery_action_scale == 0.25
   assert action.scale != 1.0
 
 

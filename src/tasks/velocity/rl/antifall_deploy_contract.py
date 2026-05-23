@@ -39,6 +39,8 @@ def _actor_term_dim(term_name: str, *, joint_dim: int) -> int:
     return joint_dim
   if term_name == "getup_progress":
     return 5
+  if term_name == "recovery_phase":
+    return 1
   if term_name == "bfm_local_body_state":
     # Current AntiFall-GetUp 29-DoF G1 body-state layout uses the 30-body XML:
     # root height (1), root-relative positions without root ((30-1)*3), 6D

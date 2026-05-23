@@ -272,6 +272,7 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
 
   def _publish_recovery_phase(self) -> None:
     setattr(self._env, "_host_getup_recovery_phase_active", self._recovery_phase_active)
+    setattr(self._env, "_host_getup_exited_recovery_phase", self._exited_recovery_phase)
 
   def _relative_torso_height(self) -> torch.Tensor:
     torso_height = self._entity.data.root_link_pos_w[:, 2]
@@ -359,15 +360,21 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     self._stable_upright_steps[stable_candidate] += 1
     self._stable_upright_steps[~stable_candidate] = 0
     stable_exit = stable_candidate & (self._stable_upright_steps >= hold_required)
-    active = (candidate_active & ~stable_exit) | near_failure_reset
-    newly_active = active & ~previous_active
-    self._recovery_phase_active[:] = active
-    self._last_recovery_mask[:] = active
-    self._exited_recovery_phase[:] = previous_active & ~active
-    self._recovery_elapsed_steps[~active] = 0
+    next_active = (candidate_active & ~stable_exit) | near_failure_reset
+    # Actions are sampled from the previous observation.  On the stable-exit
+    # decision frame, that observation still told the gated actor to use the
+    # recovery branch.  Execute that one final frame as current-pose recovery
+    # deltas, but publish next_active=False so the following observation/action
+    # switches to the walking prior.
+    execution_active = candidate_active
+    newly_active = next_active & ~previous_active
+    self._recovery_phase_active[:] = next_active
+    self._last_recovery_mask[:] = execution_active
+    self._exited_recovery_phase[:] = previous_active & ~next_active
+    self._recovery_elapsed_steps[~next_active] = 0
     self._recovery_elapsed_steps[newly_active] = 0
     self._publish_recovery_phase()
-    return active
+    return execution_active
 
   def _compute_recovery_deltas(self, actions: torch.Tensor) -> torch.Tensor:
     deltas = actions * float(self.cfg.recovery_action_scale)
@@ -400,9 +407,7 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     super().process_actions(actions)
     self._walking_targets[:] = self._processed_actions
 
-    was_recovering = self._recovery_phase_active.clone()
     recovery_mask_1d = self._recovery_mask()
-    self._exited_recovery_phase[:] = was_recovering & ~recovery_mask_1d
     self._recovery_deltas[:] = self._compute_recovery_deltas(actions)
     recovery_effective = self._recovery_deltas
     if bool(self._recovery_default_offset_joint_mask.any().item()):
@@ -445,7 +450,7 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
       if max_delta <= 0.0:
         raise ValueError("RecoveryHybridJointPositionActionCfg.walking_exit_max_delta must be positive when set")
       self._walking_exit_clamp_active[recovery_mask_1d] = False
-      self._walking_exit_clamp_active |= self._exited_recovery_phase & ~recovery_mask_1d
+      self._walking_exit_clamp_active |= self._exited_recovery_phase
       walking_exit_clamp_mask = self._walking_exit_clamp_active & ~recovery_mask_1d
       if bool(walking_exit_clamp_mask.any().item()):
         walking_gap = walking_target - current_joint_pos

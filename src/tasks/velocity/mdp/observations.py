@@ -53,3 +53,29 @@ def phase(env: ManagerBasedRlEnv, period: float, command_name: str) -> torch.Ten
     phase = torch.where(stand_mask.unsqueeze(1), torch.zeros_like(phase), phase)
     return phase
 
+def recovery_phase_quiet_generated_commands(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  phase_attr: str = "_host_getup_recovery_phase_active",
+) -> torch.Tensor:
+  """Return commands with recovery-phase rows masked for actor observations only.
+
+  The command manager still owns real resampling and reward commands.  During
+  current-pose GetUp recovery, however, the recovery actor should not condition
+  its get-up motion on newly resampled walking velocity.  Masking only the
+  observation preserves post-exit walking commands and diagnostics while keeping
+  the recovery branch command-neutral.
+  """
+
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  phase = getattr(env, phase_attr, None)
+  if phase is None:
+    return command
+  phase = torch.as_tensor(phase, dtype=torch.bool, device=command.device).flatten()
+  if phase.numel() < command.shape[0] or not bool(phase[: command.shape[0]].any().item()):
+    return command
+  observed = command.clone()
+  observed[phase[: command.shape[0]]] = 0.0
+  return observed
+
