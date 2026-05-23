@@ -719,6 +719,8 @@ def unitree_g1_antifall_getup_env_cfg(
   cfg.events["reset_base"].params.pop("hard_pose_range", None)
   cfg.events["reset_base"].params["presets"] = GETUP_FALLEN_ROOT_PRESETS
   cfg.events["reset_base"].params["preset_weight_stages"] = _GETUP_TRAIN_PRESET_WEIGHT_STAGES
+  cfg.events["reset_base"].params["command_name"] = "twist"
+  cfg.events["reset_base"].params["command_quiet_s"] = _RECOVERY_WINDOW_S
   _apply_host_getup_safe_regularizers(cfg)
   _apply_host_getup_reward_stack(cfg)
   _add_antifall_rewards_after_getup_stack(cfg, locomotion_reward_source)
@@ -811,6 +813,8 @@ def unitree_g1_antifall_getup_env_cfg(
         "joint_position_noise_range": (-0.05, 0.05),
         "joint_velocity_range": (-0.5, 0.5),
         "reset_actions": True,
+        "command_name": "twist",
+        "command_quiet_s": _RECOVERY_WINDOW_S,
         "asset_cfg": SceneEntityCfg("robot"),
       },
     )

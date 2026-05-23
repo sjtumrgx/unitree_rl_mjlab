@@ -205,6 +205,8 @@ def test_antifall_getup_forced_fall_options_are_recorded_in_metadata() -> None:
       "25",
       "--force-fall-prob",
       "0.75",
+      "--force-fall-command-quiet-s",
+      "2.5",
       "--disable-interval-push",
     ]
   )
@@ -213,6 +215,7 @@ def test_antifall_getup_forced_fall_options_are_recorded_in_metadata() -> None:
 
   assert metadata["forced_fall_step"] == 25
   assert metadata["forced_fall_prob"] == pytest.approx(0.75)
+  assert metadata["forced_fall_command_quiet_s"] == pytest.approx(2.5)
   assert metadata["disable_interval_push"] is True
 
 
@@ -231,6 +234,7 @@ def test_antifall_getup_force_fall_reset_marks_near_failure_disturbance(monkeypa
   root_calls = []
   joint_calls = []
   action_reset_calls = []
+  quiet_calls = []
 
   def fake_reset_root_state_from_presets(env, env_ids, **kwargs):
     root_calls.append((env, env_ids, kwargs))
@@ -240,13 +244,18 @@ def test_antifall_getup_force_fall_reset_marks_near_failure_disturbance(monkeypa
 
   monkeypatch.setattr(diag.mdp, "reset_root_state_from_presets", fake_reset_root_state_from_presets)
   monkeypatch.setattr(diag.mdp, "reset_joints_from_presets", fake_reset_joints_from_presets)
+  monkeypatch.setattr(
+    diag.mdp,
+    "quiet_velocity_command_for_recovery",
+    lambda env, env_ids, **kwargs: quiet_calls.append((env, env_ids.clone(), kwargs)),
+  )
   env = SimpleNamespace(
     num_envs=3,
     device="cpu",
     action_manager=SimpleNamespace(reset=lambda env_ids=None: action_reset_calls.append(env_ids.clone())),
   )
 
-  diag.force_fall_reset(env, prob=1.0)
+  diag.force_fall_reset(env, prob=1.0, command_quiet_s=2.5)
 
   assert len(root_calls) == 1
   assert len(joint_calls) == 1
@@ -261,6 +270,11 @@ def test_antifall_getup_force_fall_reset_marks_near_failure_disturbance(monkeypa
   assert joint_kwargs["velocity_range"] == (-0.5, 0.5)
   assert len(action_reset_calls) == 1
   assert action_reset_calls[0].tolist() == [0, 1, 2]
+  assert len(quiet_calls) == 1
+  _, quiet_env_ids, quiet_kwargs = quiet_calls[0]
+  assert quiet_env_ids.tolist() == [0, 1, 2]
+  assert quiet_kwargs["command_name"] == "twist"
+  assert quiet_kwargs["quiet_s"] == pytest.approx(2.5)
 
 
 def test_antifall_getup_step_record_includes_reward_term_telemetry() -> None:

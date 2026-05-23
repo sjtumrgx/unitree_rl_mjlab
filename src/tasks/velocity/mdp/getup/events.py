@@ -12,6 +12,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from src.tasks.velocity.mdp.anti_fall.events import (
   DISTURBANCE_NEAR_FAILURE_RESET,
   get_antifall_state,
+  quiet_velocity_command_for_recovery,
   reset_antifall_state,
   reset_root_state_mixed,
   scheduled_hard_reset_prob,
@@ -322,7 +323,7 @@ def _mark_recovery_reset(
   state["last_disturbance_mag"][env_ids] = disturbance_magnitude
   state["disturbance_kind"][env_ids] = disturbance_kind
   state["disturbance_active"][env_ids] = False
-  state["disturbance_count"][env_ids] = 1
+  state["disturbance_count"][env_ids] += 1
 
 
 def get_host_getup_curriculum_state(
@@ -790,6 +791,8 @@ def reset_root_state_from_presets(
   presets: Sequence[dict[str, object]] | None = None,
   preset_weight_stages: Sequence[dict[str, object]] | None = None,
   velocity_range: dict[str, tuple[float, float]] | None = None,
+  reset_antifall_metadata: bool = True,
+  mark_recovery_reset: bool = True,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
   if env_ids is None:
@@ -799,7 +802,8 @@ def reset_root_state_from_presets(
   if ids.numel() == 0:
     return
 
-  reset_antifall_state(env, ids)
+  if reset_antifall_metadata:
+    reset_antifall_state(env, ids)
   preset_list = tuple(_DEFAULT_PRESETS if presets is None else presets)
   vel_range = _DEFAULT_VELOCITY_RANGE if velocity_range is None else velocity_range
   if preset_weight_stages:
@@ -828,7 +832,8 @@ def reset_root_state_from_presets(
       velocity_range=vel_range,
       asset_cfg=asset_cfg,
     )
-    _mark_recovery_reset(env, selected)
+    if mark_recovery_reset:
+      _mark_recovery_reset(env, selected)
 
 
 def reset_action_history(
@@ -852,27 +857,39 @@ def reset_paired_fallen_state_from_presets(
   joint_position_noise_range: tuple[float, float] = (-0.05, 0.05),
   joint_velocity_range: tuple[float, float] = (-0.5, 0.5),
   reset_actions: bool = True,
+  command_name: str = "twist",
+  command_quiet_s: float = 0.0,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
   """Apply a synchronized mid-episode fallen root, joint preset, and action reset."""
 
+  ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long) if env_ids is None else env_ids.to(device=env.device, dtype=torch.long)
   reset_root_state_from_presets(
     env,
-    env_ids,
+    ids,
     presets=presets,
     preset_weight_stages=preset_weight_stages,
     velocity_range=velocity_range,
+    reset_antifall_metadata=False,
+    mark_recovery_reset=False,
     asset_cfg=asset_cfg,
   )
   reset_joints_from_presets(
     env,
-    env_ids,
+    ids,
     position_noise_range=joint_position_noise_range,
     velocity_range=joint_velocity_range,
     asset_cfg=asset_cfg,
   )
+  _mark_recovery_reset(env, ids)
   if reset_actions:
-    reset_action_history(env, env_ids)
+    reset_action_history(env, ids)
+  quiet_velocity_command_for_recovery(
+    env,
+    ids,
+    command_name=command_name,
+    quiet_s=command_quiet_s,
+  )
 
 
 def reset_root_state_mixed_from_presets(
@@ -885,6 +902,8 @@ def reset_root_state_mixed_from_presets(
   presets: Sequence[dict[str, object]] | None = None,
   preset_weight_stages: Sequence[dict[str, object]] | None = None,
   hard_velocity_range: dict[str, tuple[float, float]] | None = None,
+  command_name: str = "twist",
+  command_quiet_s: float = 0.0,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
   """Reset nominal episodes like walking and hard episodes from GetUp presets.
@@ -948,6 +967,12 @@ def reset_root_state_mixed_from_presets(
       preset_weight_stages=preset_weight_stages,
       velocity_range=hard_velocity_range,
       asset_cfg=asset_cfg,
+    )
+    quiet_velocity_command_for_recovery(
+      env,
+      hard_ids,
+      command_name=command_name,
+      quiet_s=command_quiet_s,
     )
 
 

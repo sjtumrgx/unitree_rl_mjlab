@@ -224,6 +224,77 @@ def test_antifall_getup_training_has_mid_episode_paired_forced_fall_exposure() -
   assert event.params["preset_weight_stages"][0]["weights"][-1] > 0.0
   assert event.params["joint_position_noise_range"] == (-0.05, 0.05)
   assert event.params["reset_actions"] is True
+  assert event.params["command_quiet_s"] >= 2.0
+  assert event.params["command_name"] == "twist"
+
+
+def test_antifall_getup_hard_reset_presets_quiet_commands_for_recovery() -> None:
+  cfg = load_env_cfg(TASK_ID)
+
+  reset_params = cfg.events["reset_base"].params
+
+  assert reset_params["command_quiet_s"] >= 2.0
+  assert reset_params["command_name"] == "twist"
+
+
+def test_recovery_command_quiet_window_zeros_velocity_until_resample() -> None:
+  import torch
+  from types import SimpleNamespace
+
+  term = SimpleNamespace(
+    vel_command_b=torch.tensor(
+      [
+        [0.8, -0.1, 0.2],
+        [0.6, 0.3, -0.4],
+        [-0.5, 0.2, 0.1],
+      ],
+      dtype=torch.float32,
+    ),
+    is_standing_env=torch.zeros(3, dtype=torch.bool),
+    time_left=torch.tensor([0.2, 0.4, 0.6], dtype=torch.float32),
+  )
+  env = SimpleNamespace(
+    num_envs=3,
+    device="cpu",
+    command_manager=SimpleNamespace(get_term=lambda name: term),
+  )
+
+  mdp.quiet_velocity_command_for_recovery(env, torch.tensor([0, 2]), command_name="twist", quiet_s=2.0)
+
+  torch.testing.assert_close(term.vel_command_b[0], torch.zeros(3))
+  torch.testing.assert_close(term.vel_command_b[1], torch.tensor([0.6, 0.3, -0.4]))
+  torch.testing.assert_close(term.vel_command_b[2], torch.zeros(3))
+  torch.testing.assert_close(term.is_standing_env, torch.tensor([True, False, True]))
+  torch.testing.assert_close(term.time_left, torch.tensor([2.0, 0.4, 2.0]))
+
+
+def test_repeated_paired_fallen_resets_increment_disturbance_count(monkeypatch) -> None:
+  import torch
+  from types import SimpleNamespace
+
+  import src.tasks.velocity.mdp.getup.events as getup_events
+  from src.tasks.velocity.mdp.anti_fall.events import get_antifall_state
+
+  monkeypatch.setattr(getup_events, "reset_root_state_from_presets", lambda *args, **kwargs: None)
+  monkeypatch.setattr(getup_events, "reset_joints_from_presets", lambda *args, **kwargs: None)
+
+  env = SimpleNamespace(
+    num_envs=2,
+    device="cpu",
+    common_step_counter=10,
+    command_manager=None,
+    action_manager=SimpleNamespace(reset=lambda env_ids=None: None),
+  )
+  ids = torch.tensor([0, 1], dtype=torch.long)
+
+  mdp.reset_paired_fallen_state_from_presets(env, ids)
+  first_count = get_antifall_state(env)["disturbance_count"].clone()
+
+  env.common_step_counter = 20
+  mdp.reset_paired_fallen_state_from_presets(env, ids)
+
+  torch.testing.assert_close(first_count, torch.tensor([1, 1]))
+  torch.testing.assert_close(get_antifall_state(env)["disturbance_count"], torch.tensor([2, 2]))
 
 
 def test_antifall_getup_play_does_not_add_training_forced_fall_curriculum() -> None:
@@ -252,7 +323,13 @@ def test_paired_fallen_state_reset_synchronizes_root_joints_and_action_history(m
   monkeypatch.setattr(getup_events, "reset_joints_from_presets", fake_reset_joints)
   action_resets = []
   env_ids = torch.tensor([0, 2], dtype=torch.long)
-  env = SimpleNamespace(action_manager=SimpleNamespace(reset=lambda env_ids=None: action_resets.append(env_ids.clone())))
+  env = SimpleNamespace(
+    num_envs=3,
+    device="cpu",
+    common_step_counter=0,
+    command_manager=None,
+    action_manager=SimpleNamespace(reset=lambda env_ids=None: action_resets.append(env_ids.clone())),
+  )
 
   mdp.reset_paired_fallen_state_from_presets(
     env,

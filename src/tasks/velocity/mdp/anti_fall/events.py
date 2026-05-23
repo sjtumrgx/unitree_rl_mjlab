@@ -101,6 +101,47 @@ def _resolve_env_ids(
   return env_ids.to(device=env.device, dtype=torch.long)
 
 
+def quiet_velocity_command_for_recovery(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | slice | None,
+  command_name: str = "twist",
+  quiet_s: float = 2.0,
+) -> None:
+  """Temporarily zero velocity commands after a forced fall/reset.
+
+  A BFM-style recovery lifecycle should not ask the policy to track walking
+  velocity while the robot is still physically getting up.  Zero the selected
+  command rows and keep them standing until the command term's next resample.
+  """
+
+  if quiet_s <= 0.0:
+    return
+  command_manager = getattr(env, "command_manager", None)
+  get_term = getattr(command_manager, "get_term", None)
+  if not callable(get_term):
+    return
+  try:
+    term = get_term(command_name)
+  except Exception:
+    return
+
+  ids = _resolve_env_ids(env, env_ids)
+  if ids.numel() == 0:
+    return
+
+  command = getattr(term, "vel_command_b", None)
+  if torch.is_tensor(command):
+    command[ids] = 0.0
+
+  standing = getattr(term, "is_standing_env", None)
+  if torch.is_tensor(standing):
+    standing[ids] = True
+
+  time_left = getattr(term, "time_left", None)
+  if torch.is_tensor(time_left):
+    time_left[ids] = float(quiet_s)
+
+
 def _mark_disturbance(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | slice | None,

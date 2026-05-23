@@ -408,7 +408,13 @@ def _make_dummy_policy(agent: str, env) -> Any:
   return _Policy()
 
 
-def force_fall_reset(env: Any, *, prob: float = 1.0) -> None:
+def force_fall_reset(
+  env: Any,
+  *,
+  prob: float = 1.0,
+  command_name: str = "twist",
+  command_quiet_s: float = 2.0,
+) -> None:
   """Inject a near-failure reset during gate diagnostics.
 
   Keep this diagnostic aligned with the AntiFall-GetUp training contract: a
@@ -449,6 +455,12 @@ def force_fall_reset(env: Any, *, prob: float = 1.0) -> None:
   reset_actions = getattr(action_manager, "reset", None)
   if callable(reset_actions):
     reset_actions(env_ids=env_ids)
+  mdp.quiet_velocity_command_for_recovery(
+    env,
+    env_ids,
+    command_name=command_name,
+    quiet_s=command_quiet_s,
+  )
 
 
 def build_metadata_record(args: argparse.Namespace, *, num_envs: int, clip_actions: float) -> dict[str, Any]:
@@ -465,6 +477,7 @@ def build_metadata_record(args: argparse.Namespace, *, num_envs: int, clip_actio
     "clip_actions": clip_actions,
     "forced_fall_step": int(args.force_fall_step) if args.force_fall_step is not None else None,
     "forced_fall_prob": float(args.force_fall_prob),
+    "forced_fall_command_quiet_s": float(args.force_fall_command_quiet_s),
     "disable_interval_push": bool(args.disable_interval_push),
   }
 
@@ -535,7 +548,11 @@ def run_rollout_records(args: argparse.Namespace) -> list[dict[str, Any]]:
     previous_clipped_action: torch.Tensor | None = None
     for step_index in range(int(args.steps)):
       if args.force_fall_step is not None and step_index == int(args.force_fall_step):
-        force_fall_reset(raw_env, prob=float(args.force_fall_prob))
+        force_fall_reset(
+          raw_env,
+          prob=float(args.force_fall_prob),
+          command_quiet_s=float(args.force_fall_command_quiet_s),
+        )
         obs = env.get_observations()
       with torch.no_grad():
         action = policy(obs)
@@ -579,6 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--success-threshold", type=float, default=0.8)
   parser.add_argument("--force-fall-step", type=int, default=None)
   parser.add_argument("--force-fall-prob", type=float, default=1.0)
+  parser.add_argument("--force-fall-command-quiet-s", type=float, default=2.0)
   parser.add_argument("--disable-interval-push", action="store_true")
   parser.add_argument("--output", type=Path, default=None)
   return parser
