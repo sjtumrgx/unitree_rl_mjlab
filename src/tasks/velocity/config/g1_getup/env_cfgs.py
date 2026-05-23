@@ -723,11 +723,15 @@ def _apply_host_getup_reward_stack(cfg: ManagerBasedRlEnvCfg) -> None:
   )
   cfg.rewards["host_foot_heading"] = RewardTermCfg(
     func=mdp.host_foot_heading_reward,
-    weight=2.0,
+    weight=4.0,
     params={
       "feet_sensor_name": "feet_ground_contact",
-      "min_height": 0.4,
-      "min_alignment": 0.35,
+      # Current rollouts already stand on all terrains, but almost never pass
+      # strict success because contacted feet are yawed sideways.  Start this
+      # shaping as soon as feet become useful support, not only after the torso
+      # is nearly upright.
+      "min_height": 0.35,
+      "min_alignment": 0.2,
       "foot_asset_cfg": SceneEntityCfg(
         "robot",
         body_names=("left_ankle_roll_link", "right_ankle_roll_link"),

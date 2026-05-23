@@ -95,6 +95,7 @@ class TrainConfig:
   gpu_ids: str | None = "[0]"
   getup_terrain: str | None = None
   actor_only_resume: bool = False
+  policy_only_resume: bool = False
   reset_actor_std_on_resume: bool = False
 
   @staticmethod
@@ -287,18 +288,28 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   runner.add_git_repo_to_log(__file__)
   if resume_path is not None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-    load_cfg = {"actor": True} if cfg.actor_only_resume else None
+    if cfg.actor_only_resume and cfg.policy_only_resume:
+      raise ValueError("actor_only_resume and policy_only_resume are mutually exclusive.")
     if cfg.actor_only_resume:
+      load_cfg = {"actor": True}
       print("[INFO]: Actor-only resume enabled; optimizer and critic are reinitialized.")
-    if cfg.actor_only_resume:
-      _load_actor_with_compatible_input_expansion(
+      _load_policy_with_compatible_input_expansion(
+        runner,
+        resume_path,
+        load_cfg=load_cfg,
+        map_location=device,
+      )
+    elif cfg.policy_only_resume:
+      load_cfg = {"actor": True, "critic": True, "optimizer": False, "iteration": False, "rnd": False}
+      print("[INFO]: Policy-only resume enabled; actor and critic are restored, optimizer is reinitialized.")
+      _load_policy_with_compatible_input_expansion(
         runner,
         resume_path,
         load_cfg=load_cfg,
         map_location=device,
       )
     else:
-      runner.load(str(resume_path), load_cfg=load_cfg)
+      runner.load(str(resume_path), load_cfg=None)
     if cfg.reset_actor_std_on_resume:
       _reset_actor_distribution_std(runner, cfg.agent)
 
@@ -531,14 +542,14 @@ def _expand_model_input_state(
   return changed
 
 
-def _load_actor_with_compatible_input_expansion(
+def _load_policy_with_compatible_input_expansion(
   runner,
   resume_path: Path,
   *,
   load_cfg: dict | None,
   map_location: str | None,
 ) -> None:
-  """Load actor checkpoints, expanding input tensors for additive obs terms."""
+  """Load actor/critic checkpoints, expanding input tensors for additive obs terms."""
 
   try:
     try:
@@ -550,18 +561,39 @@ def _load_actor_with_compatible_input_expansion(
     if "size mismatch" not in str(exc):
       raise
     checkpoint = torch.load(resume_path, map_location=map_location, weights_only=False)
-    actor_state = checkpoint.get("actor_state_dict")
-    if not isinstance(actor_state, dict):
+    changed_parts: list[str] = []
+
+    if load_cfg.get("actor"):
+      actor_state = checkpoint.get("actor_state_dict")
+      if not isinstance(actor_state, dict):
+        raise
+      target_actor_state = runner.alg.get_policy().state_dict()
+      if _expand_model_input_state(actor_state, target_actor_state):
+        changed_parts.append("actor")
+      runner.alg.get_policy().load_state_dict(actor_state, strict=True)
+
+    if load_cfg.get("critic"):
+      critic_state = checkpoint.get("critic_state_dict")
+      if not isinstance(critic_state, dict):
+        raise
+      target_critic_state = runner.alg.critic.state_dict()
+      if _expand_model_input_state(critic_state, target_critic_state):
+        changed_parts.append("critic")
+      runner.alg.critic.load_state_dict(critic_state, strict=True)
+
+    if not changed_parts:
       raise
-    target_state = runner.alg.get_policy().state_dict()
-    changed = _expand_model_input_state(actor_state, target_state)
-    if not changed:
-      raise
-    runner.alg.get_policy().load_state_dict(actor_state, strict=True)
+
     print(
-      "[INFO]: Expanded actor checkpoint input tensors for additive observation dimensions; "
-      "critic and optimizer were reinitialized."
+      "[INFO]: Expanded "
+      + "/".join(changed_parts)
+      + " checkpoint input tensors for additive observation dimensions; "
+      + "optimizer state was not restored."
     )
+
+
+# Backward-compatible name used by rollout diagnostics that only request actor load.
+_load_actor_with_compatible_input_expansion = _load_policy_with_compatible_input_expansion
 
 
 def _reset_actor_distribution_std(runner, agent_cfg: RslRlBaseRunnerCfg) -> None:

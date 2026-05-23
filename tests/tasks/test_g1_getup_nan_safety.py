@@ -1040,9 +1040,9 @@ def test_getup_reward_stack_activates_foot_style_before_strict_final_upright_gat
   assert cfg.rewards["host_foot_flat"].params["min_height"] <= 0.4
   assert cfg.rewards["host_foot_flat"].params["min_alignment"] <= 0.35
 
-  assert cfg.rewards["host_foot_heading"].weight >= 2.0
-  assert cfg.rewards["host_foot_heading"].params["min_height"] <= 0.4
-  assert cfg.rewards["host_foot_heading"].params["min_alignment"] <= 0.35
+  assert cfg.rewards["host_foot_heading"].weight >= 4.0
+  assert cfg.rewards["host_foot_heading"].params["min_height"] <= 0.35
+  assert cfg.rewards["host_foot_heading"].params["min_alignment"] <= 0.2
 
   assert cfg.rewards["host_foot_orientation_penalty"].weight <= -1.0
   assert cfg.rewards["host_foot_orientation_penalty"].params["min_height"] <= 0.45
@@ -1303,4 +1303,6 @@ def test_getup_reward_and_success_metrics_use_strict_stable_stance_contract() ->
     assert cfg.rewards["host_task_reward"].params["max_body_support_count"] <= 0.0
     assert cfg.rewards["host_foot_flat"].weight >= 3.0
     assert cfg.rewards["host_foot_contact_spread"].weight >= 2.0
-    assert cfg.rewards["host_foot_heading"].weight >= 1.0
+    assert cfg.rewards["host_foot_heading"].weight >= 4.0
+    assert cfg.rewards["host_foot_heading"].params["min_height"] <= 0.35
+    assert cfg.rewards["host_foot_heading"].params["min_alignment"] <= 0.2

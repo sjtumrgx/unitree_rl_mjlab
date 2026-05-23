@@ -246,6 +246,62 @@ def test_run_train_can_resume_from_explicit_checkpoint_path(monkeypatch, tmp_pat
   assert captured["closed"] is True
 
 
+
+def test_run_train_policy_only_resume_loads_actor_and_critic_without_optimizer(monkeypatch, tmp_path) -> None:
+  from scripts import train
+
+  captured = {}
+
+  class _FakeEnv:
+    def close(self):
+      captured["closed"] = True
+
+  class _FakeRunner:
+    def __init__(self, *args, **kwargs):
+      del args, kwargs
+
+    def add_git_repo_to_log(self, path):
+      del path
+
+    def load(self, path, load_cfg=None):
+      captured["load"] = {"path": path, "load_cfg": load_cfg}
+
+    def learn(self, num_learning_iterations, init_at_random_ep_len):
+      captured["learn"] = (num_learning_iterations, init_at_random_ep_len)
+
+  checkpoint = tmp_path / "logs" / "rsl_rl" / "g1_getup" / "good" / "model_1000.pt"
+  checkpoint.parent.mkdir(parents=True)
+  checkpoint.write_bytes(b"checkpoint")
+  agent = RslRlOnPolicyRunnerCfg(
+    resume=True,
+    load_run="should-not-be-used",
+    load_checkpoint="should-not-be-used.pt",
+    max_iterations=1,
+  )
+  cfg = replace(
+    train.TrainConfig.from_task("Unitree-G1-GetUp"),
+    agent=agent,
+    gpu_ids="cpu",
+    resume_checkpoint_path=str(checkpoint),
+    policy_only_resume=True,
+  )
+
+  monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+  monkeypatch.setattr(train, "configure_torch_backends", lambda: None)
+  monkeypatch.setattr(train, "ManagerBasedRlEnv", lambda **kwargs: _FakeEnv())
+  monkeypatch.setattr(train, "FiniteActionRslRlVecEnvWrapper", lambda env, clip_actions: env)
+  monkeypatch.setattr(train, "load_runner_cls", lambda task_id: _FakeRunner)
+  monkeypatch.setattr(train, "get_checkpoint_path", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected regex checkpoint lookup")))
+  monkeypatch.setattr(train, "dump_yaml", lambda *args, **kwargs: None)
+
+  train.run_train("Unitree-G1-GetUp", cfg, tmp_path / "logs" / "rsl_rl" / "g1_getup" / "new_run")
+
+  assert captured["load"] == {
+    "path": str(checkpoint),
+    "load_cfg": {"actor": True, "critic": True, "optimizer": False, "iteration": False, "rnd": False},
+  }
+  assert captured["closed"] is True
+
 def test_run_train_can_reset_actor_std_after_actor_only_resume(monkeypatch, tmp_path) -> None:
   from scripts import train
 
@@ -313,6 +369,46 @@ def test_run_train_can_reset_actor_std_after_actor_only_resume(monkeypatch, tmp_
   std_param = captured["runner"].alg.get_policy().distribution.std_param
   assert torch.allclose(std_param, torch.full((3,), 0.5))
   assert captured["load"]["load_cfg"] == {"actor": True}
+
+
+def test_run_train_rejects_policy_and_actor_only_resume_together(monkeypatch, tmp_path) -> None:
+  from scripts import train
+
+  class _FakeEnv:
+    def close(self):
+      pass
+
+  class _FakeRunner:
+    def __init__(self, *args, **kwargs):
+      del args, kwargs
+
+    def add_git_repo_to_log(self, path):
+      del path
+
+    def load(self, path, load_cfg=None):  # pragma: no cover - should fail before load
+      raise AssertionError("resume flags should be rejected before loading")
+
+  checkpoint = tmp_path / "model.pt"
+  checkpoint.write_bytes(b"checkpoint")
+  agent = RslRlOnPolicyRunnerCfg(resume=True, max_iterations=1)
+  cfg = replace(
+    train.TrainConfig.from_task("Unitree-G1-GetUp"),
+    agent=agent,
+    gpu_ids="cpu",
+    resume_checkpoint_path=str(checkpoint),
+    actor_only_resume=True,
+    policy_only_resume=True,
+  )
+
+  monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+  monkeypatch.setattr(train, "configure_torch_backends", lambda: None)
+  monkeypatch.setattr(train, "ManagerBasedRlEnv", lambda **kwargs: _FakeEnv())
+  monkeypatch.setattr(train, "FiniteActionRslRlVecEnvWrapper", lambda env, clip_actions: env)
+  monkeypatch.setattr(train, "load_runner_cls", lambda task_id: _FakeRunner)
+  monkeypatch.setattr(train, "dump_yaml", lambda *args, **kwargs: None)
+
+  with pytest.raises(ValueError, match="mutually exclusive"):
+    train.run_train("Unitree-G1-GetUp", cfg, tmp_path / "logs")
 
 
 def test_expand_actor_checkpoint_input_preserves_old_policy_and_zeroes_new_bfm_inputs() -> None:
