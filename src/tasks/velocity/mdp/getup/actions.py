@@ -175,6 +175,11 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
       dtype=torch.bool,
       device=self._processed_actions.device,
     )
+    self._recovery_elapsed_steps = torch.zeros(
+      self._processed_actions.shape[0],
+      dtype=torch.long,
+      device=self._processed_actions.device,
+    )
     self._publish_effective_action_history()
     self._publish_recovery_phase()
 
@@ -253,8 +258,12 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     to walking offsets midway through the get-up transition.
     """
 
+    previous_active = self._recovery_phase_active.clone()
     active = (self._recovery_phase_active | self._fallen_mask()) & ~self._stable_upright_mask()
+    newly_active = active & ~previous_active
     self._recovery_phase_active[:] = active
+    self._recovery_elapsed_steps[~active] = 0
+    self._recovery_elapsed_steps[newly_active] = 0
     self._publish_recovery_phase()
     return active
 
@@ -262,10 +271,10 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     deltas = actions * float(self.cfg.recovery_action_scale)
     startup_steps = max(0, int(self.cfg.recovery_unactuated_timesteps))
     if startup_steps > 0:
-      episode_length = getattr(self._env, "episode_length_buf", None)
-      if episode_length is not None:
-        active = (episode_length >= startup_steps).to(device=deltas.device, dtype=deltas.dtype)
-        deltas = deltas * active.unsqueeze(1)
+      active = self._recovery_phase_active.to(device=deltas.device)
+      elapsed = self._recovery_elapsed_steps.to(device=deltas.device)
+      quiet = active & (elapsed < startup_steps)
+      deltas = torch.where(quiet.unsqueeze(1), torch.zeros_like(deltas), deltas)
 
     state = getattr(self._env, "_host_getup_curriculum_state", None)
     if isinstance(state, dict) and "action_rescale" in state:
@@ -288,9 +297,10 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
   def process_actions(self, actions):
     super().process_actions(actions)
     self._walking_targets[:] = self._processed_actions
-    self._recovery_deltas[:] = self._compute_recovery_deltas(actions)
 
-    recovery_mask = self._recovery_mask().unsqueeze(1)
+    recovery_mask_1d = self._recovery_mask()
+    self._recovery_deltas[:] = self._compute_recovery_deltas(actions)
+    recovery_mask = recovery_mask_1d.unsqueeze(1)
     effective = torch.where(recovery_mask, self._recovery_deltas, self._raw_actions)
     self._prev_prev_effective_actions[:] = self._prev_effective_actions
     self._prev_effective_actions[:] = self._effective_actions
@@ -300,7 +310,8 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
   def apply_actions(self) -> None:
     current_joint_pos = self._entity.data.joint_pos[:, self._target_ids]
     encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
-    recovery_mask = self._recovery_mask().unsqueeze(1)
+    recovery_mask_1d = self._recovery_mask()
+    recovery_mask = recovery_mask_1d.unsqueeze(1)
     recovery_target = current_joint_pos + self._recovery_deltas
     target = torch.where(recovery_mask, recovery_target, self._walking_targets)
     written_delta = target - current_joint_pos
@@ -308,6 +319,7 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     setattr(self._env, "_host_getup_joint_position_target", target.detach().clone())
     setattr(self._env, "_host_getup_joint_target_ids", self._target_ids.detach().clone())
     self._entity.set_joint_position_target(target - encoder_bias, joint_ids=self._target_ids)
+    self._recovery_elapsed_steps[recovery_mask_1d] += 1
 
   def reset(self, env_ids=None) -> None:
     if env_ids is None:
@@ -320,5 +332,6 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     self._prev_effective_actions[env_ids] = 0.0
     self._prev_prev_effective_actions[env_ids] = 0.0
     self._recovery_phase_active[env_ids] = False
+    self._recovery_elapsed_steps[env_ids] = 0
     self._publish_effective_action_history()
     self._publish_recovery_phase()
