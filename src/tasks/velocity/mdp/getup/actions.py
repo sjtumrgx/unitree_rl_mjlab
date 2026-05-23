@@ -8,8 +8,6 @@ from typing import TYPE_CHECKING
 import torch
 
 from mjlab.envs.mdp.actions import JointPositionAction, JointPositionActionCfg
-from src.tasks.velocity.mdp.anti_fall.events import disturbance_window_mask
-
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
@@ -149,6 +147,8 @@ class RecoveryHybridJointPositionActionCfg(JointPositionActionCfg):
   recovery_window_s: float = 2.0
   fallen_height_threshold: float = 0.35
   fallen_tilt_threshold: float = 0.75
+  stable_upright_height_threshold: float = 0.55
+  stable_upright_tilt_threshold: float = 0.30
   recovery_action_scale: float = 1.0
   max_delta: float | None = None
   """Optional clamp for current-pose recovery deltas."""
@@ -169,7 +169,13 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     self._effective_actions = self._processed_actions.clone()
     self._prev_effective_actions = self._processed_actions.clone()
     self._prev_prev_effective_actions = self._processed_actions.clone()
+    self._recovery_phase_active = torch.zeros(
+      self._processed_actions.shape[0],
+      dtype=torch.bool,
+      device=self._processed_actions.device,
+    )
     self._publish_effective_action_history()
+    self._publish_recovery_phase()
 
   @property
   def effective_action(self):
@@ -189,6 +195,9 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     setattr(self._env, "_host_getup_effective_action", self._effective_actions)
     setattr(self._env, "_host_getup_prev_effective_action", self._prev_effective_actions)
     setattr(self._env, "_host_getup_prev_prev_effective_action", self._prev_prev_effective_actions)
+
+  def _publish_recovery_phase(self) -> None:
+    setattr(self._env, "_host_getup_recovery_phase_active", self._recovery_phase_active)
 
   def _relative_torso_height(self) -> torch.Tensor:
     torso_height = self._entity.data.root_link_pos_w[:, 2]
@@ -221,18 +230,32 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
       tilt > float(self.cfg.fallen_tilt_threshold)
     )
 
+  def _stable_upright_mask(self) -> torch.Tensor:
+    torso_height = self._relative_torso_height()
+    projected_gravity = self._entity.data.projected_gravity_b
+    tilt = torch.linalg.norm(projected_gravity[:, :2], dim=1)
+    return (torso_height >= float(self.cfg.stable_upright_height_threshold)) & (
+      tilt <= float(self.cfg.stable_upright_tilt_threshold)
+    )
+
   def _recovery_mask(self) -> torch.Tensor:
-    """Use current-pose recovery deltas only after the robot is actually fallen.
+    """Latch current-pose recovery deltas until the robot is stably upright.
 
     The anti-fall task keeps a BFM-style disturbance/recovery window for rewards,
     metrics, and stall guards, but the warm-started walking actor must retain its
     default-offset action contract while it is still upright inside a push
     window.  Switching every upright post-push step to current-pose deltas makes
     the inherited Stage4b walking policy behave like a different controller and
-    destroys pre-disturbance tracking before recovery learning can help.
+    destroys pre-disturbance tracking before recovery learning can help.  Once a
+    real fall happens, keep the HoST/current-pose recovery contract active until
+    the torso is both high and near-upright, otherwise the controller flips back
+    to walking offsets midway through the get-up transition.
     """
 
-    return self._fallen_mask()
+    active = (self._recovery_phase_active | self._fallen_mask()) & ~self._stable_upright_mask()
+    self._recovery_phase_active[:] = active
+    self._publish_recovery_phase()
+    return active
 
   def _compute_recovery_deltas(self, actions: torch.Tensor) -> torch.Tensor:
     deltas = actions * float(self.cfg.recovery_action_scale)
@@ -277,4 +300,6 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     self._effective_actions[env_ids] = 0.0
     self._prev_effective_actions[env_ids] = 0.0
     self._prev_prev_effective_actions[env_ids] = 0.0
+    self._recovery_phase_active[env_ids] = False
     self._publish_effective_action_history()
+    self._publish_recovery_phase()
