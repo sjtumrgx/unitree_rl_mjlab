@@ -247,6 +247,51 @@ def test_run_train_can_resume_from_explicit_checkpoint_path(monkeypatch, tmp_pat
   assert captured["closed"] is True
 
 
+
+def test_run_train_full_resume_passes_map_location(monkeypatch, tmp_path) -> None:
+  from scripts import train
+
+  captured = {}
+
+  class _FakeEnv:
+    def close(self):
+      captured["closed"] = True
+
+  class _FakeRunner:
+    def __init__(self, *args, **kwargs):
+      del args, kwargs
+
+    def add_git_repo_to_log(self, path):
+      del path
+
+    def load(self, path, load_cfg=None, map_location=None):
+      captured["load"] = {"path": path, "load_cfg": load_cfg, "map_location": map_location}
+
+    def learn(self, num_learning_iterations, init_at_random_ep_len):
+      captured["learn"] = (num_learning_iterations, init_at_random_ep_len)
+
+  checkpoint = tmp_path / "model.pt"
+  checkpoint.write_bytes(b"checkpoint")
+  agent = RslRlOnPolicyRunnerCfg(resume=True, max_iterations=1)
+  cfg = replace(
+    train.TrainConfig.from_task("Unitree-G1-GetUp"),
+    agent=agent,
+    gpu_ids="cpu",
+    resume_checkpoint_path=str(checkpoint),
+  )
+
+  monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+  monkeypatch.setattr(train, "configure_torch_backends", lambda: None)
+  monkeypatch.setattr(train, "ManagerBasedRlEnv", lambda **kwargs: _FakeEnv())
+  monkeypatch.setattr(train, "FiniteActionRslRlVecEnvWrapper", lambda env, clip_actions: env)
+  monkeypatch.setattr(train, "load_runner_cls", lambda task_id: _FakeRunner)
+  monkeypatch.setattr(train, "dump_yaml", lambda *args, **kwargs: None)
+
+  train.run_train("Unitree-G1-GetUp", cfg, tmp_path / "logs")
+
+  assert captured["load"] == {"path": str(checkpoint), "load_cfg": None, "map_location": "cpu"}
+  assert captured["closed"] is True
+
 def test_run_train_rejects_explicit_checkpoint_path_without_resume(monkeypatch, tmp_path) -> None:
   from scripts import train
 

@@ -503,7 +503,10 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
         map_location=device,
       )
     else:
-      runner.load(str(resume_path), load_cfg=None)
+      try:
+        runner.load(str(resume_path), load_cfg=None, map_location=device)
+      except TypeError:
+        runner.load(str(resume_path), load_cfg=None)
     if cfg.reset_actor_std_on_resume or recovery_resume_path is not None:
       _reset_actor_distribution_std(runner, cfg.agent)
 
