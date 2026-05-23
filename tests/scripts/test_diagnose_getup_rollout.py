@@ -169,6 +169,27 @@ def test_rollout_step_record_computes_mid_getup_hand_push_fields() -> None:
   assert record["posture"]["mid_getup_torso_upward_velocity_mean"] == pytest.approx(0.25)
 
 
+def test_summary_does_not_flag_float_roundoff_at_one_rad_target_delta() -> None:
+  records = [
+    {"type": "metadata", "num_envs": 1},
+    {
+      "type": "step",
+      "target": {"joint_target_delta_max": 1.000000238418579},
+      "root": {"root_vertical_velocity": 0.0, "torso_height": 0.4, "supportless_height_spike": False},
+      "step": 0,
+      "metrics": {"getup_success_count": 0.0, "getup_upright": 0.0},
+      "posture": {},
+      "support": {},
+      "termination": {"done_any": False},
+    },
+  ]
+
+  summary = rollout.summarize_records(records)
+
+  assert summary["max_joint_target_delta"] == pytest.approx(1.000000238418579)
+  assert summary["risk_flags"]["target_delta_gt_1rad"] is False
+
+
 def test_rollout_summary_flags_action_spike_and_ballistic_supportless_height() -> None:
   step = rollout.build_step_record(
     _FakeEnv(),

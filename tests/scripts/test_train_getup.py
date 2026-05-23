@@ -504,6 +504,14 @@ def test_expand_actor_checkpoint_input_projects_getup_terms_for_antifall_resume(
   torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 1199], original_first_layer[:, 498])
   torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 303], torch.tensor([498.0]))
   torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 1199], torch.tensor([498.0]))
+  # The 23-DoF GetUp XML names the hand endpoint as *_wrist_roll_rubber_hand,
+  # while the 29-DoF AntiFall XML carries the rubber hand geometry under
+  # *_wrist_yaw_link.  The transfer must preserve those endpoint body-state
+  # features by semantic alias rather than treating them as missing bodies.
+  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 367], torch.tensor([550.0]))
+  torch.testing.assert_close(checkpoint_state["obs_normalizer._mean"][:, 388], torch.tensor([565.0]))
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 1263], original_first_layer[:, 550])
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"][:, 1284], original_first_layer[:, 565])
   assert checkpoint_state["distribution.std_param"].shape == (29,)
   assert checkpoint_state["mlp.6.weight"].shape == (29, 4)
   torch.testing.assert_close(checkpoint_state["mlp.6.weight"][0], torch.arange(4, dtype=torch.float32))

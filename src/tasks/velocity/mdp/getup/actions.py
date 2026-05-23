@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import torch
 
 from mjlab.envs.mdp.actions import JointPositionAction, JointPositionActionCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
@@ -149,8 +151,21 @@ class RecoveryHybridJointPositionActionCfg(JointPositionActionCfg):
   fallen_tilt_threshold: float = 0.75
   stable_upright_height_threshold: float = 0.55
   stable_upright_tilt_threshold: float = 0.30
+  stable_upright_hold_steps: int = 1
+  stable_upright_func: Callable[..., torch.Tensor] | None = None
+  stable_upright_params: dict[str, object] | None = None
   recovery_action_scale: float = 1.0
   recovery_unactuated_timesteps: int = 0
+  walking_exit_max_delta: float | None = None
+  """Optional per-step clamp for post-recovery walking/default-offset targets."""
+  recovery_default_offset_joint_names: tuple[str, ...] = ()
+  """Recovery-phase joints that should target default pose instead of current pose.
+
+  This is used for AntiFall-GetUp's 29-DoF-only joints when warm-starting from
+  a 23-DoF GetUp actor.  The transferred actor has no learned output rows for
+  those joints, so zero action should actively hold the default pose rather than
+  latching whatever passive pose the joint has drifted into while fallen.
+  """
   max_delta: float | None = None
   """Optional clamp for current-pose recovery deltas."""
 
@@ -175,13 +190,61 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
       dtype=torch.bool,
       device=self._processed_actions.device,
     )
+    self._last_recovery_mask = torch.zeros_like(self._recovery_phase_active)
+    self._exited_recovery_phase = torch.zeros_like(self._recovery_phase_active)
+    self._walking_exit_clamp_active = torch.zeros_like(self._recovery_phase_active)
+    self._stable_upright_steps = torch.zeros(
+      self._processed_actions.shape[0],
+      dtype=torch.long,
+      device=self._processed_actions.device,
+    )
     self._recovery_elapsed_steps = torch.zeros(
       self._processed_actions.shape[0],
       dtype=torch.long,
       device=self._processed_actions.device,
     )
+    self._recovery_default_offset_joint_mask = self._make_recovery_default_offset_joint_mask()
+    self._stable_upright_params = self._make_stable_upright_params()
     self._publish_effective_action_history()
     self._publish_recovery_phase()
+
+  def _make_stable_upright_params(self) -> dict[str, object]:
+    params = dict(self.cfg.stable_upright_params or {})
+    for key, value in tuple(params.items()):
+      if not isinstance(value, SceneEntityCfg):
+        continue
+      resolved = copy(value)
+      try:
+        resolved.resolve(self._env.scene)
+      except Exception:
+        # Fake unit-test scenes and partially constructed envs may not expose
+        # the full Scene API.  In that case keep the caller-provided cfg; the
+        # callable may not need resolved IDs, and real ManagerBasedRlEnv scenes
+        # resolve through the normal path above.
+        pass
+      params[key] = resolved
+    return params
+
+  def _make_recovery_default_offset_joint_mask(self) -> torch.Tensor:
+    if self.cfg.recovery_use_default_offset:
+      return torch.ones(self.action_dim, dtype=torch.bool, device=self.device)
+
+    joint_names = tuple(self.cfg.recovery_default_offset_joint_names)
+    mask = torch.zeros(self.action_dim, dtype=torch.bool, device=self.device)
+    if not joint_names:
+      return mask
+
+    target_names = tuple(str(name) for name in self._target_names)
+    unknown = sorted(set(joint_names).difference(target_names))
+    if unknown:
+      raise ValueError(
+        "RecoveryHybridJointPositionActionCfg.recovery_default_offset_joint_names "
+        f"contains joints not controlled by this action term: {unknown}"
+      )
+
+    requested = set(joint_names)
+    mask_values = [name in requested for name in target_names]
+    return torch.tensor(mask_values, dtype=torch.bool, device=self.device)
 
   @property
   def effective_action(self):
@@ -240,9 +303,20 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     torso_height = self._relative_torso_height()
     projected_gravity = self._entity.data.projected_gravity_b
     tilt = torch.linalg.norm(projected_gravity[:, :2], dim=1)
-    return (torso_height >= float(self.cfg.stable_upright_height_threshold)) & (
+    coarse_stable = (torso_height >= float(self.cfg.stable_upright_height_threshold)) & (
       tilt <= float(self.cfg.stable_upright_tilt_threshold)
     )
+    if self.cfg.stable_upright_func is None:
+      return coarse_stable
+
+    strict_stable = self.cfg.stable_upright_func(self._env, **self._stable_upright_params)
+    strict_stable = torch.as_tensor(strict_stable, dtype=torch.bool, device=coarse_stable.device)
+    if strict_stable.shape != coarse_stable.shape:
+      raise ValueError(
+        "RecoveryHybridJointPositionActionCfg.stable_upright_func must return "
+        f"shape {tuple(coarse_stable.shape)}, got {tuple(strict_stable.shape)}"
+      )
+    return coarse_stable & strict_stable
 
   def _recovery_mask(self) -> torch.Tensor:
     """Latch current-pose recovery deltas until the robot is stably upright.
@@ -259,9 +333,18 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     """
 
     previous_active = self._recovery_phase_active.clone()
-    active = (self._recovery_phase_active | self._fallen_mask()) & ~self._stable_upright_mask()
+    candidate_active = self._recovery_phase_active | self._fallen_mask()
+    stable = self._stable_upright_mask()
+    hold_required = max(1, int(self.cfg.stable_upright_hold_steps))
+    stable_candidate = candidate_active & stable
+    self._stable_upright_steps[stable_candidate] += 1
+    self._stable_upright_steps[~stable_candidate] = 0
+    stable_exit = stable_candidate & (self._stable_upright_steps >= hold_required)
+    active = candidate_active & ~stable_exit
     newly_active = active & ~previous_active
     self._recovery_phase_active[:] = active
+    self._last_recovery_mask[:] = active
+    self._exited_recovery_phase[:] = previous_active & ~active
     self._recovery_elapsed_steps[~active] = 0
     self._recovery_elapsed_steps[newly_active] = 0
     self._publish_recovery_phase()
@@ -298,10 +381,18 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     super().process_actions(actions)
     self._walking_targets[:] = self._processed_actions
 
+    was_recovering = self._recovery_phase_active.clone()
     recovery_mask_1d = self._recovery_mask()
+    self._exited_recovery_phase[:] = was_recovering & ~recovery_mask_1d
     self._recovery_deltas[:] = self._compute_recovery_deltas(actions)
+    recovery_effective = self._recovery_deltas
+    if bool(self._recovery_default_offset_joint_mask.any().item()):
+      recovery_effective = self._recovery_deltas.clone()
+      recovery_effective[:, self._recovery_default_offset_joint_mask] = self._raw_actions[
+        :, self._recovery_default_offset_joint_mask
+      ]
     recovery_mask = recovery_mask_1d.unsqueeze(1)
-    effective = torch.where(recovery_mask, self._recovery_deltas, self._raw_actions)
+    effective = torch.where(recovery_mask, recovery_effective, self._raw_actions)
     self._prev_prev_effective_actions[:] = self._prev_effective_actions
     self._prev_effective_actions[:] = self._effective_actions
     self._effective_actions[:] = effective
@@ -310,10 +401,43 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
   def apply_actions(self) -> None:
     current_joint_pos = self._entity.data.joint_pos[:, self._target_ids]
     encoder_bias = self._entity.data.encoder_bias[:, self._target_ids]
-    recovery_mask_1d = self._recovery_mask()
+    recovery_mask_1d = self._last_recovery_mask
     recovery_mask = recovery_mask_1d.unsqueeze(1)
-    recovery_target = current_joint_pos + self._recovery_deltas
-    target = torch.where(recovery_mask, recovery_target, self._walking_targets)
+    recovery_delta = self._recovery_deltas
+    recovery_target = current_joint_pos + recovery_delta
+    if bool(self._recovery_default_offset_joint_mask.any().item()):
+      recovery_target = recovery_target.clone()
+      recovery_default_target = self._walking_targets[:, self._recovery_default_offset_joint_mask]
+      if self.cfg.max_delta is not None:
+        max_delta = float(self.cfg.max_delta)
+        if max_delta <= 0.0:
+          raise ValueError("RecoveryHybridJointPositionActionCfg.max_delta must be positive when set")
+        current_default_joints = current_joint_pos[:, self._recovery_default_offset_joint_mask]
+        recovery_default_delta = (recovery_default_target - current_default_joints).clamp(-max_delta, max_delta)
+        recovery_default_target = current_default_joints + recovery_default_delta
+      recovery_target[:, self._recovery_default_offset_joint_mask] = recovery_default_target
+      recovery_delta = recovery_delta.clone()
+      recovery_delta[:, self._recovery_default_offset_joint_mask] = recovery_target[
+        :, self._recovery_default_offset_joint_mask
+      ] - current_joint_pos[:, self._recovery_default_offset_joint_mask]
+    walking_target = self._walking_targets
+    if self.cfg.walking_exit_max_delta is not None:
+      max_delta = float(self.cfg.walking_exit_max_delta)
+      if max_delta <= 0.0:
+        raise ValueError("RecoveryHybridJointPositionActionCfg.walking_exit_max_delta must be positive when set")
+      self._walking_exit_clamp_active[recovery_mask_1d] = False
+      self._walking_exit_clamp_active |= self._exited_recovery_phase & ~recovery_mask_1d
+      walking_exit_clamp_mask = self._walking_exit_clamp_active & ~recovery_mask_1d
+      if bool(walking_exit_clamp_mask.any().item()):
+        walking_gap = walking_target - current_joint_pos
+        walking_delta = walking_gap.clamp(-max_delta, max_delta)
+        limited_walking_target = current_joint_pos + walking_delta
+        walking_target = torch.where(
+          walking_exit_clamp_mask.unsqueeze(1),
+          limited_walking_target,
+          walking_target,
+        )
+    target = torch.where(recovery_mask, recovery_target, walking_target)
     written_delta = target - current_joint_pos
     setattr(self._env, "_host_getup_joint_position_delta", written_delta.detach().clone())
     setattr(self._env, "_host_getup_joint_position_target", target.detach().clone())
@@ -332,6 +456,10 @@ class RecoveryHybridJointPositionAction(JointPositionAction):
     self._prev_effective_actions[env_ids] = 0.0
     self._prev_prev_effective_actions[env_ids] = 0.0
     self._recovery_phase_active[env_ids] = False
+    self._last_recovery_mask[env_ids] = False
+    self._exited_recovery_phase[env_ids] = False
+    self._walking_exit_clamp_active[env_ids] = False
+    self._stable_upright_steps[env_ids] = 0
     self._recovery_elapsed_steps[env_ids] = 0
     self._publish_effective_action_history()
     self._publish_recovery_phase()

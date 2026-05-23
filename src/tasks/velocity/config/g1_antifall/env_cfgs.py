@@ -587,8 +587,23 @@ def unitree_g1_antifall_getup_env_cfg(
     recovery_window_s=_RECOVERY_WINDOW_S,
     fallen_height_threshold=0.35,
     fallen_tilt_threshold=0.75,
+    stable_upright_hold_steps=10,
+    stable_upright_func=mdp.stable_getup_success_mask,
+    stable_upright_params={
+      "torso_height_threshold": GETUP_SUCCESS_TORSO_HEIGHT,
+      **_host_getup_stable_success_params(),
+    },
     recovery_action_scale=1.0,
     recovery_unactuated_timesteps=_HOST_GETUP_UNACTUATED_TIMESTEPS,
+    walking_exit_max_delta=_HOST_GETUP_MAX_ACTION_DELTA,
+    recovery_default_offset_joint_names=(
+      "waist_roll_joint",
+      "waist_pitch_joint",
+      "left_wrist_pitch_joint",
+      "left_wrist_yaw_joint",
+      "right_wrist_pitch_joint",
+      "right_wrist_yaw_joint",
+    ),
     max_delta=_HOST_GETUP_MAX_ACTION_DELTA,
   )
   _tune_command_ranges(

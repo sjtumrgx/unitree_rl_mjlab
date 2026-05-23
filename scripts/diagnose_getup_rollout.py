@@ -1248,7 +1248,7 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
       "final_natural_leg_pose_error_max": final_natural_leg_pose_error_max,
     },
     "risk_flags": {
-      "target_delta_gt_1rad": max_target_delta > 1.0,
+      "target_delta_gt_1rad": max_target_delta > 1.0 + 1e-5,
       "upward_velocity_gt_2mps": max_upward_velocity > 2.0,
       "vertical_speed_gt_2mps": max_vertical_speed > 2.0,
       # Backwards-compatible alias used by older diagnostics.

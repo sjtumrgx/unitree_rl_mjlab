@@ -369,6 +369,14 @@ def test_antifall_getup_uses_hybrid_action_to_preserve_warmstart_walking() -> No
   assert isinstance(action, RecoveryHybridJointPositionActionCfg)
   assert action.use_default_offset is True
   assert action.recovery_use_default_offset is False
+  assert action.recovery_default_offset_joint_names == (
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+  )
   assert action.recovery_window_s >= 2.0
   assert action.fallen_height_threshold <= 0.4
   assert action.fallen_tilt_threshold >= 0.7

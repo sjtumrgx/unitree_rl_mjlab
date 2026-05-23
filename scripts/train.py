@@ -137,6 +137,10 @@ _G1_ANTIFALL_29DOF_BODY_NAMES = (
   "right_wrist_pitch_link",
   "right_wrist_yaw_link",
 )
+_G1_BODY_FEATURE_ALIASES = {
+  "left_wrist_yaw_link": ("left_wrist_roll_rubber_hand",),
+  "right_wrist_yaw_link": ("right_wrist_roll_rubber_hand",),
+}
 
 
 @dataclass(frozen=True)
@@ -579,6 +583,28 @@ def _flatten_layout_indices(
   return stats_indices, weight_indices
 
 
+def _aliased_bfm_feature_names(feature_name: str) -> tuple[str, ...]:
+  for target_body_name, source_body_names in _G1_BODY_FEATURE_ALIASES.items():
+    needle = f"/{target_body_name}/"
+    if needle not in feature_name:
+      continue
+    return tuple(feature_name.replace(needle, f"/{source_body_name}/") for source_body_name in source_body_names)
+  return ()
+
+
+def _first_layout_key(
+  indices: dict[tuple[str, str, int], int],
+  term_name: str,
+  feature_names: Sequence[str],
+  history_idx: int,
+) -> tuple[str, str, int]:
+  for feature_name in feature_names:
+    key = (term_name, feature_name, history_idx)
+    if key in indices:
+      return key
+  return (term_name, feature_names[0], history_idx)
+
+
 def _build_observation_projection(
   source_layout: Sequence[_ObsTermLayout],
   target_layout: Sequence[_ObsTermLayout],
@@ -595,25 +621,33 @@ def _build_observation_projection(
           weight_cols.append(None)
           continue
 
+        feature_names = (feature_name, *_aliased_bfm_feature_names(feature_name))
         if source_term.history >= target_term.history:
           source_history_idx = target_history + source_term.history - target_term.history
-          key = (target_term.name, feature_name, source_history_idx)
+          key = _first_layout_key(
+            source_stats,
+            target_term.name,
+            feature_names,
+            source_history_idx,
+          )
           stats_cols.append(source_stats.get(key))
           weight_cols.append(source_weights.get(key))
           continue
 
-        stats_key = (
+        stats_key = _first_layout_key(
+          source_stats,
           target_term.name,
-          feature_name,
+          feature_names,
           min(target_history, source_term.history - 1),
         )
         stats_cols.append(source_stats.get(stats_key))
         if target_history < target_term.history - source_term.history:
           weight_cols.append(None)
           continue
-        weight_key = (
+        weight_key = _first_layout_key(
+          source_weights,
           target_term.name,
-          feature_name,
+          feature_names,
           target_history - (target_term.history - source_term.history),
         )
         weight_cols.append(source_weights.get(weight_key))
