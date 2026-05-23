@@ -79,6 +79,81 @@ _G1_ACTION_JOINT_NAMES = (
   "right_wrist_pitch_joint",
   "right_wrist_yaw_joint",
 )
+_G1_GETUP_23DOF_BODY_NAMES = (
+  "pelvis",
+  "left_hip_pitch_link",
+  "left_hip_roll_link",
+  "left_hip_yaw_link",
+  "left_knee_link",
+  "left_ankle_pitch_link",
+  "left_ankle_roll_link",
+  "right_hip_pitch_link",
+  "right_hip_roll_link",
+  "right_hip_yaw_link",
+  "right_knee_link",
+  "right_ankle_pitch_link",
+  "right_ankle_roll_link",
+  "torso_link",
+  "left_shoulder_pitch_link",
+  "left_shoulder_roll_link",
+  "left_shoulder_yaw_link",
+  "left_elbow_link",
+  "left_wrist_roll_rubber_hand",
+  "right_shoulder_pitch_link",
+  "right_shoulder_roll_link",
+  "right_shoulder_yaw_link",
+  "right_elbow_link",
+  "right_wrist_roll_rubber_hand",
+)
+_G1_ANTIFALL_29DOF_BODY_NAMES = (
+  "pelvis",
+  "left_hip_pitch_link",
+  "left_hip_roll_link",
+  "left_hip_yaw_link",
+  "left_knee_link",
+  "left_ankle_pitch_link",
+  "left_ankle_roll_link",
+  "right_hip_pitch_link",
+  "right_hip_roll_link",
+  "right_hip_yaw_link",
+  "right_knee_link",
+  "right_ankle_pitch_link",
+  "right_ankle_roll_link",
+  "waist_yaw_link",
+  "waist_roll_link",
+  "torso_link",
+  "left_shoulder_pitch_link",
+  "left_shoulder_roll_link",
+  "left_shoulder_yaw_link",
+  "left_elbow_link",
+  "left_wrist_roll_link",
+  "left_wrist_pitch_link",
+  "left_wrist_yaw_link",
+  "right_shoulder_pitch_link",
+  "right_shoulder_roll_link",
+  "right_shoulder_yaw_link",
+  "right_elbow_link",
+  "right_wrist_roll_link",
+  "right_wrist_pitch_link",
+  "right_wrist_yaw_link",
+)
+
+
+@dataclass(frozen=True)
+class _ObsTermLayout:
+  name: str
+  feature_names: tuple[str, ...]
+  history: int
+
+  @property
+  def width(self) -> int:
+    return len(self.feature_names) * self.history
+
+
+@dataclass(frozen=True)
+class _ObservationProjection:
+  stats_source_by_target: tuple[int | None, ...]
+  weight_source_by_target: tuple[int | None, ...]
 
 
 @dataclass(frozen=True)
@@ -325,14 +400,70 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   env.close()
 
 
+def _copy_observation_columns(
+  old: torch.Tensor,
+  target: torch.Tensor,
+  projection: _ObservationProjection,
+  *,
+  fill_value: float,
+) -> torch.Tensor | None:
+  if old.ndim != 2 or target.ndim != 2:
+    return None
+  if old.shape[0] != target.shape[0]:
+    return None
+  if len(projection.stats_source_by_target) != target.shape[1]:
+    return None
+
+  resized = target.detach().clone()
+  for target_col, source_col in enumerate(projection.stats_source_by_target):
+    if source_col is None:
+      resized[:, target_col] = fill_value
+      continue
+    if source_col >= old.shape[1]:
+      return None
+    resized[:, target_col] = old[:, source_col]
+  return resized
+
+
+def _copy_first_linear_columns(
+  old: torch.Tensor,
+  target: torch.Tensor,
+  projection: _ObservationProjection,
+) -> torch.Tensor | None:
+  if old.ndim != 2 or target.ndim != 2:
+    return None
+  if old.shape[0] != target.shape[0]:
+    return None
+  if len(projection.weight_source_by_target) != target.shape[1]:
+    return None
+
+  resized = target.detach().clone()
+  resized.zero_()
+  for target_col, source_col in enumerate(projection.weight_source_by_target):
+    if source_col is None:
+      continue
+    if source_col >= old.shape[1]:
+      return None
+    resized[:, target_col] = old[:, source_col]
+  return resized
+
+
 def _expand_observation_normalizer_tensor(
   old: torch.Tensor,
   target: torch.Tensor,
   *,
   fill_value: float,
+  projection: _ObservationProjection | None = None,
 ) -> torch.Tensor | None:
   if old.shape == target.shape:
     return old
+  if projection is not None:
+    return _copy_observation_columns(
+      old,
+      target,
+      projection,
+      fill_value=fill_value,
+    )
   if old.ndim != 2 or target.ndim != 2:
     return None
   if old.shape[0] != target.shape[0]:
@@ -346,9 +477,16 @@ def _expand_observation_normalizer_tensor(
   return resized
 
 
-def _expand_first_linear_weight(old: torch.Tensor, target: torch.Tensor) -> torch.Tensor | None:
+def _expand_first_linear_weight(
+  old: torch.Tensor,
+  target: torch.Tensor,
+  *,
+  projection: _ObservationProjection | None = None,
+) -> torch.Tensor | None:
   if old.shape == target.shape:
     return old
+  if projection is not None:
+    return _copy_first_linear_columns(old, target, projection)
   if old.ndim != 2 or target.ndim != 2:
     return None
   if old.shape[0] != target.shape[0]:
@@ -366,6 +504,133 @@ def _infer_g1_target_action_names(target_rows: int) -> tuple[str, ...] | None:
     return _G1_23DOF_ACTION_JOINT_NAMES
   if target_rows == len(_G1_ACTION_JOINT_NAMES):
     return _G1_ACTION_JOINT_NAMES
+  return None
+
+
+def _scalar_features(prefix: str, width: int) -> tuple[str, ...]:
+  return tuple(f"{prefix}/{idx}" for idx in range(width))
+
+
+def _joint_features(prefix: str, joint_names: Sequence[str]) -> tuple[str, ...]:
+  return tuple(f"{prefix}/{name}" for name in joint_names)
+
+
+def _bfm_body_state_features(body_names: Sequence[str]) -> tuple[str, ...]:
+  features: list[str] = ["bfm/root_height"]
+  for name in body_names[1:]:
+    for axis in ("x", "y", "z"):
+      features.append(f"bfm/body_pos/{name}/{axis}")
+  for name in body_names:
+    for axis in ("tan_x", "tan_y", "tan_z", "norm_x", "norm_y", "norm_z"):
+      features.append(f"bfm/body_rot/{name}/{axis}")
+  for name in body_names:
+    for axis in ("x", "y", "z"):
+      features.append(f"bfm/body_lin_vel/{name}/{axis}")
+  for name in body_names:
+    for axis in ("x", "y", "z"):
+      features.append(f"bfm/body_ang_vel/{name}/{axis}")
+  return tuple(features)
+
+
+def _g1_getup_actor_layout() -> tuple[_ObsTermLayout, ...]:
+  return (
+    _ObsTermLayout("base_ang_vel", _scalar_features("base_ang_vel", 3), 6),
+    _ObsTermLayout("projected_gravity", _scalar_features("projected_gravity", 3), 6),
+    _ObsTermLayout("command", _scalar_features("command", 3), 6),
+    _ObsTermLayout("joint_pos", _joint_features("joint_pos", _G1_23DOF_ACTION_JOINT_NAMES), 6),
+    _ObsTermLayout("joint_vel", _joint_features("joint_vel", _G1_23DOF_ACTION_JOINT_NAMES), 6),
+    _ObsTermLayout("actions", _joint_features("actions", _G1_23DOF_ACTION_JOINT_NAMES), 6),
+    _ObsTermLayout("getup_progress", _scalar_features("getup_progress", 5), 6),
+    _ObsTermLayout("bfm_local_body_state", _bfm_body_state_features(_G1_GETUP_23DOF_BODY_NAMES), 1),
+    _ObsTermLayout("height_scan", _scalar_features("height_scan", 187), 6),
+  )
+
+
+def _g1_antifall_getup_actor_layout() -> tuple[_ObsTermLayout, ...]:
+  return (
+    _ObsTermLayout("base_ang_vel", _scalar_features("base_ang_vel", 3), 3),
+    _ObsTermLayout("projected_gravity", _scalar_features("projected_gravity", 3), 3),
+    _ObsTermLayout("command", _scalar_features("command", 3), 3),
+    _ObsTermLayout("joint_pos", _joint_features("joint_pos", _G1_ACTION_JOINT_NAMES), 3),
+    _ObsTermLayout("joint_vel", _joint_features("joint_vel", _G1_ACTION_JOINT_NAMES), 3),
+    _ObsTermLayout("actions", _joint_features("actions", _G1_ACTION_JOINT_NAMES), 3),
+    _ObsTermLayout("getup_progress", _scalar_features("getup_progress", 5), 3),
+    _ObsTermLayout("bfm_local_body_state", _bfm_body_state_features(_G1_ANTIFALL_29DOF_BODY_NAMES), 3),
+  )
+
+
+def _layout_width(layout: Sequence[_ObsTermLayout]) -> int:
+  return sum(term.width for term in layout)
+
+
+def _flatten_layout_indices(
+  layout: Sequence[_ObsTermLayout],
+) -> tuple[dict[tuple[str, str, int], int], dict[tuple[str, str, int], int]]:
+  stats_indices: dict[tuple[str, str, int], int] = {}
+  weight_indices: dict[tuple[str, str, int], int] = {}
+  offset = 0
+  for term in layout:
+    for history_idx in range(term.history):
+      for feature_idx, feature_name in enumerate(term.feature_names):
+        flat_idx = offset + history_idx * len(term.feature_names) + feature_idx
+        stats_indices[(term.name, feature_name, history_idx)] = flat_idx
+        weight_indices[(term.name, feature_name, history_idx)] = flat_idx
+    offset += term.width
+  return stats_indices, weight_indices
+
+
+def _build_observation_projection(
+  source_layout: Sequence[_ObsTermLayout],
+  target_layout: Sequence[_ObsTermLayout],
+) -> _ObservationProjection:
+  source_stats, source_weights = _flatten_layout_indices(source_layout)
+  stats_cols: list[int | None] = []
+  weight_cols: list[int | None] = []
+  for target_term in target_layout:
+    source_term = next((term for term in source_layout if term.name == target_term.name), None)
+    for target_history in range(target_term.history):
+      for feature_name in target_term.feature_names:
+        if source_term is None:
+          stats_cols.append(None)
+          weight_cols.append(None)
+          continue
+
+        if source_term.history >= target_term.history:
+          source_history_idx = target_history + source_term.history - target_term.history
+          key = (target_term.name, feature_name, source_history_idx)
+          stats_cols.append(source_stats.get(key))
+          weight_cols.append(source_weights.get(key))
+          continue
+
+        stats_key = (
+          target_term.name,
+          feature_name,
+          min(target_history, source_term.history - 1),
+        )
+        stats_cols.append(source_stats.get(stats_key))
+        if target_history < target_term.history - source_term.history:
+          weight_cols.append(None)
+          continue
+        weight_key = (
+          target_term.name,
+          feature_name,
+          target_history - (target_term.history - source_term.history),
+        )
+        weight_cols.append(source_weights.get(weight_key))
+  return _ObservationProjection(
+    stats_source_by_target=tuple(stats_cols),
+    weight_source_by_target=tuple(weight_cols),
+  )
+
+
+def _infer_observation_projection(
+  old_cols: int,
+  target_cols: int,
+) -> _ObservationProjection | None:
+  getup_actor = _g1_getup_actor_layout()
+  antifall_actor = _g1_antifall_getup_actor_layout()
+  if old_cols == _layout_width(getup_actor) and target_cols == _layout_width(antifall_actor):
+    return _build_observation_projection(getup_actor, antifall_actor)
   return None
 
 
@@ -507,6 +772,15 @@ def _expand_model_input_state(
   """
 
   changed = False
+  old_weight = checkpoint_state.get("mlp.0.weight")
+  target_weight = target_state.get("mlp.0.weight")
+  projection = None
+  if old_weight is not None and target_weight is not None and old_weight.ndim == 2 and target_weight.ndim == 2:
+    projection = _infer_observation_projection(
+      int(old_weight.shape[1]),
+      int(target_weight.shape[1]),
+    )
+
   normalizer_fill = {
     "obs_normalizer._mean": 0.0,
     "obs_normalizer._var": 1.0,
@@ -517,17 +791,24 @@ def _expand_model_input_state(
     target = target_state.get(key)
     if old is None or target is None:
       continue
-    expanded = _expand_observation_normalizer_tensor(old, target, fill_value=fill_value)
+    expanded = _expand_observation_normalizer_tensor(
+      old,
+      target,
+      fill_value=fill_value,
+      projection=projection,
+    )
     if expanded is None:
       continue
     if expanded.shape != old.shape:
       changed = True
     checkpoint_state[key] = expanded
 
-  old_weight = checkpoint_state.get("mlp.0.weight")
-  target_weight = target_state.get("mlp.0.weight")
   if old_weight is not None and target_weight is not None:
-    expanded_weight = _expand_first_linear_weight(old_weight, target_weight)
+    expanded_weight = _expand_first_linear_weight(
+      old_weight,
+      target_weight,
+      projection=projection,
+    )
     if expanded_weight is not None:
       if expanded_weight.shape != old_weight.shape:
         changed = True

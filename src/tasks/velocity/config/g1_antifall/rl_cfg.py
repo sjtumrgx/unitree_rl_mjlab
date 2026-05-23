@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from mjlab.rl import RslRlOnPolicyRunnerCfg
 
 from src.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
+from src.tasks.velocity.config.g1_getup.rl_cfg import unitree_g1_getup_ppo_runner_cfg
 
 from src.tasks.velocity.rl.antifall_curriculum import AntiFallCurriculumCfg
 
@@ -36,10 +37,13 @@ def unitree_g1_antifall_getup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
 
 
 def unitree_g1_antifall_getup_recovery_warmup_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  cfg = unitree_g1_antifall_getup_ppo_runner_cfg()
+  # This branch is a fallen-start GetUp bootstrap using the final AntiFall-GetUp
+  # actor/action tensor contract.  Keep the PPO/action-clipping settings aligned
+  # with the standalone GetUp task that reliably escapes the floor; the final
+  # walking+recovery task below stays conservative to protect Stage4b walking.
+  cfg = unitree_g1_getup_ppo_runner_cfg(terrain="mixed")
+  cfg.experiment_name = "g1_antifall_getup"
   cfg.run_name = "recovery_warmup"
-  cfg.algorithm.learning_rate = min(cfg.algorithm.learning_rate, 1.0e-4)
-  cfg.algorithm.desired_kl = min(cfg.algorithm.desired_kl, 0.003)
   return cfg
 
 

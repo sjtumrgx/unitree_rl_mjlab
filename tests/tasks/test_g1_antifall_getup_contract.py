@@ -25,7 +25,7 @@ def test_antifall_getup_recovery_warmup_task_is_registered() -> None:
   rl_cfg = load_rl_cfg(WARMUP_TASK_ID)
   assert rl_cfg.experiment_name == "g1_antifall_getup"
   assert rl_cfg.run_name == "recovery_warmup"
-  assert rl_cfg.algorithm.learning_rate <= 1.0e-4
+  assert rl_cfg.clip_actions == 5.0
 
 
 def test_antifall_getup_recovery_warmup_keeps_final_actor_contract() -> None:
@@ -37,6 +37,23 @@ def test_antifall_getup_recovery_warmup_keeps_final_actor_contract() -> None:
   assert warmup.actions["joint_pos"].__class__ is final.actions["joint_pos"].__class__
   assert warmup.actions["joint_pos"].max_delta == final.actions["joint_pos"].max_delta
 
+
+
+def test_antifall_getup_recovery_warmup_uses_getup_bootstrap_ppo_settings() -> None:
+  warmup_cfg = load_rl_cfg(WARMUP_TASK_ID)
+  getup_cfg = load_rl_cfg("Unitree-G1-GetUp")
+  final_cfg = load_rl_cfg(TASK_ID)
+
+  # Recovery warmup is the fallen-start bootstrap branch, so it should keep the
+  # action clipping and exploration pressure that made the standalone GetUp task
+  # leave the floor.  The final walking+recovery fine-tune remains conservative
+  # to protect the Stage4b walking warm start.
+  assert warmup_cfg.clip_actions == getup_cfg.clip_actions == 5.0
+  assert warmup_cfg.algorithm.entropy_coef == getup_cfg.algorithm.entropy_coef
+  assert warmup_cfg.algorithm.learning_rate == getup_cfg.algorithm.learning_rate
+  assert warmup_cfg.algorithm.desired_kl == getup_cfg.algorithm.desired_kl
+  assert final_cfg.algorithm.learning_rate < warmup_cfg.algorithm.learning_rate
+  assert final_cfg.algorithm.desired_kl < warmup_cfg.algorithm.desired_kl
 
 def test_antifall_getup_recovery_warmup_is_fallen_recovery_only() -> None:
   cfg = load_env_cfg(WARMUP_TASK_ID)
