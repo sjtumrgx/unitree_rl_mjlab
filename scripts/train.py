@@ -335,13 +335,15 @@ def _expand_observation_normalizer_tensor(
     return old
   if old.ndim != 2 or target.ndim != 2:
     return None
-  if old.shape[0] != target.shape[0] or old.shape[1] > target.shape[1]:
+  if old.shape[0] != target.shape[0]:
     return None
 
-  expanded = target.detach().clone()
-  expanded[:, : old.shape[1]] = old
-  expanded[:, old.shape[1] :] = fill_value
-  return expanded
+  resized = target.detach().clone()
+  copy_cols = min(old.shape[1], target.shape[1])
+  resized[:, :copy_cols] = old[:, :copy_cols]
+  if old.shape[1] < target.shape[1]:
+    resized[:, old.shape[1] :] = fill_value
+  return resized
 
 
 def _expand_first_linear_weight(old: torch.Tensor, target: torch.Tensor) -> torch.Tensor | None:
@@ -349,13 +351,14 @@ def _expand_first_linear_weight(old: torch.Tensor, target: torch.Tensor) -> torc
     return old
   if old.ndim != 2 or target.ndim != 2:
     return None
-  if old.shape[0] != target.shape[0] or old.shape[1] > target.shape[1]:
+  if old.shape[0] != target.shape[0]:
     return None
 
-  expanded = target.detach().clone()
-  expanded.zero_()
-  expanded[:, : old.shape[1]] = old
-  return expanded
+  resized = target.detach().clone()
+  resized.zero_()
+  copy_cols = min(old.shape[1], target.shape[1])
+  resized[:, :copy_cols] = old[:, :copy_cols]
+  return resized
 
 
 def _infer_g1_target_action_names(target_rows: int) -> tuple[str, ...] | None:
@@ -494,14 +497,13 @@ def _expand_model_input_state(
   source_action_names: Sequence[str] | None = None,
   target_action_names: Sequence[str] | None = None,
 ) -> bool:
-  """Expand legacy actor/critic input tensors when observation dims grow.
+  """Resize legacy actor/critic tensors for compatible observation dims.
 
-  BFM-local-body observations add new input columns after the existing GetUp
-  actor terms.  For actor-only resume we want the old policy to behave exactly
-  as before at iteration 0, then learn from the new features.  Therefore old
-  first-layer weights are copied into the leading columns while newly-added
-  input columns are zeroed.  Observation normalizer statistics keep their old
-  leading values and use neutral mean=0,var/std=1 for new dimensions.
+  BFM-local-body observations can add input columns after the existing GetUp
+  actor terms, while bridging a richer GetUp checkpoint into an AntiFall task
+  can also remove trailing task-local columns.  Leading columns preserve the
+  old policy contract.  Newly-added first-layer columns are zeroed, and newly
+  added observation normalizer statistics use neutral mean=0,var/std=1 values.
   """
 
   changed = False
@@ -585,9 +587,9 @@ def _load_policy_with_compatible_input_expansion(
       raise
 
     print(
-      "[INFO]: Expanded "
+      "[INFO]: Resized "
       + "/".join(changed_parts)
-      + " checkpoint input tensors for additive observation dimensions; "
+      + " checkpoint input tensors for compatible observation dimensions; "
       + "optimizer state was not restored."
     )
 

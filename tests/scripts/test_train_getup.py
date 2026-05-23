@@ -446,6 +446,54 @@ def test_expand_actor_checkpoint_input_preserves_old_policy_and_zeroes_new_bfm_i
   torch.testing.assert_close(checkpoint_state["obs_normalizer._std"][:, 492:], torch.ones(1, 358))
 
 
+def test_expand_actor_checkpoint_input_truncates_larger_getup_obs_for_antifall_resume() -> None:
+  from scripts.train import _expand_model_input_state
+
+  checkpoint_state = {
+    "obs_normalizer._mean": torch.arange(1978, dtype=torch.float32).reshape(1, 1978),
+    "obs_normalizer._var": torch.arange(1978, dtype=torch.float32).reshape(1, 1978) + 10.0,
+    "obs_normalizer._std": torch.arange(1978, dtype=torch.float32).reshape(1, 1978) + 20.0,
+    "distribution.std_param": torch.full((23,), 0.25),
+    "mlp.0.weight": torch.arange(512 * 1978, dtype=torch.float32).reshape(512, 1978),
+    "mlp.0.bias": torch.arange(512, dtype=torch.float32),
+    "mlp.6.weight": torch.arange(23 * 4, dtype=torch.float32).reshape(23, 4),
+    "mlp.6.bias": torch.arange(23, dtype=torch.float32),
+  }
+  original_first_layer = checkpoint_state["mlp.0.weight"].clone()
+  target_state = {
+    "obs_normalizer._mean": torch.zeros(1, 1647),
+    "obs_normalizer._var": torch.ones(1, 1647),
+    "obs_normalizer._std": torch.ones(1, 1647),
+    "distribution.std_param": torch.full((29,), 0.5),
+    "mlp.0.weight": torch.full((512, 1647), -7.0),
+    "mlp.0.bias": torch.full((512,), -3.0),
+    "mlp.6.weight": torch.full((29, 4), -9.0),
+    "mlp.6.bias": torch.full((29,), -3.0),
+  }
+
+  expanded = _expand_model_input_state(checkpoint_state, target_state)
+
+  assert expanded is True
+  assert checkpoint_state["obs_normalizer._mean"].shape == (1, 1647)
+  assert checkpoint_state["mlp.0.weight"].shape == (512, 1647)
+  torch.testing.assert_close(
+    checkpoint_state["obs_normalizer._mean"], torch.arange(1647, dtype=torch.float32).reshape(1, 1647)
+  )
+  torch.testing.assert_close(
+    checkpoint_state["obs_normalizer._var"], torch.arange(1647, dtype=torch.float32).reshape(1, 1647) + 10.0
+  )
+  torch.testing.assert_close(
+    checkpoint_state["obs_normalizer._std"], torch.arange(1647, dtype=torch.float32).reshape(1, 1647) + 20.0
+  )
+  torch.testing.assert_close(checkpoint_state["mlp.0.weight"], original_first_layer[:, :1647])
+  assert checkpoint_state["distribution.std_param"].shape == (29,)
+  assert checkpoint_state["mlp.6.weight"].shape == (29, 4)
+  torch.testing.assert_close(checkpoint_state["mlp.6.weight"][0], torch.arange(4, dtype=torch.float32))
+  torch.testing.assert_close(checkpoint_state["mlp.6.weight"][13], torch.zeros(4))
+  torch.testing.assert_close(checkpoint_state["mlp.6.weight"][15], torch.arange(13 * 4, 14 * 4, dtype=torch.float32))
+  assert checkpoint_state["distribution.std_param"][13] == pytest.approx(0.5)
+
+
 def test_expand_getup_actor_output_maps_23dof_common_joints_into_29dof_policy() -> None:
   from scripts.train import _expand_model_input_state
 
