@@ -166,6 +166,11 @@ def post_recovery_resume_locomotion(
     include_near_failure_reset_window=True,
     asset_cfg=asset_cfg,
   )
+  action_recovery_phase = getattr(env, "_host_getup_recovery_phase_active", None)
+  if torch.is_tensor(action_recovery_phase):
+    phase = action_recovery_phase.to(device=active.device, dtype=torch.bool).flatten()
+    if phase.numel() >= env.num_envs:
+      active &= ~phase[: env.num_envs]
   if not active.any():
     return torch.zeros(env.num_envs, device=env.device)
 

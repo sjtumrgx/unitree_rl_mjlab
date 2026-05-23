@@ -512,6 +512,50 @@ def test_antifall_getup_trains_post_recovery_resume_locomotion() -> None:
 
   assert "post_recovery_resume_locomotion" in cfg.metrics
 
+
+def test_post_recovery_resume_locomotion_waits_for_action_recovery_phase_exit() -> None:
+  import torch
+  from types import SimpleNamespace
+
+  command = torch.tensor([[0.5, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=torch.float32)
+  asset = SimpleNamespace(
+    data=SimpleNamespace(
+      root_link_lin_vel_b=command.clone(),
+      root_link_ang_vel_b=torch.zeros(2, 3),
+      root_link_pos_w=torch.tensor([[0.0, 0.0, 0.8], [0.0, 0.0, 0.8]], dtype=torch.float32),
+      projected_gravity_b=torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]], dtype=torch.float32),
+    ),
+    body_names=(),
+  )
+  env = SimpleNamespace(
+    num_envs=2,
+    device="cpu",
+    step_dt=0.02,
+    common_step_counter=200,
+    scene={"robot": asset},
+    command_manager=SimpleNamespace(get_command=lambda name: command),
+    extras={"log": {}},
+    _anti_fall_state={
+      "last_disturbance_step": torch.zeros(2, dtype=torch.long),
+      "last_disturbance_mag": torch.ones(2),
+      "disturbance_kind": torch.full((2,), mdp.DISTURBANCE_NEAR_FAILURE_RESET, dtype=torch.long),
+      "disturbance_active": torch.zeros(2, dtype=torch.bool),
+      "disturbance_count": torch.ones(2, dtype=torch.long),
+    },
+    _host_getup_recovery_phase_active=torch.tensor([True, False]),
+  )
+
+  reward = mdp.post_recovery_resume_locomotion(
+    env,
+    command_name="twist",
+    recovery_window_s=2.0,
+    resume_window_s=8.0,
+  )
+
+  assert reward[0].item() == 0.0
+  assert reward[1].item() > 0.9
+
+
 def test_antifall_getup_recovery_rewards_ignore_plain_push_windows() -> None:
   cfg = load_env_cfg(TASK_ID)
 
