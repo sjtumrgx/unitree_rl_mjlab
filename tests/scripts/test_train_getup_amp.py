@@ -30,7 +30,7 @@ def test_train_getup_amp_short_args_map_to_real_tyro_overrides() -> None:
   assert "--agent.num-steps-per-env=2" in forwarded
 
 
-def test_train_getup_amp_warm_start_checkpoint_forwards_actor_only_resume() -> None:
+def test_train_getup_amp_warm_start_checkpoint_forwards_policy_only_resume() -> None:
   forwarded = build_forwarded_args(
     demo_data_dir="data/motions/g1_getup_amp",
     manifest_path="data/motions/g1_getup_amp/selected_manifest.json",
@@ -44,7 +44,8 @@ def test_train_getup_amp_warm_start_checkpoint_forwards_actor_only_resume() -> N
 
   assert "--agent.resume=True" in forwarded
   assert "--resume-checkpoint-path=logs/rsl_rl/g1_getup/good/model_1000.pt" in forwarded
-  assert "--actor-only-resume=True" in forwarded
+  assert "--policy-only-resume=True" in forwarded
+  assert "--actor-only-resume=True" not in forwarded
   assert "--reset-actor-std-on-resume=True" not in forwarded
   assert "--gpu-ids" in forwarded
   assert "[0]" in forwarded

@@ -52,6 +52,16 @@ def test_amp_algorithm_cfg_serializes_extra_fields() -> None:
   assert algorithm["discriminator_hidden_dims"] == (256, 128)
 
 
+def test_amp_algorithm_cfg_uses_conservative_warm_start_updates() -> None:
+  from src.tasks.velocity.config.g1_getup.rl_cfg import unitree_g1_getup_amp_ppo_runner_cfg
+
+  cfg = unitree_g1_getup_amp_ppo_runner_cfg()
+
+  assert cfg.algorithm.learning_rate == 1.0e-5
+  assert cfg.algorithm.desired_kl == 0.001
+  assert cfg.algorithm.amp_reward_scale == 0.1
+
+
 def test_amp_task_is_registered_without_changing_default() -> None:
   import mjlab.tasks  # noqa: F401
   import src.tasks  # noqa: F401

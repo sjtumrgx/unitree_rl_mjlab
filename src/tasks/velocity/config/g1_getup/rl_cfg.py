@@ -14,7 +14,7 @@ class GetupAmpPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
   class_name: str = "src.tasks.velocity.rl.getup_amp:GetupAmpPPO"
   demo_data_dir: str = "data/motions/g1_getup_amp"
   manifest_path: str | None = None
-  amp_reward_scale: float = 0.25
+  amp_reward_scale: float = 0.1
   amp_obs_group: str = "amp"
   discriminator_hidden_dims: tuple[int, ...] = (256, 128)
   discriminator_learning_rate: float = 1.0e-4
@@ -78,7 +78,7 @@ def unitree_g1_getup_ppo_runner_cfg(terrain: str = "mixed") -> RslRlOnPolicyRunn
 def unitree_g1_getup_amp_ppo_runner_cfg(
   demo_data_dir: str = "data/motions/g1_getup_amp",
   manifest_path: str | None = None,
-  amp_reward_scale: float = 0.25,
+  amp_reward_scale: float = 0.1,
 ) -> RslRlOnPolicyRunnerCfg:
   """Create the opt-in ground-only AMP runner configuration."""
   cfg = unitree_g1_getup_ppo_runner_cfg(terrain="ground")
@@ -89,11 +89,11 @@ def unitree_g1_getup_amp_ppo_runner_cfg(
     entropy_coef=cfg.algorithm.entropy_coef,
     num_learning_epochs=cfg.algorithm.num_learning_epochs,
     num_mini_batches=cfg.algorithm.num_mini_batches,
-    learning_rate=cfg.algorithm.learning_rate,
+    learning_rate=1.0e-5,
     schedule=cfg.algorithm.schedule,
     gamma=cfg.algorithm.gamma,
     lam=cfg.algorithm.lam,
-    desired_kl=cfg.algorithm.desired_kl,
+    desired_kl=0.001,
     max_grad_norm=cfg.algorithm.max_grad_norm,
     demo_data_dir=demo_data_dir,
     manifest_path=manifest_path,

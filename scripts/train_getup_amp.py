@@ -54,8 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
     default=None,
     help=(
       "Optional normal GetUp checkpoint used to initialize the AMP actor. "
-      "Forwarded as actor-only resume so critic, optimizer, and AMP "
-      "discriminator are trained fresh."
+      "Forwarded as policy-only resume so the verified actor/critic get-up "
+      "prior survives while optimizer and AMP discriminator are trained fresh."
     ),
   )
   parser.add_argument(
@@ -234,7 +234,7 @@ def build_forwarded_args(
     forwarded.extend([
       "--agent.resume=True",
       f"--resume-checkpoint-path={warm_start_checkpoint}",
-      "--actor-only-resume=True",
+      "--policy-only-resume=True",
     ])
     if reset_actor_std_on_warm_start:
       forwarded.append("--reset-actor-std-on-resume=True")
