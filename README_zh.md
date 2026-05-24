@@ -1,4 +1,8 @@
-# Unitree RL MJLab：Train → Play → Sim2Real
+<h1 align="center">Unitree RL MJLab：Train → Play → Sim2Real</h1>
+
+<p align="center">
+  <a href="README.md">English</a> · <a href="README_zh.md">中文</a>
+</p>
 
 本仓库基于 **Unitree RL MJLab / mjlab**，保留原有以 MuJoCo 为核心的训练、回放
 和部署流程。在基础 Unitree locomotion 示例之上，本仓库额外增加了 **G1 Parkour**、
@@ -15,23 +19,30 @@
 
 ## 仓库结构
 
-| 路径 | 作用 |
-| --- | --- |
-| `src/tasks/velocity/config/` | MJLab 任务注册与环境配置。 |
-| `src/tasks/velocity/mdp/` | 奖励、重置、事件和观测辅助逻辑。 |
-| `src/parkour/` | Parkour ONNX/deploy contract、观测适配、深度工具、场景编辑核心。 |
-| `scripts/train.py` | 通用训练入口。 |
-| `scripts/play.py` | 通用 Python 策略回放 / 可视化入口。 |
-| `scripts/play_parkour.py` | 带深度输入的 G1 Parkour 回放与诊断。 |
-| `scripts/play_antifall.py` | 带 MuJoCo 鼠标拖拽扰动的 G1 AntiFall 回放。 |
-| `scripts/train_getup.py`, `scripts/play_getup.py` | 带 terrain 选择的 GetUp 便捷入口。 |
-| `scripts/train_getup_amp.py` | 可选的 ground-only GetUp AMP/示教数据 fallback 训练入口。 |
-| `scripts/prepare_g1_getup_amp_data.py`, `scripts/play_g1_getup_amp_data.py` | 由 YAML 配置驱动的 GetUp 示教数据转换和 G1 MuJoCo 回放入口。 |
-| `data/g1_getup_amp.yaml` | 本地 GetUp 示教数据流程配置，用来选择 `.pkl`、要播放的 `.npz` 和训练用 `.npz`。 |
-| `scripts/edit_parkour_scene.py` | 基于浏览器/Viser 的 Parkour 地形盒子编辑器。 |
-| `deploy/robots/g1_parkour/` | C++/DDS G1 Parkour controller 与 policy runtime。 |
-| `simulate/` | Unitree MuJoCo simulator 集成与配置。 |
-| `doc/` | 面向用户的环境、模块和 sim2real 文档。 |
+```text
+.
+├── src/
+│   ├── tasks/velocity/config/        # MJLab 任务注册与环境配置。
+│   ├── tasks/velocity/mdp/           # 奖励、重置、事件和观测辅助逻辑。
+│   └── parkour/                      # Parkour ONNX/deploy contract、观测适配、深度工具和场景编辑核心。
+├── scripts/
+│   ├── train.py                      # 通用训练入口。
+│   ├── play.py                       # 通用 Python 策略回放 / 可视化入口。
+│   ├── play_parkour.py               # 带深度输入的 G1 Parkour 回放与诊断。
+│   ├── play_antifall.py              # 带 MuJoCo 鼠标拖拽扰动的 G1 AntiFall 回放。
+│   ├── train_getup.py                # 带 terrain 选择的 GetUp 训练 wrapper。
+│   ├── play_getup.py                 # 带 terrain 选择的 GetUp 回放 wrapper。
+│   ├── train_getup_amp.py            # 可选 ground-only GetUp AMP/示教数据 fallback 训练入口。
+│   ├── prepare_g1_getup_amp_data.py  # 由 YAML 配置驱动的 GetUp 示教数据转换。
+│   ├── play_g1_getup_amp_data.py     # 转换后 GetUp 示教 clip 的 G1 MuJoCo 回放入口。
+│   └── edit_parkour_scene.py         # 基于浏览器/Viser 的 Parkour 地形盒子编辑器。
+├── data/
+│   └── g1_getup_amp.yaml             # 本地 GetUp 示教数据流程配置，用来选择 .pkl/.npz clip。
+├── deploy/
+│   └── robots/g1_parkour/            # C++/DDS G1 Parkour controller 与 policy runtime。
+├── simulate/                         # Unitree MuJoCo simulator 集成与配置。
+└── doc/                              # 面向用户的环境、模块和 sim2real 文档。
+```
 
 ## 环境配置
 

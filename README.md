@@ -1,4 +1,8 @@
-# Unitree RL MJLab: Train → Play → Sim2Real
+<h1 align="center">Unitree RL MJLab: Train → Play → Sim2Real</h1>
+
+<p align="center">
+  <a href="README.md">English</a> · <a href="README_zh.md">中文</a>
+</p>
 
 This repository is based on **Unitree RL MJLab / mjlab** and keeps the original
 MuJoCo-centered training and deployment workflow.  On top of the base Unitree
@@ -16,23 +20,30 @@ The intended workflow is:
 
 ## Repository layout
 
-| Path | Purpose |
-| --- | --- |
-| `src/tasks/velocity/config/` | MJLab task registration and environment configuration. |
-| `src/tasks/velocity/mdp/` | Reward, reset, event, and observation helper logic. |
-| `src/parkour/` | Parkour ONNX/deploy contracts, observation adapter, depth utilities, scene editor core. |
-| `scripts/train.py` | Generic training entrypoint. |
-| `scripts/play.py` | Generic Python policy replay / visualization entrypoint. |
-| `scripts/play_parkour.py` | Depth-conditioned G1 Parkour replay and diagnostics. |
-| `scripts/play_antifall.py` | G1 AntiFall replay with native MuJoCo drag perturbations. |
-| `scripts/train_getup.py`, `scripts/play_getup.py` | GetUp convenience wrappers with terrain selection. |
-| `scripts/train_getup_amp.py` | Optional ground-only GetUp AMP/demo-data fallback training wrapper. |
-| `scripts/prepare_g1_getup_amp_data.py`, `scripts/play_g1_getup_amp_data.py` | YAML-driven GetUp demo-data conversion and G1 MuJoCo playback. |
-| `data/g1_getup_amp.yaml` | Local GetUp demo-data workflow config for selected `.pkl`, playable `.npz`, and training `.npz` clips. |
-| `scripts/edit_parkour_scene.py` | Browser-based Viser editor for parkour terrain boxes. |
-| `deploy/robots/g1_parkour/` | C++/DDS G1 Parkour controller and policy runtime. |
-| `simulate/` | Unitree MuJoCo simulator integration and configuration. |
-| `doc/` | Human-facing documentation for setup, modules, and sim2real notes. |
+```text
+.
+├── src/
+│   ├── tasks/velocity/config/        # MJLab task registration and environment configuration.
+│   ├── tasks/velocity/mdp/           # Reward, reset, event, and observation helper logic.
+│   └── parkour/                      # Parkour ONNX/deploy contracts, observation adapter, depth utilities, and scene editor core.
+├── scripts/
+│   ├── train.py                      # Generic training entrypoint.
+│   ├── play.py                       # Generic Python policy replay / visualization entrypoint.
+│   ├── play_parkour.py               # Depth-conditioned G1 Parkour replay and diagnostics.
+│   ├── play_antifall.py              # G1 AntiFall replay with native MuJoCo drag perturbations.
+│   ├── train_getup.py                # GetUp training wrapper with terrain selection.
+│   ├── play_getup.py                 # GetUp play wrapper with terrain selection.
+│   ├── train_getup_amp.py            # Optional ground-only GetUp AMP/demo-data fallback training wrapper.
+│   ├── prepare_g1_getup_amp_data.py  # YAML-driven GetUp demo-data conversion.
+│   ├── play_g1_getup_amp_data.py     # G1 MuJoCo playback for converted GetUp demo clips.
+│   └── edit_parkour_scene.py         # Browser-based Viser editor for parkour terrain boxes.
+├── data/
+│   └── g1_getup_amp.yaml             # Local GetUp demo-data workflow config for selected .pkl/.npz clips.
+├── deploy/
+│   └── robots/g1_parkour/            # C++/DDS G1 Parkour controller and policy runtime.
+├── simulate/                         # Unitree MuJoCo simulator integration and configuration.
+└── doc/                              # Human-facing documentation for setup, modules, and sim2real notes.
+```
 
 ## Environment setup
 
