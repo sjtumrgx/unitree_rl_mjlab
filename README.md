@@ -158,44 +158,9 @@ logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/<stage>/model_*.pt
 
 The top-level exported ONNX/policy artifacts are for deployment; use stage
 checkpoints for Python replay.  Path roots follow the runner configs:
-curriculum checkpoints use `logs/rsl_rl/g1_antifall_curriculum`, standalone
-AntiFall stage tasks use `logs/rsl_rl/g1_antifall`, and AntiFall-GetUp warmup/final
-runs use `logs/rsl_rl/g1_antifall_getup`.
+curriculum checkpoints use `logs/rsl_rl/g1_antifall_curriculum`, and standalone
+AntiFall stage tasks use `logs/rsl_rl/g1_antifall`.
 
-AntiFall-GetUp combines the Stage4b walking prior with a fallen-start GetUp
-recovery prior.  The practical training flow is: train or choose a walking
-AntiFall checkpoint, train a recovery warmup checkpoint with the final
-AntiFall-GetUp actor contract, then fuse both priors into the final dual-branch
-policy:
-
-```bash
-# 1) Fallen-start recovery warmup in the final AntiFall-GetUp tensor contract.
-python scripts/train.py Unitree-G1-AntiFall-GetUp-RecoveryWarmup \
-  --gpu-ids "[1]" \
-  --resume-checkpoint-path logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
-  --actor-only-resume True \
-  --agent.resume True \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=1000 \
-  --agent.run-name recovery_warmup
-
-# 2) Fuse a walking AntiFall prior with the recovery prior and fine-tune.
-#    Use the curriculum Stage4b checkpoint by default; if Stage4b was trained
-#    directly, use logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt instead.
-python scripts/train.py Unitree-G1-AntiFall-GetUp \
-  --gpu-ids "[2]" \
-  --resume-checkpoint-path logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
-  --recovery-resume-checkpoint-path logs/rsl_rl/g1_antifall_getup/<recovery_run>/model_*.pt \
-  --actor-only-resume True \
-  --agent.resume True \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=1000 \
-  --agent.run-name antifall_getup
-```
-
-Use `--policy-only-resume True` only when continuing from an already fused
-AntiFall-GetUp checkpoint and you want to keep actor/critic weights while
-resetting optimizer state.
 
 ### 1.3 G1 GetUp
 
@@ -251,7 +216,76 @@ play the converted data on the checked-in G1 MuJoCo model, then train only with
 the confirmed clips listed under `train.npz_files`.  See
 `doc/g1_getup_demo_data.md` for the detailed post-download workflow.
 
-### 1.4 G1 Parkour artifacts
+### 1.4 G1 AntiFall-GetUp
+
+AntiFall-GetUp combines the Stage4b walking prior with a fallen-start GetUp
+recovery prior.  The default dependency graph is: train the AntiFall curriculum
+and GetUp priors first, use the GetUp checkpoint to train the AntiFall-GetUp
+RecoveryWarmup checkpoint, then fuse the curriculum Stage4b checkpoint and the
+RecoveryWarmup checkpoint into the final dual-branch policy.  Both the
+RecoveryWarmup and final AntiFall-GetUp runs write under
+`logs/rsl_rl/g1_antifall_getup`:
+
+```mermaid
+flowchart TB
+    accTitle: AntiFall GetUp Training Flow
+    accDescr: Default training dependency graph for building the final AntiFall-GetUp policy from an AntiFall curriculum walking prior and a GetUp recovery prior.
+
+    start([🏁 Start])
+    antifall[⚙️ Train Unitree-G1-AntiFall-Curriculum]
+    stage4b[📦 Stage4b walking prior<br/>g1_antifall_curriculum/.../stages/05_stage4b]
+    getup[⚙️ Train Unitree-G1-GetUp]
+    getup_ckpt[📦 GetUp prior<br/>g1_getup run checkpoint]
+    warmup[⚙️ Train Unitree-G1-AntiFall-GetUp-RecoveryWarmup]
+    recovery[📦 Recovery prior<br/>g1_antifall_getup recovery run]
+    final[⚙️ Train Unitree-G1-AntiFall-GetUp]
+    output([✅ Final AntiFall-GetUp policy<br/>g1_antifall_getup final run])
+
+    start --> antifall --> stage4b --> final
+    start --> getup --> getup_ckpt --> warmup --> recovery --> final
+    final --> output
+
+    classDef start_style fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#3b0764
+    classDef train_style fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
+    classDef artifact_style fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#713f12
+    classDef success_style fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
+
+    class start start_style
+    class antifall,getup,warmup,final train_style
+    class stage4b,getup_ckpt,recovery artifact_style
+    class output success_style
+```
+
+```bash
+# 1) Fallen-start recovery warmup in the final AntiFall-GetUp tensor contract.
+python scripts/train.py Unitree-G1-AntiFall-GetUp-RecoveryWarmup \
+  --gpu-ids "[1]" \
+  --resume-checkpoint-path logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
+  --actor-only-resume True \
+  --agent.resume True \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=1000 \
+  --agent.run-name recovery_warmup
+
+# 2) Fuse a walking AntiFall prior with the recovery prior and fine-tune.
+#    Use the curriculum Stage4b checkpoint by default; if Stage4b was trained
+#    directly, use logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt instead.
+python scripts/train.py Unitree-G1-AntiFall-GetUp \
+  --gpu-ids "[2]" \
+  --resume-checkpoint-path logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
+  --recovery-resume-checkpoint-path logs/rsl_rl/g1_antifall_getup/<recovery_run>/model_*.pt \
+  --actor-only-resume True \
+  --agent.resume True \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=1000 \
+  --agent.run-name antifall_getup
+```
+
+Use `--policy-only-resume True` only when continuing from an already fused
+AntiFall-GetUp checkpoint and you want to keep actor/critic weights while
+resetting optimizer state.
+
+### 1.5 G1 Parkour artifacts
 
 The current Parkour lane is primarily a **play/deploy lane** for an exported
 InstinctLab-style depth-conditioned policy.  Policy bundle defaults live under:
@@ -296,8 +330,11 @@ python scripts/play_antifall.py \
 If you trained `Unitree-G1-AntiFall-Stage4b` directly, use
 `logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt` instead.
 
-`play_antifall.py` accepts only AntiFall stage tasks.  For AntiFall-GetUp, use
-the generic play entrypoint because it is a separate registered task:
+
+### 2.3 AntiFall-GetUp play
+
+AntiFall-GetUp is a separate registered task, so use the generic play
+entrypoint:
 
 ```bash
 python scripts/play.py Unitree-G1-AntiFall-GetUp \
@@ -311,7 +348,7 @@ The native MuJoCo viewer supports drag perturbations.  Drag the robot body to
 apply interactive pushes/kicks; use this to check recovery behavior before any
 hardware run.
 
-### 2.3 GetUp play
+### 2.4 GetUp play
 
 ```bash
 python scripts/play_getup.py --terrain ground -- \
@@ -356,7 +393,7 @@ For Unitree simulator / C++ controller validation, copy the exported
 `deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx`, then use
 the existing GetUp controller build/run flow.
 
-### 2.4 Parkour play and terrain editing
+### 2.5 Parkour play and terrain editing
 
 Default Parkour replay:
 

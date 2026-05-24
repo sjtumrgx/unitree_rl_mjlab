@@ -157,40 +157,8 @@ logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/<stage>/model_*.pt
 顶层导出的 ONNX/policy artifact 面向部署；Python 回放应使用具体 stage checkpoint。
 路径根目录跟随 runner 配置：curriculum checkpoint 使用
 `logs/rsl_rl/g1_antifall_curriculum`，直接训练的 AntiFall stage 使用
-`logs/rsl_rl/g1_antifall`，AntiFall-GetUp 的 warmup/final 运行使用
-`logs/rsl_rl/g1_antifall_getup`。
+`logs/rsl_rl/g1_antifall`。
 
-AntiFall-GetUp 会把 Stage4b 行走先验和倒地起身恢复先验合成一个双分支策略。实际训练
-流程是：先训练或选择行走 AntiFall checkpoint，再用最终 AntiFall-GetUp actor contract
-训练 recovery warmup，最后把两个先验融合到最终双分支 policy 中：
-
-```bash
-# 1) 在最终 AntiFall-GetUp 张量 contract 下训练倒地恢复 warmup。
-python scripts/train.py Unitree-G1-AntiFall-GetUp-RecoveryWarmup \
-  --gpu-ids "[1]" \
-  --resume-checkpoint-path logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
-  --actor-only-resume True \
-  --agent.resume True \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=1000 \
-  --agent.run-name recovery_warmup
-
-# 2) 融合行走 AntiFall 先验和恢复先验，并进行最终微调。
-#    默认使用 curriculum 产出的 Stage4b checkpoint；如果是直接训练
-#    Unitree-G1-AntiFall-Stage4b，则改用 logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt。
-python scripts/train.py Unitree-G1-AntiFall-GetUp \
-  --gpu-ids "[2]" \
-  --resume-checkpoint-path logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
-  --recovery-resume-checkpoint-path logs/rsl_rl/g1_antifall_getup/<recovery_run>/model_*.pt \
-  --actor-only-resume True \
-  --agent.resume True \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=1000 \
-  --agent.run-name antifall_getup
-```
-
-如果是从已经融合好的 AntiFall-GetUp checkpoint 继续训练，并且希望保留 actor/critic、
-重置 optimizer state，再使用 `--policy-only-resume True`。
 
 ### 1.3 G1 GetUp
 
@@ -241,7 +209,73 @@ python scripts/train_getup_amp.py \
 转成 `data/motions/g1_getup_amp/motions/*.npz`，用仓库内 G1 MuJoCo 模型播放确认，
 最后只用确认过的 `.npz` 训练。详细的下载后流程见 `doc/g1_getup_demo_data.md`。
 
-### 1.4 G1 Parkour artifact
+### 1.4 G1 AntiFall-GetUp
+
+AntiFall-GetUp 会把 Stage4b 行走先验和倒地起身恢复先验合成一个双分支策略。默认依赖
+关系是：先训练 AntiFall curriculum 和 GetUp 两个先验；再用 GetUp checkpoint 训练
+AntiFall-GetUp RecoveryWarmup；最后把 curriculum 的 Stage4b checkpoint 和
+RecoveryWarmup checkpoint 融合为最终双分支 policy。RecoveryWarmup 和最终
+AntiFall-GetUp 运行都写入 `logs/rsl_rl/g1_antifall_getup`：
+
+```mermaid
+flowchart TB
+    accTitle: AntiFall GetUp Training Flow
+    accDescr: Default training dependency graph for building the final AntiFall-GetUp policy from an AntiFall curriculum walking prior and a GetUp recovery prior.
+
+    start([🏁 开始])
+    antifall[⚙️ 训练 Unitree-G1-AntiFall-Curriculum]
+    stage4b[📦 Stage4b 行走先验<br/>g1_antifall_curriculum/.../stages/05_stage4b]
+    getup[⚙️ 训练 Unitree-G1-GetUp]
+    getup_ckpt[📦 GetUp 起身先验<br/>g1_getup run checkpoint]
+    warmup[⚙️ 训练 Unitree-G1-AntiFall-GetUp-RecoveryWarmup]
+    recovery[📦 Recovery 起身先验<br/>g1_antifall_getup recovery run]
+    final[⚙️ 训练 Unitree-G1-AntiFall-GetUp]
+    output([✅ 最终 AntiFall-GetUp policy<br/>g1_antifall_getup final run])
+
+    start --> antifall --> stage4b --> final
+    start --> getup --> getup_ckpt --> warmup --> recovery --> final
+    final --> output
+
+    classDef start_style fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#3b0764
+    classDef train_style fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
+    classDef artifact_style fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#713f12
+    classDef success_style fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
+
+    class start start_style
+    class antifall,getup,warmup,final train_style
+    class stage4b,getup_ckpt,recovery artifact_style
+    class output success_style
+```
+
+```bash
+# 1) 在最终 AntiFall-GetUp 张量 contract 下训练倒地恢复 warmup。
+python scripts/train.py Unitree-G1-AntiFall-GetUp-RecoveryWarmup \
+  --gpu-ids "[1]" \
+  --resume-checkpoint-path logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
+  --actor-only-resume True \
+  --agent.resume True \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=1000 \
+  --agent.run-name recovery_warmup
+
+# 2) 融合行走 AntiFall 先验和恢复先验，并进行最终微调。
+#    默认使用 curriculum 产出的 Stage4b checkpoint；如果是直接训练
+#    Unitree-G1-AntiFall-Stage4b，则改用 logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt。
+python scripts/train.py Unitree-G1-AntiFall-GetUp \
+  --gpu-ids "[2]" \
+  --resume-checkpoint-path logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
+  --recovery-resume-checkpoint-path logs/rsl_rl/g1_antifall_getup/<recovery_run>/model_*.pt \
+  --actor-only-resume True \
+  --agent.resume True \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=1000 \
+  --agent.run-name antifall_getup
+```
+
+如果是从已经融合好的 AntiFall-GetUp checkpoint 继续训练，并且希望保留 actor/critic、
+重置 optimizer state，再使用 `--policy-only-resume True`。
+
+### 1.5 G1 Parkour artifact
 
 当前 Parkour 主要是一个 **play/deploy lane**，用于已导出的 InstinctLab 风格深度
 策略。默认 policy bundle 位于：
@@ -283,8 +317,10 @@ python scripts/play_antifall.py \
 如果是直接训练 `Unitree-G1-AntiFall-Stage4b`，则改用
 `logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt`。
 
-`play_antifall.py` 只接受 AntiFall stage 任务。AntiFall-GetUp 是单独注册的任务，
-请使用通用 play 入口：
+
+### 2.3 AntiFall-GetUp play
+
+AntiFall-GetUp 是单独注册的任务，请使用通用 play 入口：
 
 ```bash
 python scripts/play.py Unitree-G1-AntiFall-GetUp \
@@ -297,7 +333,7 @@ python scripts/play.py Unitree-G1-AntiFall-GetUp \
 native MuJoCo viewer 支持鼠标拖拽扰动。可以拖拽机器人身体模拟推/踢，在上硬件前
 检查恢复行为。
 
-### 2.3 GetUp play
+### 2.4 GetUp play
 
 ```bash
 python scripts/play_getup.py --terrain ground -- \
@@ -339,7 +375,7 @@ Unitree simulator / C++ controller 验证时，将导出的
 `deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx`，然后使用现有
 GetUp controller 的 build/run 流程。
 
-### 2.4 Parkour play 与地形编辑
+### 2.5 Parkour play 与地形编辑
 
 默认 Parkour 回放：
 
