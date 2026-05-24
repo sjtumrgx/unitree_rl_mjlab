@@ -155,6 +155,10 @@ logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/<stage>/model_*.pt
 ```
 
 顶层导出的 ONNX/policy artifact 面向部署；Python 回放应使用具体 stage checkpoint。
+路径根目录跟随 runner 配置：curriculum checkpoint 使用
+`logs/rsl_rl/g1_antifall_curriculum`，直接训练的 AntiFall stage 使用
+`logs/rsl_rl/g1_antifall`，AntiFall-GetUp 的 warmup/final 运行使用
+`logs/rsl_rl/g1_antifall_getup`。
 
 AntiFall-GetUp 会把 Stage4b 行走先验和倒地起身恢复先验合成一个双分支策略。实际训练
 流程是：先训练或选择行走 AntiFall checkpoint，再用最终 AntiFall-GetUp actor contract
@@ -172,9 +176,11 @@ python scripts/train.py Unitree-G1-AntiFall-GetUp-RecoveryWarmup \
   --agent.run-name recovery_warmup
 
 # 2) 融合行走 AntiFall 先验和恢复先验，并进行最终微调。
+#    默认使用 curriculum 产出的 Stage4b checkpoint；如果是直接训练
+#    Unitree-G1-AntiFall-Stage4b，则改用 logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt。
 python scripts/train.py Unitree-G1-AntiFall-GetUp \
   --gpu-ids "[2]" \
-  --resume-checkpoint-path logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt \
+  --resume-checkpoint-path logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
   --recovery-resume-checkpoint-path logs/rsl_rl/g1_antifall_getup/<recovery_run>/model_*.pt \
   --actor-only-resume True \
   --agent.resume True \
@@ -269,10 +275,13 @@ python scripts/play.py Unitree-G1-Flat \
 ```bash
 python scripts/play_antifall.py \
   --task Unitree-G1-AntiFall-Stage4b \
-  --checkpoint-file logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt \
+  --checkpoint-file logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
   --num-envs 1 \
   --device cuda:0
 ```
+
+如果是直接训练 `Unitree-G1-AntiFall-Stage4b`，则改用
+`logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt`。
 
 `play_antifall.py` 只接受 AntiFall stage 任务。AntiFall-GetUp 是单独注册的任务，
 请使用通用 play 入口：

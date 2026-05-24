@@ -157,7 +157,10 @@ logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/<stage>/model_*.pt
 ```
 
 The top-level exported ONNX/policy artifacts are for deployment; use stage
-checkpoints for Python replay.
+checkpoints for Python replay.  Path roots follow the runner configs:
+curriculum checkpoints use `logs/rsl_rl/g1_antifall_curriculum`, standalone
+AntiFall stage tasks use `logs/rsl_rl/g1_antifall`, and AntiFall-GetUp warmup/final
+runs use `logs/rsl_rl/g1_antifall_getup`.
 
 AntiFall-GetUp combines the Stage4b walking prior with a fallen-start GetUp
 recovery prior.  The practical training flow is: train or choose a walking
@@ -177,9 +180,11 @@ python scripts/train.py Unitree-G1-AntiFall-GetUp-RecoveryWarmup \
   --agent.run-name recovery_warmup
 
 # 2) Fuse a walking AntiFall prior with the recovery prior and fine-tune.
+#    Use the curriculum Stage4b checkpoint by default; if Stage4b was trained
+#    directly, use logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt instead.
 python scripts/train.py Unitree-G1-AntiFall-GetUp \
   --gpu-ids "[2]" \
-  --resume-checkpoint-path logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt \
+  --resume-checkpoint-path logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
   --recovery-resume-checkpoint-path logs/rsl_rl/g1_antifall_getup/<recovery_run>/model_*.pt \
   --actor-only-resume True \
   --agent.resume True \
@@ -283,10 +288,13 @@ Replay a stage checkpoint with the native MuJoCo viewer:
 ```bash
 python scripts/play_antifall.py \
   --task Unitree-G1-AntiFall-Stage4b \
-  --checkpoint-file logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt \
+  --checkpoint-file logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
   --num-envs 1 \
   --device cuda:0
 ```
+
+If you trained `Unitree-G1-AntiFall-Stage4b` directly, use
+`logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt` instead.
 
 `play_antifall.py` accepts only AntiFall stage tasks.  For AntiFall-GetUp, use
 the generic play entrypoint because it is a separate registered task:
