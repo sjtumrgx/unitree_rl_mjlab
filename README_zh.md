@@ -145,27 +145,49 @@ logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/<stage>/model_*.pt
 
 顶层导出的 ONNX/policy artifact 面向部署；Python 回放应使用具体 stage checkpoint。
 
-### 1.3 G1 GetUp
-
-GetUp 将 HoST 风格地形变体迁移为 MJLab 任务：
+AntiFall-GetUp 会把 Stage4b 行走先验和倒地起身恢复先验合成一个双分支策略。实际训练
+流程是：先训练或选择行走 AntiFall checkpoint，再用最终 AntiFall-GetUp actor contract
+训练 recovery warmup，最后把两个先验融合到最终双分支 policy 中：
 
 ```bash
+# 1) 在最终 AntiFall-GetUp 张量 contract 下训练倒地恢复 warmup。
+python scripts/train.py Unitree-G1-AntiFall-GetUp-RecoveryWarmup \
+  --gpu-ids "[1]" \
+  --resume-checkpoint-path logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
+  --actor-only-resume True \
+  --agent.resume True \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=1000 \
+  --agent.run-name recovery_warmup
+
+# 2) 融合行走 AntiFall 先验和恢复先验，并进行最终微调。
+python scripts/train.py Unitree-G1-AntiFall-GetUp \
+  --gpu-ids "[2]" \
+  --resume-checkpoint-path logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt \
+  --recovery-resume-checkpoint-path logs/rsl_rl/g1_antifall_getup/<recovery_run>/model_*.pt \
+  --actor-only-resume True \
+  --agent.resume True \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=1000 \
+  --agent.run-name antifall_getup
+```
+
+如果是从已经融合好的 AntiFall-GetUp checkpoint 继续训练，并且希望保留 actor/critic、
+重置 optimizer state，再使用 `--policy-only-resume True`。
+
+### 1.3 G1 GetUp
+
+GetUp 将 HoST 风格地形变体迁移为 MJLab 任务。训练 wrapper 支持 `mixed`、
+`ground`、`platform`、`wall` 和 `slope`；其中 `mixed` 是训练单个跨地形 policy 的入口：
+
+```bash
+python scripts/train_getup.py --terrain mixed -- \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
+
+# 可选：单地形专项训练或 ablation。
 python scripts/train_getup.py --terrain ground -- \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-
-python scripts/train_getup.py --terrain platform -- \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-
-python scripts/train_getup.py --terrain wall -- \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-
-python scripts/train_getup.py --terrain slope -- \
   --gpu-ids "[0]" \
   --env.scene.num-envs=4096 \
   --agent.max-iterations=10001
@@ -175,14 +197,14 @@ python scripts/train_getup.py --terrain slope -- \
 
 ```bash
 python scripts/train.py Unitree-G1-GetUp \
-  --getup-terrain=platform \
+  --getup-terrain=mixed \
   --gpu-ids "[0]" \
   --env.scene.num-envs=4096 \
   --agent.max-iterations=10001
 ```
 
-terrain 参数会影响 reset pose、地形分布、辅助力设置和 RL run name。比较 checkpoint
-时应保留 terrain 信息。
+terrain 参数会影响 reset pose、地形分布、辅助力设置和 RL run name。需要同一个 policy
+覆盖所有 GetUp 地形时使用 `mixed`；单地形只用于定向调试或 ablation。
 
 可选 AMP/示教数据 fallback 与默认 no-demo 任务完全分离：
 
@@ -193,6 +215,7 @@ python scripts/play_g1_getup_amp_data.py --validate-only
 python scripts/train_getup_amp.py \
   --num-envs 4096 \
   --max-iterations 10001 \
+  --warm-start-checkpoint logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
   -- --gpu-ids "[0]"
 ```
 
@@ -223,20 +246,32 @@ Play 阶段应该在进入 C++/DDS 或真实机器人之前尽量发现 transfer
 
 ```bash
 python scripts/play.py Unitree-G1-Flat \
-  --checkpoint_file logs/rsl_rl/g1_velocity/<run>/model_*.pt
+  --checkpoint-file logs/rsl_rl/g1_velocity/<run>/model_*.pt
 ```
 
 需要 MuJoCo 鼠标/键盘交互时使用 `--viewer native`；无头验证用 `--viewer none`。
 
 ### 2.2 AntiFall play
 
-回放 curriculum 的具体 stage checkpoint，而不是顶层导出 ONNX：
+用 native MuJoCo viewer 回放具体 stage checkpoint：
 
 ```bash
 python scripts/play_antifall.py \
   --task Unitree-G1-AntiFall-Stage4b \
-  --run-dir logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b \
-  --checkpoint model_*.pt
+  --checkpoint-file logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt \
+  --num-envs 1 \
+  --device cuda:0
+```
+
+`play_antifall.py` 只接受 AntiFall stage 任务。AntiFall-GetUp 是单独注册的任务，
+请使用通用 play 入口：
+
+```bash
+python scripts/play.py Unitree-G1-AntiFall-GetUp \
+  --checkpoint-file logs/rsl_rl/g1_antifall_getup/<run>/model_*.pt \
+  --num-envs 1 \
+  --viewer native \
+  --no-terminations
 ```
 
 native MuJoCo viewer 支持鼠标拖拽扰动。可以拖拽机器人身体模拟推/踢，在上硬件前
@@ -245,18 +280,27 @@ native MuJoCo viewer 支持鼠标拖拽扰动。可以拖拽机器人身体模�
 ### 2.3 GetUp play
 
 ```bash
+python scripts/play_getup.py --terrain ground -- \
+  --checkpoint-file logs/rsl_rl/g1_getup/<run>/model_*.pt \
+  --num-envs 1 \
+  --viewer native
+
+# 使用同一个 checkpoint 依次切换 platform、wall、slope 检查地形迁移。
 python scripts/play_getup.py --terrain slope -- \
-  --checkpoint_file logs/rsl_rl/g1_getup/<run>/model_*.pt
+  --checkpoint-file logs/rsl_rl/g1_getup/<run>/model_*.pt \
+  --num-envs 1 \
+  --viewer native
 ```
 
-除非刻意测试 terrain transfer，否则 play terrain 应与训练 terrain 一致。
+对于 `mixed` GetUp policy，应在 `ground`、`platform`、`wall` 和 `slope` 上回放
+同一个 checkpoint。对于单地形训练，除非刻意测试迁移，否则 play terrain 应与训练 terrain 一致。
 
 AMP fallback 使用通用 play 入口：
 
 ```bash
 python scripts/play.py Unitree-G1-GetUp-AMP \
-  --checkpoint_file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
-  --num_envs 1 \
+  --checkpoint-file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
+  --num-envs 1 \
   --viewer native
 ```
 

@@ -148,27 +148,53 @@ logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/<stage>/model_*.pt
 The top-level exported ONNX/policy artifacts are for deployment; use stage
 checkpoints for Python replay.
 
-### 1.3 G1 GetUp
-
-GetUp ports HoST-style terrain variants into an MJLab task:
+AntiFall-GetUp combines the Stage4b walking prior with a fallen-start GetUp
+recovery prior.  The practical training flow is: train or choose a walking
+AntiFall checkpoint, train a recovery warmup checkpoint with the final
+AntiFall-GetUp actor contract, then fuse both priors into the final dual-branch
+policy:
 
 ```bash
+# 1) Fallen-start recovery warmup in the final AntiFall-GetUp tensor contract.
+python scripts/train.py Unitree-G1-AntiFall-GetUp-RecoveryWarmup \
+  --gpu-ids "[1]" \
+  --resume-checkpoint-path logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
+  --actor-only-resume True \
+  --agent.resume True \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=1000 \
+  --agent.run-name recovery_warmup
+
+# 2) Fuse a walking AntiFall prior with the recovery prior and fine-tune.
+python scripts/train.py Unitree-G1-AntiFall-GetUp \
+  --gpu-ids "[2]" \
+  --resume-checkpoint-path logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt \
+  --recovery-resume-checkpoint-path logs/rsl_rl/g1_antifall_getup/<recovery_run>/model_*.pt \
+  --actor-only-resume True \
+  --agent.resume True \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=1000 \
+  --agent.run-name antifall_getup
+```
+
+Use `--policy-only-resume True` only when continuing from an already fused
+AntiFall-GetUp checkpoint and you want to keep actor/critic weights while
+resetting optimizer state.
+
+### 1.3 G1 GetUp
+
+GetUp ports HoST-style terrain variants into an MJLab task.  The wrapper
+supports `mixed`, `ground`, `platform`, `wall`, and `slope`; `mixed` is the
+single-policy training entrypoint for terrain transfer:
+
+```bash
+python scripts/train_getup.py --terrain mixed -- \
+  --gpu-ids "[0]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=10001
+
+# Optional single-terrain specialization or ablation.
 python scripts/train_getup.py --terrain ground -- \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-
-python scripts/train_getup.py --terrain platform -- \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-
-python scripts/train_getup.py --terrain wall -- \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-
-python scripts/train_getup.py --terrain slope -- \
   --gpu-ids "[0]" \
   --env.scene.num-envs=4096 \
   --agent.max-iterations=10001
@@ -178,15 +204,16 @@ Equivalent generic form:
 
 ```bash
 python scripts/train.py Unitree-G1-GetUp \
-  --getup-terrain=platform \
+  --getup-terrain=mixed \
   --gpu-ids "[0]" \
   --env.scene.num-envs=4096 \
   --agent.max-iterations=10001
 ```
 
 The terrain flag controls reset poses, terrain distribution, assist-force
-settings, and RL run naming.  Keep the selected terrain in the run name when
-comparing checkpoints.
+settings, and RL run naming.  Use `mixed` when the same policy should cover all
+GetUp terrain variants; use a single terrain only for targeted debugging or
+ablation.
 
 Optional AMP/demo-data fallback, kept separate from the default no-demo task:
 
@@ -197,6 +224,7 @@ python scripts/play_g1_getup_amp_data.py --validate-only
 python scripts/train_getup_amp.py \
   --num-envs 4096 \
   --max-iterations 10001 \
+  --warm-start-checkpoint logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
   -- --gpu-ids "[0]"
 ```
 
@@ -231,7 +259,7 @@ and viewer/depth diagnostics here first.
 
 ```bash
 python scripts/play.py Unitree-G1-Flat \
-  --checkpoint_file logs/rsl_rl/g1_velocity/<run>/model_*.pt
+  --checkpoint-file logs/rsl_rl/g1_velocity/<run>/model_*.pt
 ```
 
 Use `--viewer native` when you need MuJoCo mouse/keyboard interaction.  Use
@@ -239,13 +267,25 @@ Use `--viewer native` when you need MuJoCo mouse/keyboard interaction.  Use
 
 ### 2.2 AntiFall play
 
-Replay a curriculum stage checkpoint rather than the top-level exported ONNX:
+Replay a stage checkpoint with the native MuJoCo viewer:
 
 ```bash
 python scripts/play_antifall.py \
   --task Unitree-G1-AntiFall-Stage4b \
-  --run-dir logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b \
-  --checkpoint model_*.pt
+  --checkpoint-file logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt \
+  --num-envs 1 \
+  --device cuda:0
+```
+
+`play_antifall.py` accepts only AntiFall stage tasks.  For AntiFall-GetUp, use
+the generic play entrypoint because it is a separate registered task:
+
+```bash
+python scripts/play.py Unitree-G1-AntiFall-GetUp \
+  --checkpoint-file logs/rsl_rl/g1_antifall_getup/<run>/model_*.pt \
+  --num-envs 1 \
+  --viewer native \
+  --no-terminations
 ```
 
 The native MuJoCo viewer supports drag perturbations.  Drag the robot body to
@@ -255,19 +295,28 @@ hardware run.
 ### 2.3 GetUp play
 
 ```bash
+python scripts/play_getup.py --terrain ground -- \
+  --checkpoint-file logs/rsl_rl/g1_getup/<run>/model_*.pt \
+  --num-envs 1 \
+  --viewer native
+
+# Re-run with platform, wall, and slope to check terrain transfer.
 python scripts/play_getup.py --terrain slope -- \
-  --checkpoint_file logs/rsl_rl/g1_getup/<run>/model_*.pt
+  --checkpoint-file logs/rsl_rl/g1_getup/<run>/model_*.pt \
+  --num-envs 1 \
+  --viewer native
 ```
 
-The play terrain should match the terrain used for training unless you are
-intentionally testing terrain transfer.
+For a `mixed` GetUp policy, replay the same checkpoint across `ground`,
+`platform`, `wall`, and `slope`.  For single-terrain runs, keep the play terrain
+matched unless you are intentionally testing transfer.
 
 AMP fallback play uses the generic play entrypoint:
 
 ```bash
 python scripts/play.py Unitree-G1-GetUp-AMP \
-  --checkpoint_file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
-  --num_envs 1 \
+  --checkpoint-file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
+  --num-envs 1 \
   --viewer native
 ```
 
