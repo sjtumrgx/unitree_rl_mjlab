@@ -158,34 +158,109 @@ gate during runner construction.
 Get-up is contact-rich.  Validate in Python play and Unitree simulator before any
 real-robot attempt.
 
-1. Copy the exported AMP policy into the existing GetUp deployment bundle:
+### Policy bundle
 
-   ```bash
-   mkdir -p deploy/robots/g1_getup/config/policy/getup/v0/exported
-   cp logs/rsl_rl/g1_getup_amp/<run>/policy.onnx \
-     deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx
-   ```
+The GetUp controller reads:
 
-2. Build the controller:
+```text
+deploy/robots/g1_getup/config/policy/getup/v0/
+  exported/policy.onnx
+  params/deploy.yaml
+```
 
-   ```bash
-   cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build
-   cmake --build deploy/robots/g1_getup/build -j4
-   ```
+Copy the exported policy into the existing GetUp deployment bundle.  Default
+no-demo GetUp runs use `logs/rsl_rl/g1_getup/<run>/policy.onnx`; AMP fallback
+runs use `logs/rsl_rl/g1_getup_amp/<run>/policy.onnx`.
 
-3. Start Unitree MuJoCo simulator and controller:
+```bash
+mkdir -p deploy/robots/g1_getup/config/policy/getup/v0/exported
+cp logs/rsl_rl/g1_getup/<run>/policy.onnx \
+  deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx
+```
 
-   ```bash
-   ./simulate/build/unitree_mujoco
-   ./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard
-   ```
+For AMP fallback:
 
-4. Keyboard transitions are `f` then `g` (`Passive -> FixStand -> GetUp`).
+```bash
+cp logs/rsl_rl/g1_getup_amp/<run>/policy.onnx \
+  deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx
+```
+
+The checked-in `params/deploy.yaml` is the GetUp deployment contract.  If a run
+exports a verified matching `params/deploy.yaml`, copy it with the ONNX:
+
+```bash
+mkdir -p deploy/robots/g1_getup/config/policy/getup/v0/params
+cp logs/rsl_rl/<experiment>/<run>/params/deploy.yaml \
+  deploy/robots/g1_getup/config/policy/getup/v0/params/deploy.yaml
+```
+
+Do not mix a policy ONNX and deploy YAML from different observation/action
+contracts.
+
+### SDK and build
+
+Prerequisites:
+
+- Unitree SDK2 installed under `/opt/unitree_robotics`.
+- System packages from setup docs.
+- Vendored ONNX Runtime under `deploy/thirdparty/onnxruntime-linux-*-1.22.0/`.
+
+Build simulator and controller:
+
+```bash
+cmake -S simulate -B simulate/build
+cmake --build simulate/build -j4
+
+cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build
+cmake --build deploy/robots/g1_getup/build -j4
+```
+
+### Loopback startup
+
+Use two terminals.
+
+Terminal 1:
+
+```bash
+./simulate/build/unitree_mujoco --network lo
+```
+
+Terminal 2:
+
+```bash
+./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard
+```
+
+Keyboard operation:
+
+- `f`: Passive → FixStand.
+- `g`: FixStand → GetUp.
+- `p`: return to Passive.
+
+Joystick operation:
+
+- `L2 + Up`: Passive → FixStand.
+- `R2 + Y`: FixStand → GetUp.
+- `L2 + B`: return to Passive.
+
+Wait until the simulator/controller report connection before pressing `f`.
+For get-up, check the initial fallen geometry and support contacts before
+pressing `g`; a standing initial pose is the wrong test for this controller.
 
 Before hardware, confirm exported ONNX metadata, joint order, action scale,
 default pose, PD gains, torque limits, and initial fallen geometry.  Keep an
 operator ready to switch to Passive and physically support the robot on the first
 motor-enable tests.
+
+Hardware command shape:
+
+```bash
+./deploy/robots/g1_getup/build/g1_getup_ctrl --network=<robot_nic> --keyboard
+```
+
+Start with ground terrain policies.  Platform, wall, and slope tests require the
+real initial geometry to match the trained reset condition and need extra
+physical protection.
 
 ## Migration notes
 

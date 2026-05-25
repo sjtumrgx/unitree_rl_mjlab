@@ -41,30 +41,66 @@ pip install -e .
 sudo apt update
 sudo apt install -y \
   build-essential cmake git \
-  libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
+  libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev zlib1g-dev
 ```
 
 这些依赖用于 Unitree MuJoCo simulator 和 C++ deploy controller。
+
+还需要安装 Unitree SDK2 到 `/opt/unitree_robotics`。本仓库的 simulator 和 G1
+controller 都从这里读取头文件和库：
+
+```text
+/opt/unitree_robotics/include/unitree/...
+/opt/unitree_robotics/include/dds...
+/opt/unitree_robotics/lib/libunitree_sdk2.a
+/opt/unitree_robotics/lib/libddsc.so
+/opt/unitree_robotics/lib/libddscxx.so
+/opt/unitree_robotics/lib/cmake/unitree_sdk2/unitree_sdk2Config.cmake
+```
+
+如果这些文件不存在，先按 Unitree SDK2 官方方式安装或编译 SDK2，再回来构建本仓库。
+ONNX Runtime 不需要单独安装：x64/aarch64 运行时已经放在
+`deploy/thirdparty/onnxruntime-linux-*-1.22.0/`，各 controller 的 CMake 会按架构选择。
 
 ## 4. 构建 simulator 和 deploy controller
 
 Simulator：
 
 ```bash
-cd simulate
-cmake -B build -S .
-cmake --build build -j4
-cd ..
+cmake -S simulate -B simulate/build
+cmake --build simulate/build -j4
 ```
 
-G1 Parkour controller：
+按要验证的方法构建对应 controller：
 
 ```bash
+cmake -S deploy/robots/g1 -B deploy/robots/g1/build
+cmake --build deploy/robots/g1/build -j4
+
+cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build
+cmake --build deploy/robots/g1_antifall/build -j4
+
+cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build
+cmake --build deploy/robots/g1_getup/build -j4
+
 cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build
 cmake --build deploy/robots/g1_parkour/build -j4
 ```
 
-其他 deploy controller 也按 `deploy/robots/<robot>/` 下的相同方式构建。
+如果 CMake 报 `unitree_sdk2Config.cmake` 找不到，先确认 `/opt/unitree_robotics/lib/cmake`
+存在；必要时显式加上：
+
+```bash
+cmake -S simulate -B simulate/build \
+  -DCMAKE_PREFIX_PATH=/opt/unitree_robotics/lib/cmake
+```
+
+构建后可用下面命令确认动态库没有缺失：
+
+```bash
+ldd simulate/build/unitree_mujoco | grep "not found" || true
+ldd deploy/robots/g1/build/g1_ctrl | grep "not found" || true
+```
 
 ## 5. 显示与渲染注意事项
 

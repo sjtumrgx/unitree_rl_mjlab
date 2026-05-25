@@ -168,6 +168,74 @@ logs/rsl_rl/g1_getup_amp/
 python scripts/train_getup.py --terrain ground -- --env.scene.num-envs=4096
 ```
 
+## 🤖 Sim2Real handoff for AMP policy
+
+GetUp AMP 不单独新建 controller。训练出的 `Unitree-G1-GetUp-AMP` policy 进入
+sim2real 时复用 `deploy/robots/g1_getup`：
+
+```text
+deploy/robots/g1_getup/config/policy/getup/v0/
+  exported/policy.onnx
+  params/deploy.yaml
+```
+
+把 AMP 导出的 ONNX 放进 GetUp 部署 bundle：
+
+```bash
+mkdir -p deploy/robots/g1_getup/config/policy/getup/v0/exported
+cp logs/rsl_rl/g1_getup_amp/<run>/policy.onnx \
+  deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx
+```
+
+如果该 run 生成了匹配的 `params/deploy.yaml`，再一起复制；否则使用当前
+`deploy/robots/g1_getup/config/policy/getup/v0/params/deploy.yaml` 作为部署 contract，
+并重点核对 joint order、action scale、默认姿态和观测项。
+
+需要的 SDK/依赖：
+
+- Unitree SDK2 安装在 `/opt/unitree_robotics`
+- `libyaml-cpp-dev`、`libboost-all-dev`、`libeigen3-dev`、`libspdlog-dev`、
+  `libfmt-dev`、`zlib1g-dev`
+- 仓库内置 ONNX Runtime：`deploy/thirdparty/onnxruntime-linux-*-1.22.0/`
+
+构建 simulator 和 GetUp controller：
+
+```bash
+cmake -S simulate -B simulate/build
+cmake --build simulate/build -j4
+
+cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build
+cmake --build deploy/robots/g1_getup/build -j4
+```
+
+本机 loopback 两个终端启动：
+
+```bash
+./simulate/build/unitree_mujoco --network lo
+```
+
+```bash
+./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard
+```
+
+启动后操作：
+
+- 键盘 `f`：Passive → FixStand
+- 键盘 `g`：FixStand → GetUp
+- 键盘 `p`：回 Passive
+- 遥控器 `L2 + Up`：Passive → FixStand
+- 遥控器 `R2 + Y`：FixStand → GetUp
+- 遥控器 `L2 + B`：回 Passive
+
+真实机器人命令只在 Python play 和 loopback 都通过后使用：
+
+```bash
+./deploy/robots/g1_getup/build/g1_getup_ctrl --network=<robot_nic> --keyboard
+```
+
+第一次硬件测试先用 ground 起身策略，检查初始倒地几何和接触支撑，不要用站立姿态直接
+触发 `g`。
+
 ## ✅ Recommended loop
 
 1. 在 `data/g1_getup_amp.yaml` 的 `prepare.inputs` 里选动作

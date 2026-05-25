@@ -51,6 +51,87 @@ recovery behavior.
 
 ## Sim2Real cautions
 
+### Policy bundle
+
+The deploy target reads:
+
+```text
+deploy/robots/g1_antifall/config/policy/antifall/stage4b/v0/
+  exported/policy.onnx
+  params/deploy.yaml
+```
+
+Copy both files from the same exported stage run, for example:
+
+```bash
+mkdir -p deploy/robots/g1_antifall/config/policy/antifall/stage4b/v0/exported
+mkdir -p deploy/robots/g1_antifall/config/policy/antifall/stage4b/v0/params
+cp logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/policy.onnx \
+  deploy/robots/g1_antifall/config/policy/antifall/stage4b/v0/exported/policy.onnx
+cp logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/params/deploy.yaml \
+  deploy/robots/g1_antifall/config/policy/antifall/stage4b/v0/params/deploy.yaml
+```
+
+If you trained `Unitree-G1-AntiFall-Stage4b` directly, use that run directory
+instead of the curriculum `stages/05_stage4b` directory.
+
+### SDK and build
+
+Prerequisites are the same as base G1 Velocity:
+
+- Unitree SDK2 installed under `/opt/unitree_robotics`.
+- `libyaml-cpp-dev`, `libboost-all-dev`, `libeigen3-dev`, `libspdlog-dev`,
+  `libfmt-dev`, and `zlib1g-dev`.
+- Vendored ONNX Runtime under `deploy/thirdparty/onnxruntime-linux-*-1.22.0/`.
+
+Build simulator and controller:
+
+```bash
+cmake -S simulate -B simulate/build
+cmake --build simulate/build -j4
+
+cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build
+cmake --build deploy/robots/g1_antifall/build -j4
+```
+
+### Loopback startup
+
+Terminal 1:
+
+```bash
+./simulate/build/unitree_mujoco --network lo
+```
+
+Terminal 2:
+
+```bash
+./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard
+```
+
+Keyboard operation:
+
+- `f`: Passive → FixStand.
+- `v`: FixStand → AntiFall.
+- `w/s`: forward/backward command.
+- `a/d`: strafe left/right.
+- `q/e`: turn left/right.
+- release movement keys: stop command.
+- `p`: return to Passive.
+
+Joystick operation:
+
+- `L2 + Up`: Passive → FixStand.
+- `R2 + A`: FixStand → AntiFall.
+- `L2 + B`: return to Passive.
+
+### Real robot startup
+
+After Python play and loopback simulator recovery checks pass:
+
+```bash
+./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=<robot_nic> --keyboard
+```
+
 - Validate each stage in Python before exporting or deploying.
 - Do not use AntiFall to hide incorrect action order, weak PD settings, or bad
   reset poses.  Fix contract errors first.

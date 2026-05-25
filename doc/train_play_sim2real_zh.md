@@ -37,18 +37,36 @@
 
 ## 3. Simulator / C++ loopback
 
-1. 先构建共用 simulator：
+1. 先确认 C++/DDS 前置依赖：
+   - Unitree SDK2 已安装到 `/opt/unitree_robotics`，并包含 `unitree_sdk2`、`ddsc`、
+     `ddscxx` 头文件和库。
+   - 系统包包含 `cmake`、`libyaml-cpp-dev`、`libboost-all-dev`、`libeigen3-dev`、
+     `libspdlog-dev`、`libfmt-dev`、`zlib1g-dev`。
+   - ONNX Runtime 使用仓库内 `deploy/thirdparty/onnxruntime-linux-*-1.22.0/`，不用
+     另装系统包。
+2. 构建共用 simulator：
 
    ```bash
    cmake -S simulate -B simulate/build
    cmake --build simulate/build -j4
    ```
 
-2. 为当前要验证的任务构建对应 controller。
-3. 本机仿真使用 loopback 网络（`--network=lo`）。
-4. 启动前清理旧 simulator/controller 进程，避免 DDS 连到旧进程。
-5. 从低速度和保守模式开始。
-6. 如果 C++ 行为和 Python play 不一致，优先比较：
+3. 为当前要验证的任务构建对应 controller。
+4. 本机仿真使用 loopback 网络（`--network=lo`），真实机器人使用实际网卡名
+   （例如 `eth0`、`enp*`，以 `ip addr` 输出为准）。
+5. 启动前清理旧 simulator/controller 进程，避免 DDS 连到旧进程：
+
+   ```bash
+   pkill -f unitree_mujoco || true
+   pkill -f g1_ctrl || true
+   pkill -f g1_antifall_ctrl || true
+   pkill -f g1_getup_ctrl || true
+   pkill -f g1_parkour_ctrl || true
+   ```
+
+6. 两个终端启动：先 simulator，等 MuJoCo/DDS bridge 起起来，再启动 controller。
+7. 从低速度和保守模式开始。
+8. 如果 C++ 行为和 Python play 不一致，优先比较：
    - joint order
    - action order
    - 默认姿态
@@ -60,20 +78,31 @@
 
 | 任务 | Controller 构建 | Simulator 终端 | Controller 终端 | 控制切换 | 真实机器人命令形态 |
 | --- | --- | --- | --- | --- | --- |
-| Velocity / 基础 G1 | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | 键盘 `f` → `v`；遥控器 `L2+Up` → `R2+A` | `./deploy/robots/g1/build/g1_ctrl --network=<robot_nic> --keyboard` |
-| AntiFall | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | 键盘 `f` → `v`；遥控器 `L2+Up` → `R2+A` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=<robot_nic> --keyboard` |
-| GetUp | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | 键盘 `f` → `g`；遥控器 `L2+Up` → `R2+Y` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=<robot_nic> --keyboard` |
-| Parkour | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>自动进入：`./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback 路线：按住 `w` / `up`；`p` 回 Passive | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=<robot_nic> --keyboard` |
+| Velocity / 基础 G1 | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | 键盘 `f` 进 FixStand，`v` 进 Velocity，`w/s/a/d/q/e` 速度控制，松开停止，`p` 回 Passive；遥控器 `L2+Up` → `R2+A`，`L2+B` 回 Passive | `./deploy/robots/g1/build/g1_ctrl --network=<robot_nic> --keyboard` |
+| AntiFall | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | 键盘 `f` 进 FixStand，`v` 进 AntiFall，`w/s/a/d/q/e` 速度控制，`p` 回 Passive；遥控器 `L2+Up` → `R2+A`，`L2+B` 回 Passive | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=<robot_nic> --keyboard` |
+| AntiFall-GetUp | C++ deploy contract 支持后复用 `g1_antifall` build | `./simulate/build/unitree_mujoco --network lo` | 未来命令形态：`./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | 与 AntiFall 相同：键盘 `f` → `v`，`p` 回 Passive；遥控器 `L2+Up` → `R2+A`，`L2+B` 回 Passive | 当前不要上硬件；final deploy YAML 必须先匹配 C++ 已注册观测，详见 `doc/g1_antifall_getup.md`。 |
+| GetUp | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | 键盘 `f` 进 FixStand，确认初始姿态安全后按 `g` 起身，`p` 回 Passive；遥控器 `L2+Up` → `R2+Y`，`L2+B` 回 Passive | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=<robot_nic> --keyboard` |
+| Parkour | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour --network lo` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>自动进入：`./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback 默认进入 Parkour idle-hold；按住 `w` / `up` 沿路线前进，松开停止，`+/-` 调速度，`a/d/q/e` 转向，`s/down/x/space` 回 idle，`p` 回 Passive；真实遥控器 `L2+Up` → `R2+X` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=<robot_nic> --keyboard` |
 
 无 GUI loopback 可在 simulator 命令上加 `--headless --headless-seconds <N>`。
 Parkour 还支持在 simulator 侧设置 `G1_PARKOUR_DEPTH_BRIDGE=0`，在 controller 侧使用
 `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` 或 `--constant-depth <value>` 做深度 ablation。
 
+### 启动后的通用操作顺序
+
+1. Simulator 终端出现 MuJoCo 窗口或 headless 日志后，不要先按 controller 按键。
+2. Controller 终端应打印 `Waiting for connection to robot...`，随后打印
+   `Connected to robot.`；如果提示 lowcmd channel 被占用，先关掉旧 controller。
+3. 键盘模式需要 controller 终端保持焦点；`--keyboard` 在非交互终端会直接报错。
+4. 进入 RL 状态前先通过 FixStand，让机器人从 Passive 平滑站到默认姿态。
+5. 任何异常抖动、姿态错误、深度异常或接触异常，先按 `p` 或遥控器 `L2+B` 回
+   Passive，再停 controller。
+
 ## 4. 真实机器人门槛
 
 simulator 路径稳定前不要上硬件。电机使能前：
 
-- 确认网卡和 DDS domain 正确。
+- 确认网卡和 DDS domain 正确；真实机器人命令不要使用 `--network=lo`。
 - 确认 controller 源码版本与 policy contract 对应。
 - 低速开始，安全员随时准备切 Passive。
 - 修改 action order、默认姿态或 PD gain 后，首次测试应悬空或有支撑。
@@ -85,5 +114,6 @@ simulator 路径稳定前不要上硬件。电机使能前：
 | --- | --- | --- | --- |
 | 基础速度 | checkpoint 稳定，tracking 指标符合预期。 | Python play 中命令方向正确并能稳定行走。 | C++/DDS simulator 低速稳定。 |
 | AntiFall | Curriculum/stage checkpoint 在训练评估中能恢复。 | Native viewer 鼠标拖拽扰动后能恢复。 | 只做保守仿真/硬件扰动测试。 |
+| AntiFall-GetUp | 最终 fused run 同时保留行走、起身恢复和恢复后继续行走。 | 通用 play 中能验证 upright walking、forced-fall recovery 和 resumed locomotion。 | 当前受 C++ deploy 观测 contract 阻塞。 |
 | GetUp | 所选 terrain 的 checkpoint 收敛。 | 相同 terrain play 能重复起身。 | 硬件先从 ground terrain 开始，再测 platform/wall/slope。 |
 | Parkour | 导出 artifact contract 完整。 | 深度 contract 和 route-following replay 通过。 | 先通过 simulator live-depth route，再考虑真实深度硬件测试。 |

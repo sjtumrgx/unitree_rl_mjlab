@@ -76,18 +76,64 @@ scene loading and `scripts/play_parkour.py` after restart.
 
 ## Sim2Real / C++ runtime
 
-Build:
+### SDK and build
+
+Prerequisites:
+
+- Unitree SDK2 installed under `/opt/unitree_robotics`.
+- System packages from setup docs.
+- Vendored ONNX Runtime under `deploy/thirdparty/onnxruntime-linux-*-1.22.0/`.
+- `simulate/config_parkour.yaml` points to
+  `src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml`.
+
+Build simulator and controller:
 
 ```bash
+cmake -S simulate -B simulate/build
+cmake --build simulate/build -j4
+
 cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build
 cmake --build deploy/robots/g1_parkour/build -j4
 ```
 
-Loopback simulator run:
+### Loopback startup
+
+Use two terminals.
+
+Terminal 1:
 
 ```bash
 ./simulate/build/unitree_mujoco_parkour --network lo
+```
+
+Terminal 2:
+
+```bash
 ./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo
+```
+
+With `--network=lo`, the controller defaults to an interactive loopback mode:
+it starts in Parkour idle-hold, enables live depth, and gates route following on
+keyboard input.
+
+Keyboard operation:
+
+- hold `w` or `up`: follow the parkour terrain route at the configured cruise
+  speed.
+- release `w` / `up`: stop back to idle-hold.
+- `+` / `=` and `-`: adjust held-walk speed.
+- `a` / `left` / `q`: turn left.
+- `d` / `right` / `e`: turn right.
+- `c`: stop yaw turn.
+- `s` / `down` / `x` / `space`: return to idle-hold command.
+- `p`: return to Passive.
+
+For automated loopback checks:
+
+```bash
+./deploy/robots/g1_parkour/build/g1_parkour_ctrl \
+  --network=lo \
+  --sim-autostart-parkour
 ```
 
 Useful diagnostics:
@@ -99,6 +145,26 @@ Useful diagnostics:
 - `--sim-autostart-parkour` starts directly in Parkour for automated simulator
   checks.
 - `--no-sim-route-follow` disables route following for command ablations.
+- `--constant-depth <value>` is the command-line equivalent of the constant-depth
+  diagnostic.
+
+### Real robot startup
+
+Hardware command shape:
+
+```bash
+./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=<robot_nic> --keyboard
+```
+
+Joystick operation:
+
+- `L2 + Up`: Passive → FixStand.
+- `R2 + X`: FixStand → Parkour.
+- `L2 + B`: return to Passive.
+
+Do not use `--sim-autostart-parkour` on hardware; it is loopback-only and rejects
+non-`lo` network interfaces.  Confirm live depth validity before moving from
+constant-depth ablation to terrain traversal.
 
 ## Common failure modes
 

@@ -40,19 +40,37 @@ Before C++/DDS:
 
 ## 3. Simulator / C++ loopback
 
-1. Build the shared simulator once:
+1. Confirm the C++/DDS prerequisites:
+   - Unitree SDK2 is installed under `/opt/unitree_robotics` with `unitree_sdk2`,
+     `ddsc`, and `ddscxx` headers/libraries.
+   - System packages include `cmake`, `libyaml-cpp-dev`, `libboost-all-dev`,
+     `libeigen3-dev`, `libspdlog-dev`, `libfmt-dev`, and `zlib1g-dev`.
+   - ONNX Runtime is vendored under `deploy/thirdparty/onnxruntime-linux-*-1.22.0/`;
+     no system ONNX Runtime install is required.
+2. Build the shared simulator once:
 
    ```bash
    cmake -S simulate -B simulate/build
    cmake --build simulate/build -j4
    ```
 
-2. Build the controller for the exact task you are validating.
-3. Start with loopback networking (`--network=lo`).
-4. Keep stale DDS processes from previous runs out of the test by killing old
-   simulator/controller processes before launch.
-5. Start with low command speeds and conservative modes.
-6. If behavior diverges from Python play, compare:
+3. Build the controller for the exact task you are validating.
+4. Use loopback networking (`--network=lo`) for local simulation.  On hardware,
+   replace `lo` with the robot NIC name from `ip addr`.
+5. Keep stale DDS processes from previous runs out of the test:
+
+   ```bash
+   pkill -f unitree_mujoco || true
+   pkill -f g1_ctrl || true
+   pkill -f g1_antifall_ctrl || true
+   pkill -f g1_getup_ctrl || true
+   pkill -f g1_parkour_ctrl || true
+   ```
+
+6. Use two terminals: start the simulator first, then start the matching
+   controller.
+7. Start with low command speeds and conservative modes.
+8. If behavior diverges from Python play, compare:
    - joint order
    - action order
    - default pose
@@ -64,21 +82,37 @@ Before C++/DDS:
 
 | Task | Controller build | Simulator terminal | Controller terminal | Control transition | Real-robot command shape |
 | --- | --- | --- | --- | --- | --- |
-| Velocity / base G1 | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | keyboard `f` → `v`; joystick `L2+Up` → `R2+A` | `./deploy/robots/g1/build/g1_ctrl --network=<robot_nic> --keyboard` |
-| AntiFall | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | keyboard `f` → `v`; joystick `L2+Up` → `R2+A` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=<robot_nic> --keyboard` |
-| GetUp | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | keyboard `f` → `g`; joystick `L2+Up` → `R2+Y` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=<robot_nic> --keyboard` |
-| Parkour | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>auto-start: `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback route: hold `w` / `up`; `p` returns Passive | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=<robot_nic> --keyboard` |
+| Velocity / base G1 | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | keyboard `f` enters FixStand, `v` enters Velocity, `w/s/a/d/q/e` command motion, release to stop, `p` returns Passive; joystick `L2+Up` → `R2+A`, `L2+B` returns Passive | `./deploy/robots/g1/build/g1_ctrl --network=<robot_nic> --keyboard` |
+| AntiFall | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | keyboard `f` enters FixStand, `v` enters AntiFall, `w/s/a/d/q/e` command motion, `p` returns Passive; joystick `L2+Up` → `R2+A`, `L2+B` returns Passive | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=<robot_nic> --keyboard` |
+| AntiFall-GetUp | Reuses `g1_antifall` build after its deploy contract is supported | `./simulate/build/unitree_mujoco --network lo` | eventual shape: `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | same controls as AntiFall: keyboard `f` → `v`, `p` returns Passive; joystick `L2+Up` → `R2+A`, `L2+B` returns Passive | Not hardware-ready until the final deploy YAML uses C++-registered observations; see `doc/g1_antifall_getup.md`. |
+| GetUp | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | keyboard `f` enters FixStand, then `g` starts GetUp after the start pose is safe, `p` returns Passive; joystick `L2+Up` → `R2+Y`, `L2+B` returns Passive | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=<robot_nic> --keyboard` |
+| Parkour | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour --network lo` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>auto-start: `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback defaults to Parkour idle-hold; hold `w` / `up` for route following, release to stop, `+/-` changes speed, `a/d/q/e` turns, `s/down/x/space` idles, `p` returns Passive; hardware joystick `L2+Up` → `R2+X` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=<robot_nic> --keyboard` |
 
 Use `--headless --headless-seconds <N>` on the simulator for no-GUI loopback
 runs.  Parkour also supports `G1_PARKOUR_DEPTH_BRIDGE=0` on the simulator and
 `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5` or `--constant-depth <value>` on the
 controller for depth ablations.
 
+### Common post-launch sequence
+
+1. Wait for the simulator MuJoCo window or headless logs before pressing
+   controller keys.
+2. The controller should print `Waiting for connection to robot...` and then
+   `Connected to robot.`; if it reports that the lowcmd channel is already in
+   use, stop the stale controller first.
+3. Keyboard mode requires the controller terminal to keep focus; `--keyboard`
+   exits in non-interactive stdin.
+4. Enter FixStand before entering the RL state so Passive blends into the default
+   standing pose.
+5. On any abnormal jitter, pose mismatch, bad depth, or contact issue, press `p`
+   or joystick `L2+B` to return to Passive before stopping the controller.
+
 ## 4. Real robot gate
 
 Do not run hardware until the simulator path is stable.  Before enabling motors:
 
-- Confirm the correct network interface and DDS domain.
+- Confirm the correct network interface and DDS domain; do not use
+  `--network=lo` on the real robot.
 - Confirm the controller is built from the same source revision as the policy
   contract.
 - Use low speed and keep a safety operator ready for Passive.
@@ -93,5 +127,6 @@ Do not run hardware until the simulator path is stable.  Before enabling motors:
 | --- | --- | --- | --- |
 | Base velocity | Stable checkpoint and expected tracking metrics. | Python play walks with correct command direction. | C++/DDS simulator stable at low speed. |
 | AntiFall | Curriculum/stage checkpoint recovers in training eval. | Native viewer drag perturbations recover. | Conservative sim/hardware disturbance tests only. |
+| AntiFall-GetUp | Final fused run preserves walking, recovery, and resume behavior. | Generic play shows upright walking, forced-fall recovery, and resumed locomotion. | Blocked until C++ deploy observations match the final exported contract. |
 | GetUp | Terrain-specific checkpoint converges for selected terrain. | Same terrain play gets up repeatedly. | Start from ground terrain before platform/wall/slope hardware tests. |
 | Parkour | Exported artifact contract is complete. | Depth contract and route-following replay pass. | Simulator live-depth route before any real-depth hardware trial. |

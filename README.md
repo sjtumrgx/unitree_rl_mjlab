@@ -503,7 +503,9 @@ Common Parkour-specific caveats:
 
 - `doc/setup_en.md` / `doc/setup_zh.md` — environment setup.
 - `doc/train_play_sim2real_en.md` / `doc/train_play_sim2real_zh.md` — end-to-end workflow checklist.
+- `doc/g1_velocity.md` — base G1 velocity train/play/sim2real notes.
 - `doc/g1_antifall.md` — AntiFall train/play/sim2real notes.
+- `doc/g1_antifall_getup.md` — AntiFall-GetUp training/play and current deploy gate notes.
 - `doc/g1_parkour.md` — Parkour artifact, depth, terrain, and deploy notes.
 - `doc/g1_getup_demo_data.md` — optional GetUp AMP/demo-data fallback and source-gate workflow.
 - `doc/g1_getup.md` — GetUp terrain migration and usage notes.
