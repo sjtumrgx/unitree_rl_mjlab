@@ -6,7 +6,7 @@
 ## 1. Train
 
 1. 选择任务 id，并确认模块成熟度：
-   - 基础速度任务和 GetUp 是可训练的 MJLab 任务。
+   - 基础速度任务和 AMP-Locomotion 是可训练的 MJLab 任务。
    - AntiFall 通过 stage/curriculum 任务训练。
    - Parkour 当前主要是 play/deploy-first 的已导出深度策略 lane。
 2. 除非模块提供 wrapper，否则优先使用通用训练入口：
@@ -28,7 +28,7 @@
 1. 在 Python 中回放同一个 checkpoint/artifact。
 2. 有任务专用 play 脚本时优先使用：
    - AntiFall：`scripts/play_antifall.py`
-   - GetUp：`scripts/play_getup.py`
+   - AMP-Locomotion：使用通用 `scripts/play.py Unitree-G1-AMP-Flat` 或 `Unitree-G1-AMP-Rough`
    - Parkour：`scripts/play_parkour.py`
 3. 检查 reset pose、命令方向、action scale、joint order 和 viewer 诊断。
 4. Parkour 先用 `--check-contract` 检查深度 contract；无头短测使用
@@ -60,7 +60,6 @@
    pkill -f unitree_mujoco || true
    pkill -f g1_ctrl || true
    pkill -f g1_antifall_ctrl || true
-   pkill -f g1_getup_ctrl || true
    pkill -f g1_parkour_ctrl || true
    ```
 
@@ -80,8 +79,7 @@
 | --- | --- | --- | --- | --- | --- |
 | Velocity / 基础 G1 | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | 键盘 `f` 进 FixStand，`v` 进 Velocity，`w/s/a/d/q/e` 速度控制，松开停止，`p` 回 Passive；遥控器 `L2+Up` → `R2+A`，`L2+B` 回 Passive | `./deploy/robots/g1/build/g1_ctrl --network=<robot_nic> --keyboard` |
 | AntiFall | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | 键盘 `f` 进 FixStand，`v` 进 AntiFall，`w/s/a/d/q/e` 速度控制，`p` 回 Passive；遥控器 `L2+Up` → `R2+A`，`L2+B` 回 Passive | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=<robot_nic> --keyboard` |
-| AntiFall-GetUp | C++ deploy contract 支持后复用 `g1_antifall` build | `./simulate/build/unitree_mujoco --network lo` | 未来命令形态：`./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | 与 AntiFall 相同：键盘 `f` → `v`，`p` 回 Passive；遥控器 `L2+Up` → `R2+A`，`L2+B` 回 Passive | 当前不要上硬件；final deploy YAML 必须先匹配 C++ 已注册观测，详见 `doc/g1_antifall_getup.md`。 |
-| GetUp | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | 键盘 `f` 进 FixStand，确认初始姿态安全后按 `g` 起身，`p` 回 Passive；遥控器 `L2+Up` → `R2+Y`，`L2+B` 回 Passive | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=<robot_nic> --keyboard` |
+| AMP-Locomotion | 本次迁移只引入 Python 训练/play lane，暂不新增 C++ controller | `./simulate/build/unitree_mujoco --network lo` | Python play：`python scripts/play.py Unitree-G1-AMP-Flat --checkpoint-file <model.pt>` | 先完成训练/play；AMP runner 会导出 `policy.onnx` | 上硬件前需要补独立 C++ controller contract。 |
 | Parkour | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour --network lo` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>自动进入：`./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback 默认进入 Parkour idle-hold；按住 `w` / `up` 沿路线前进，松开停止，`+/-` 调速度，`a/d/q/e` 转向，`s/down/x/space` 回 idle，`p` 回 Passive；真实遥控器 `L2+Up` → `R2+X` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=<robot_nic> --keyboard` |
 
 无 GUI loopback 可在 simulator 命令上加 `--headless --headless-seconds <N>`。
@@ -114,6 +112,5 @@ simulator 路径稳定前不要上硬件。电机使能前：
 | --- | --- | --- | --- |
 | 基础速度 | checkpoint 稳定，tracking 指标符合预期。 | Python play 中命令方向正确并能稳定行走。 | C++/DDS simulator 低速稳定。 |
 | AntiFall | Curriculum/stage checkpoint 在训练评估中能恢复。 | Native viewer 鼠标拖拽扰动后能恢复。 | 只做保守仿真/硬件扰动测试。 |
-| AntiFall-GetUp | 最终 fused run 同时保留行走、起身恢复和恢复后继续行走。 | 通用 play 中能验证 upright walking、forced-fall recovery 和 resumed locomotion。 | 当前受 C++ deploy 观测 contract 阻塞。 |
-| GetUp | 所选 terrain 的 checkpoint 收敛。 | 相同 terrain play 能重复起身。 | 硬件先从 ground terrain 开始，再测 platform/wall/slope。 |
+| AMP-Locomotion | 4 卡训练达到目标迭代数，并出现 recovery 指标。 | Python play 能回放统一 locomotion/recovery checkpoint。 | 上硬件前先补专用 C++ controller contract。 |
 | Parkour | 导出 artifact contract 完整。 | 深度 contract 和 route-following replay 通过。 | 先通过 simulator live-depth route，再考虑真实深度硬件测试。 |

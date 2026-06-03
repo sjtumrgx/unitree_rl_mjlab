@@ -5,8 +5,6 @@ from src.tasks.velocity.rl.curriculum_runner import AntiFallCurriculumRunner
 from src.tasks.velocity.rl.antifall_curriculum import CURRICULUM_TASK_ID
 from .env_cfgs import (
   unitree_g1_antifall_benchmark_env_cfg,
-  unitree_g1_antifall_getup_env_cfg,
-  unitree_g1_antifall_getup_recovery_warmup_env_cfg,
   unitree_g1_antifall_stage0_env_cfg,
   unitree_g1_antifall_stage1_env_cfg,
   unitree_g1_antifall_stage2_env_cfg,
@@ -16,8 +14,6 @@ from .env_cfgs import (
 )
 from .rl_cfg import (
   unitree_g1_antifall_curriculum_runner_cfg,
-  unitree_g1_antifall_getup_ppo_runner_cfg,
-  unitree_g1_antifall_getup_recovery_warmup_ppo_runner_cfg,
   unitree_g1_antifall_ppo_runner_cfg,
 )
 
@@ -68,21 +64,6 @@ _register_antifall_task(
   env_cfg_factory=unitree_g1_antifall_benchmark_env_cfg,
 )
 
-register_mjlab_task(
-  task_id="Unitree-G1-AntiFall-GetUp-RecoveryWarmup",
-  env_cfg=unitree_g1_antifall_getup_recovery_warmup_env_cfg(),
-  play_env_cfg=unitree_g1_antifall_getup_recovery_warmup_env_cfg(play=True),
-  rl_cfg=unitree_g1_antifall_getup_recovery_warmup_ppo_runner_cfg(),
-  runner_cls=AntiFallOnPolicyRunner,
-)
-
-register_mjlab_task(
-  task_id="Unitree-G1-AntiFall-GetUp",
-  env_cfg=unitree_g1_antifall_getup_env_cfg(),
-  play_env_cfg=unitree_g1_antifall_getup_env_cfg(play=True),
-  rl_cfg=unitree_g1_antifall_getup_ppo_runner_cfg(),
-  runner_cls=AntiFallOnPolicyRunner,
-)
 
 register_mjlab_task(
   task_id=CURRICULUM_TASK_ID,

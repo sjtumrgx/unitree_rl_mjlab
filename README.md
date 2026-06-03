@@ -7,7 +7,7 @@
 This repository is based on **Unitree RL MJLab / mjlab** and keeps the original
 MuJoCo-centered training and deployment workflow.  On top of the base Unitree
 locomotion examples, this fork adds dedicated **G1 Parkour**, **G1 AntiFall**,
-and **G1 GetUp** modules, plus simulator/deployment glue for running exported
+and **G1 AMP-Locomotion** modules, plus simulator/deployment glue for running exported
 policies in Unitree-style C++/DDS control loops.
 
 The intended workflow is:
@@ -23,22 +23,18 @@ The intended workflow is:
 ```text
 .
 ├── src/
-│   ├── tasks/velocity/config/        # MJLab task registration and environment configuration.
-│   ├── tasks/velocity/mdp/           # Reward, reset, event, and observation helper logic.
+│   ├── tasks/velocity/config/        # MJLab velocity and AntiFall task registration/configuration.
+│   ├── tasks/velocity/mdp/           # Velocity/AntiFall reward, reset, event, and observation helpers.
+│   ├── tasks/amp_loco/               # AMP-Locomotion configs, AMP runner, recovery reset logic, and metrics.
 │   └── parkour/                      # Parkour ONNX/deploy contracts, observation adapter, depth utilities, and scene editor core.
 ├── scripts/
 │   ├── train.py                      # Generic training entrypoint.
 │   ├── play.py                       # Generic Python policy replay / visualization entrypoint.
 │   ├── play_parkour.py               # Depth-conditioned G1 Parkour replay and diagnostics.
 │   ├── play_antifall.py              # G1 AntiFall replay with native MuJoCo drag perturbations.
-│   ├── train_getup.py                # GetUp training wrapper with terrain selection.
-│   ├── play_getup.py                 # GetUp play wrapper with terrain selection.
-│   ├── train_getup_amp.py            # Optional ground-only GetUp AMP/demo-data fallback training wrapper.
-│   ├── prepare_g1_getup_amp_data.py  # YAML-driven GetUp demo-data conversion.
-│   ├── play_g1_getup_amp_data.py     # G1 MuJoCo playback for converted GetUp demo clips.
+│   ├── csv_to_npz.py                 # Convert AMP motion CSV files into NPZ clips.
 │   └── edit_parkour_scene.py         # Browser-based Viser editor for parkour terrain boxes.
 ├── data/
-│   └── g1_getup_amp.yaml             # Local GetUp demo-data workflow config for selected .pkl/.npz clips.
 ├── deploy/
 │   └── robots/g1_parkour/            # C++/DDS G1 Parkour controller and policy runtime.
 ├── simulate/                         # Unitree MuJoCo simulator integration and configuration.
@@ -162,130 +158,72 @@ curriculum checkpoints use `logs/rsl_rl/g1_antifall_curriculum`, and standalone
 AntiFall stage tasks use `logs/rsl_rl/g1_antifall`.
 
 
-### 1.3 G1 GetUp
+### 1.3 G1 AMP-Locomotion
 
-GetUp ports HoST-style terrain variants into an MJLab task.  The wrapper
-supports `mixed`, `ground`, `platform`, `wall`, and `slope`; `mixed` is the
-single-policy training entrypoint for terrain transfer:
+AMP-Locomotion is now the single fall-recovery locomotion lane.  It
+uses one policy for walk/run locomotion and fall recovery: delayed-termination
+environments receive a recovery window and reset from recovery motion clips,
+while the AMP discriminator keeps both walking/running and recovery motion style
+close to the bundled motion priors.
 
-```bash
-python scripts/train_getup.py --terrain mixed -- \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
+Registered tasks:
 
-# Optional single-terrain specialization or ablation.
-python scripts/train_getup.py --terrain ground -- \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-```
+| Task | Terrain | Purpose |
+| --- | --- | --- |
+| `Unitree-G1-AMP-Flat` | plane | recommended first full training target |
+| `Unitree-G1-AMP-Rough` | rough curriculum | rough-terrain variant with the same AMP/recovery contract |
 
-Equivalent generic form:
+Motion data layout copied from `~/AMP_mjlab`:
 
-```bash
-python scripts/train.py Unitree-G1-GetUp \
-  --getup-terrain=mixed \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-```
+- Raw CSV: `motion_data_csv/amp/`
+- Walk/run NPZ: `src/assets/motions/g1/amp/WalkandRun/`
+- Recovery NPZ: `src/assets/motions/g1/amp/Recovery/`
 
-The terrain flag controls reset poses, terrain distribution, assist-force
-settings, and RL run naming.  Use `mixed` when the same policy should cover all
-GetUp terrain variants; use a single terrain only for targeted debugging or
-ablation.
-
-Optional AMP/demo-data fallback, kept separate from the default no-demo task:
+Apply the mjlab observation-history patch before training if the active
+environment does not already support `history_ordering=time`:
 
 ```bash
-python scripts/prepare_g1_getup_amp_data.py
-python scripts/play_g1_getup_amp_data.py --validate-only
-
-python scripts/train_getup_amp.py \
-  --num-envs 4096 \
-  --max-iterations 10001 \
-  --warm-start-checkpoint logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
-  -- --gpu-ids "[0]"
+cp mjlab_patch/mjlab/managers/observation_manager.py \
+  $(python - <<'PY'
+import mjlab.managers.observation_manager as om
+print(om.__file__)
+PY
+)
 ```
 
-Before AMP training, configure local `.pkl` source clips, playback `.npz` files,
-and final training `.npz` files in `data/g1_getup_amp.yaml`.  The workflow is:
-prepare selected local `.pkl` clips into `data/motions/g1_getup_amp/motions/*.npz`,
-play the converted data on the checked-in G1 MuJoCo model, then train only with
-the confirmed clips listed under `train.npz_files`.  See
-`doc/g1_getup_demo_data.md` for the detailed post-download workflow.
-
-### 1.4 G1 AntiFall-GetUp
-
-AntiFall-GetUp combines the Stage4b walking prior with a fallen-start GetUp
-recovery prior.  The default dependency graph is: train the AntiFall curriculum
-and GetUp priors first, use the GetUp checkpoint to train the AntiFall-GetUp
-RecoveryWarmup checkpoint, then fuse the curriculum Stage4b checkpoint and the
-RecoveryWarmup checkpoint into the final dual-branch policy.  Both the
-RecoveryWarmup and final AntiFall-GetUp runs write under
-`logs/rsl_rl/g1_antifall_getup`:
-
-```mermaid
-flowchart TB
-    accTitle: AntiFall GetUp Training Flow
-    accDescr: Default training dependency graph for building the final AntiFall-GetUp policy from an AntiFall curriculum walking prior and a GetUp recovery prior.
-
-    start([🏁 Start])
-    antifall[⚙️ Train Unitree-G1-AntiFall-Curriculum]
-    stage4b[📦 Stage4b walking prior<br/>g1_antifall_curriculum/.../stages/05_stage4b]
-    getup[⚙️ Train Unitree-G1-GetUp]
-    getup_ckpt[📦 GetUp prior<br/>g1_getup run checkpoint]
-    warmup[⚙️ Train Unitree-G1-AntiFall-GetUp-RecoveryWarmup]
-    recovery[📦 Recovery prior<br/>g1_antifall_getup recovery run]
-    final[⚙️ Train Unitree-G1-AntiFall-GetUp]
-    output([✅ Final AntiFall-GetUp policy<br/>g1_antifall_getup final run])
-
-    start --> antifall --> stage4b --> final
-    start --> getup --> getup_ckpt --> warmup --> recovery --> final
-    final --> output
-
-    classDef start_style fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#3b0764
-    classDef train_style fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
-    classDef artifact_style fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#713f12
-    classDef success_style fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
-
-    class start start_style
-    class antifall,getup,warmup,final train_style
-    class stage4b,getup_ckpt,recovery artifact_style
-    class output success_style
-```
+List the migrated tasks:
 
 ```bash
-# 1) Fallen-start recovery warmup in the final AntiFall-GetUp tensor contract.
-python scripts/train.py Unitree-G1-AntiFall-GetUp-RecoveryWarmup \
-  --gpu-ids "[1]" \
-  --resume-checkpoint-path logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
-  --actor-only-resume True \
-  --agent.resume True \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=1000 \
-  --agent.run-name recovery_warmup
-
-# 2) Fuse a walking AntiFall prior with the recovery prior and fine-tune.
-#    Use the curriculum Stage4b checkpoint by default; if Stage4b was trained
-#    directly, use logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt instead.
-python scripts/train.py Unitree-G1-AntiFall-GetUp \
-  --gpu-ids "[2]" \
-  --resume-checkpoint-path logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
-  --recovery-resume-checkpoint-path logs/rsl_rl/g1_antifall_getup/<recovery_run>/model_*.pt \
-  --actor-only-resume True \
-  --agent.resume True \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=1000 \
-  --agent.run-name antifall_getup
+python scripts/list_envs.py --keyword AMP
 ```
 
-Use `--policy-only-resume True` only when continuing from an already fused
-AntiFall-GetUp checkpoint and you want to keep actor/critic weights while
-resetting optimizer state.
+Start the requested 4-GPU training run:
 
-### 1.5 G1 Parkour artifacts
+```bash
+python scripts/train.py Unitree-G1-AMP-Flat \
+  --gpu-ids "[0,1,2,3]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=20000
+```
+
+Logs are written to `logs/rsl_rl/g1_amp_locomotion/<run>/`.  Around 20k
+iterations the policy often learns fall-recovery suddenly; abrupt jumps in the
+AMP/recovery metrics near that point are expected rather than automatically a
+training failure.
+
+Migration validation run on this checkout:
+
+- Command: `python scripts/train.py Unitree-G1-AMP-Flat --gpu-ids "[0,1,2,3]" --env.scene.num-envs=4096 --agent.max-iterations=20000 --agent.save-interval=100 --agent.logger=tensorboard`
+- Run directory: `logs/rsl_rl/g1_amp_locomotion/2026-06-02_14-47-05/`
+- Final checkpoint: `model_19999.pt` (20,000 zero-based logged iterations: `0..19999`)
+- Exported policy: `policy.onnx`
+- Final scalar snapshot: mean reward `41.03`, mean episode length `1000.0`, `bad_orientation=0.0`, `bad_base_height=0.0`, `skipped_non_finite_batches=0.0`
+- Launcher result: torchrunx reported `Workers exited without errors`.
+
+The `logs/` artifacts are local training outputs and are intentionally not
+versioned.  Re-run the command above to regenerate a checkpoint on another host.
+
+### 1.4 G1 Parkour artifacts
 
 The current Parkour lane is primarily a **play/deploy lane** for an exported
 InstinctLab-style depth-conditioned policy.  Policy bundle defaults live under:
@@ -331,68 +269,18 @@ If you trained `Unitree-G1-AntiFall-Stage4b` directly, use
 `logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt` instead.
 
 
-### 2.3 AntiFall-GetUp play
+### 2.3 AMP-Locomotion play
 
-AntiFall-GetUp is a separate registered task, so use the generic play
-entrypoint:
-
-```bash
-python scripts/play.py Unitree-G1-AntiFall-GetUp \
-  --checkpoint-file logs/rsl_rl/g1_antifall_getup/<run>/model_*.pt \
-  --num-envs 1 \
-  --viewer native \
-  --no-terminations
-```
-
-The native MuJoCo viewer supports drag perturbations.  Drag the robot body to
-apply interactive pushes/kicks; use this to check recovery behavior before any
-hardware run.
-
-### 2.4 GetUp play
+Replay a trained AMP-Locomotion checkpoint with the generic play entrypoint:
 
 ```bash
-python scripts/play_getup.py --terrain ground -- \
-  --checkpoint-file logs/rsl_rl/g1_getup/<run>/model_*.pt \
-  --num-envs 1 \
-  --viewer native
-
-# Re-run with platform, wall, and slope to check terrain transfer.
-python scripts/play_getup.py --terrain slope -- \
-  --checkpoint-file logs/rsl_rl/g1_getup/<run>/model_*.pt \
-  --num-envs 1 \
-  --viewer native
+python scripts/play.py Unitree-G1-AMP-Flat \
+  --checkpoint-file logs/rsl_rl/g1_amp_locomotion/<run>/model_*.pt
 ```
 
-For a `mixed` GetUp policy, replay the same checkpoint across `ground`,
-`platform`, `wall`, and `slope`.  For single-terrain runs, keep the play terrain
-matched unless you are intentionally testing transfer.
+Use `Unitree-G1-AMP-Rough` for the rough-terrain variant.
 
-AMP fallback play uses the generic play entrypoint:
-
-```bash
-python scripts/play.py Unitree-G1-GetUp-AMP \
-  --checkpoint-file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
-  --num-envs 1 \
-  --viewer native
-```
-
-To inspect the demonstration motion itself before training, replay the prepared
-retargeted clip directly on the G1 MuJoCo model:
-
-```bash
-python scripts/play_g1_getup_amp_data.py \
-  --motion-index 0 \
-  --speed 1.0
-```
-
-Use `--play-all` to step through every accepted clip, or `--validate-only` for a
-headless kinematic check.
-
-For Unitree simulator / C++ controller validation, copy the exported
-`logs/rsl_rl/g1_getup_amp/<run>/policy.onnx` into
-`deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx`, then use
-the existing GetUp controller build/run flow.
-
+### 2.4 Parkour play and terrain editing
 ### 2.5 Parkour play and terrain editing
 
 Default Parkour replay:
@@ -462,7 +350,6 @@ replace `lo` with the robot network interface after simulator validation passes.
 | --- | --- | --- | --- | --- | --- | --- |
 | Velocity / base G1 | `python scripts/play.py Unitree-G1-Flat --checkpoint_file <model.pt>` | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | keyboard: `f` → `v`; joystick: `L2+Up` → `R2+A` | The deployed artifact is read from `deploy/robots/g1/config/policy/velocity/v0`; verify joint order/action scale in `params/deploy.yaml`. |
 | AntiFall | `python scripts/play_antifall.py --task Unitree-G1-AntiFall-Stage4b --run-dir <stage_dir> --checkpoint <model.pt>` | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | keyboard: `f` → `v`; joystick: `L2+Up` → `R2+A` | Validate recovery with simulator pushes before hardware; do not use AntiFall to mask wrong action order, PD gains, or reset pose. |
-| GetUp | `python scripts/play_getup.py --terrain ground -- --checkpoint_file <model.pt>` | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | keyboard: `f` → `g`; joystick: `L2+Up` → `R2+Y` | Start with ground get-up.  Platform/wall/slope hardware tests need matched start geometry and extra physical support. |
 | Parkour | `python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer`<br>`python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20` | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>or auto-start: `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback keyboard route: hold `w` / `up`; `p` returns Passive | Live depth is part of the policy contract.  Constant depth is only an ablation, not terrain traversal proof. |
 
 For headless simulator diagnostics, add `--headless --headless-seconds <N>` to
@@ -505,13 +392,10 @@ Common Parkour-specific caveats:
 - `doc/train_play_sim2real_en.md` / `doc/train_play_sim2real_zh.md` — end-to-end workflow checklist.
 - `doc/g1_velocity.md` — base G1 velocity train/play/sim2real notes.
 - `doc/g1_antifall.md` — AntiFall train/play/sim2real notes.
-- `doc/g1_antifall_getup.md` — AntiFall-GetUp training/play and current deploy gate notes.
 - `doc/g1_parkour.md` — Parkour artifact, depth, terrain, and deploy notes.
-- `doc/g1_getup_demo_data.md` — optional GetUp AMP/demo-data fallback and source-gate workflow.
-- `doc/g1_getup.md` — GetUp terrain migration and usage notes.
 
 ## Acknowledgements
 
 This work builds on Unitree RL MJLab, MJLab, MuJoCo, MuJoCo Warp, RSL-RL,
 Unitree SDK2, and Unitree MuJoCo.  This fork adds the G1 Parkour, AntiFall, and
-GetUp workflows and related deployment utilities.
+AMP-Locomotion workflows and related deployment utilities.

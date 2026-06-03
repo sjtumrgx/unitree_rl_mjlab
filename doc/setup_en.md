@@ -84,8 +84,6 @@ cmake --build deploy/robots/g1/build -j4
 cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build
 cmake --build deploy/robots/g1_antifall/build -j4
 
-cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build
-cmake --build deploy/robots/g1_getup/build -j4
 
 cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build
 cmake --build deploy/robots/g1_parkour/build -j4

@@ -6,7 +6,7 @@
 
 本仓库基于 **Unitree RL MJLab / mjlab**，保留原有以 MuJoCo 为核心的训练、回放
 和部署流程。在基础 Unitree locomotion 示例之上，本仓库额外增加了 **G1 Parkour**、
-**G1 AntiFall** 和 **G1 GetUp** 模块，并补充了面向 Unitree C++/DDS 控制链的仿真与
+**G1 AntiFall** 和 **G1 AMP-Locomotion** 模块，并补充了面向 Unitree C++/DDS 控制链的仿真与
 部署胶水代码。
 
 推荐工作流是：
@@ -22,22 +22,18 @@
 ```text
 .
 ├── src/
-│   ├── tasks/velocity/config/        # MJLab 任务注册与环境配置。
-│   ├── tasks/velocity/mdp/           # 奖励、重置、事件和观测辅助逻辑。
+│   ├── tasks/velocity/config/        # MJLab velocity 与 AntiFall 任务注册/环境配置。
+│   ├── tasks/velocity/mdp/           # Velocity/AntiFall 奖励、重置、事件和观测辅助逻辑。
+│   ├── tasks/amp_loco/               # AMP-Locomotion 配置、AMP runner、恢复重置逻辑和指标。
 │   └── parkour/                      # Parkour ONNX/deploy contract、观测适配、深度工具和场景编辑核心。
 ├── scripts/
 │   ├── train.py                      # 通用训练入口。
 │   ├── play.py                       # 通用 Python 策略回放 / 可视化入口。
 │   ├── play_parkour.py               # 带深度输入的 G1 Parkour 回放与诊断。
 │   ├── play_antifall.py              # 带 MuJoCo 鼠标拖拽扰动的 G1 AntiFall 回放。
-│   ├── train_getup.py                # 带 terrain 选择的 GetUp 训练 wrapper。
-│   ├── play_getup.py                 # 带 terrain 选择的 GetUp 回放 wrapper。
-│   ├── train_getup_amp.py            # 可选 ground-only GetUp AMP/示教数据 fallback 训练入口。
-│   ├── prepare_g1_getup_amp_data.py  # 由 YAML 配置驱动的 GetUp 示教数据转换。
-│   ├── play_g1_getup_amp_data.py     # 转换后 GetUp 示教 clip 的 G1 MuJoCo 回放入口。
+│   ├── csv_to_npz.py                 # 将 AMP motion CSV 转成 NPZ clip。
 │   └── edit_parkour_scene.py         # 基于浏览器/Viser 的 Parkour 地形盒子编辑器。
 ├── data/
-│   └── g1_getup_amp.yaml             # 本地 GetUp 示教数据流程配置，用来选择 .pkl/.npz clip。
 ├── deploy/
 │   └── robots/g1_parkour/            # C++/DDS G1 Parkour controller 与 policy runtime。
 ├── simulate/                         # Unitree MuJoCo simulator 集成与配置。
@@ -160,122 +156,69 @@ logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/<stage>/model_*.pt
 `logs/rsl_rl/g1_antifall`。
 
 
-### 1.3 G1 GetUp
+### 1.3 G1 AMP-Locomotion
 
-GetUp 将 HoST 风格地形变体迁移为 MJLab 任务。训练 wrapper 支持 `mixed`、
-`ground`、`platform`、`wall` 和 `slope`；其中 `mixed` 是训练单个跨地形 policy 的入口：
+AMP-Locomotion 现在是唯一的跌倒恢复 locomotion 训练链路。它用一个 policy
+同时学习 walk/run locomotion 和跌倒恢复：一部分 delayed-termination 环境触发
+终止后不会立刻 reset，而是在 recovery window 内继续尝试恢复，并优先从 recovery
+motion clip 重置；AMP discriminator 约束行走/奔跑和恢复动作都贴近运动先验。
 
-```bash
-python scripts/train_getup.py --terrain mixed -- \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
+已注册任务：
 
-# 可选：单地形专项训练或 ablation。
-python scripts/train_getup.py --terrain ground -- \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-```
+| Task | 地形 | 用途 |
+| --- | --- | --- |
+| `Unitree-G1-AMP-Flat` | 平面 | 推荐的首个完整训练目标 |
+| `Unitree-G1-AMP-Rough` | rough curriculum | 同一 AMP/recovery contract 的粗糙地形版本 |
 
-等价通用写法：
+已从 `~/AMP_mjlab` 复制的动作数据布局：
 
-```bash
-python scripts/train.py Unitree-G1-GetUp \
-  --getup-terrain=mixed \
-  --gpu-ids "[0]" \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=10001
-```
+- 原始 CSV：`motion_data_csv/amp/`
+- Walk/run NPZ：`src/assets/motions/g1/amp/WalkandRun/`
+- Recovery NPZ：`src/assets/motions/g1/amp/Recovery/`
 
-terrain 参数会影响 reset pose、地形分布、辅助力设置和 RL run name。需要同一个 policy
-覆盖所有 GetUp 地形时使用 `mixed`；单地形只用于定向调试或 ablation。
-
-可选 AMP/示教数据 fallback 与默认 no-demo 任务完全分离：
+如果当前环境还不支持 `history_ordering=time`，训练前应用 mjlab observation
+history patch：
 
 ```bash
-python scripts/prepare_g1_getup_amp_data.py
-python scripts/play_g1_getup_amp_data.py --validate-only
-
-python scripts/train_getup_amp.py \
-  --num-envs 4096 \
-  --max-iterations 10001 \
-  --warm-start-checkpoint logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
-  -- --gpu-ids "[0]"
+cp mjlab_patch/mjlab/managers/observation_manager.py \
+  $(python - <<'PY'
+import mjlab.managers.observation_manager as om
+print(om.__file__)
+PY
+)
 ```
 
-运行 AMP 训练前，在 `data/g1_getup_amp.yaml` 中配置本地 `.pkl` 来源、要播放检查的
-`.npz`，以及最终用于训练的 `train.npz_files`。推荐流程是：把选中的本地 `.pkl`
-转成 `data/motions/g1_getup_amp/motions/*.npz`，用仓库内 G1 MuJoCo 模型播放确认，
-最后只用确认过的 `.npz` 训练。详细的下载后流程见 `doc/g1_getup_demo_data.md`。
-
-### 1.4 G1 AntiFall-GetUp
-
-AntiFall-GetUp 会把 Stage4b 行走先验和倒地起身恢复先验合成一个双分支策略。默认依赖
-关系是：先训练 AntiFall curriculum 和 GetUp 两个先验；再用 GetUp checkpoint 训练
-AntiFall-GetUp RecoveryWarmup；最后把 curriculum 的 Stage4b checkpoint 和
-RecoveryWarmup checkpoint 融合为最终双分支 policy。RecoveryWarmup 和最终
-AntiFall-GetUp 运行都写入 `logs/rsl_rl/g1_antifall_getup`：
-
-```mermaid
-flowchart TB
-    accTitle: AntiFall GetUp Training Flow
-    accDescr: Default training dependency graph for building the final AntiFall-GetUp policy from an AntiFall curriculum walking prior and a GetUp recovery prior.
-
-    start([🏁 开始])
-    antifall[⚙️ 训练 Unitree-G1-AntiFall-Curriculum]
-    stage4b[📦 Stage4b 行走先验<br/>g1_antifall_curriculum/.../stages/05_stage4b]
-    getup[⚙️ 训练 Unitree-G1-GetUp]
-    getup_ckpt[📦 GetUp 起身先验<br/>g1_getup run checkpoint]
-    warmup[⚙️ 训练 Unitree-G1-AntiFall-GetUp-RecoveryWarmup]
-    recovery[📦 Recovery 起身先验<br/>g1_antifall_getup recovery run]
-    final[⚙️ 训练 Unitree-G1-AntiFall-GetUp]
-    output([✅ 最终 AntiFall-GetUp policy<br/>g1_antifall_getup final run])
-
-    start --> antifall --> stage4b --> final
-    start --> getup --> getup_ckpt --> warmup --> recovery --> final
-    final --> output
-
-    classDef start_style fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#3b0764
-    classDef train_style fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
-    classDef artifact_style fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#713f12
-    classDef success_style fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
-
-    class start start_style
-    class antifall,getup,warmup,final train_style
-    class stage4b,getup_ckpt,recovery artifact_style
-    class output success_style
-```
+查看迁移后的任务：
 
 ```bash
-# 1) 在最终 AntiFall-GetUp 张量 contract 下训练倒地恢复 warmup。
-python scripts/train.py Unitree-G1-AntiFall-GetUp-RecoveryWarmup \
-  --gpu-ids "[1]" \
-  --resume-checkpoint-path logs/rsl_rl/g1_getup/<getup_run>/model_*.pt \
-  --actor-only-resume True \
-  --agent.resume True \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=1000 \
-  --agent.run-name recovery_warmup
-
-# 2) 融合行走 AntiFall 先验和恢复先验，并进行最终微调。
-#    默认使用 curriculum 产出的 Stage4b checkpoint；如果是直接训练
-#    Unitree-G1-AntiFall-Stage4b，则改用 logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt。
-python scripts/train.py Unitree-G1-AntiFall-GetUp \
-  --gpu-ids "[2]" \
-  --resume-checkpoint-path logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
-  --recovery-resume-checkpoint-path logs/rsl_rl/g1_antifall_getup/<recovery_run>/model_*.pt \
-  --actor-only-resume True \
-  --agent.resume True \
-  --env.scene.num-envs=4096 \
-  --agent.max-iterations=1000 \
-  --agent.run-name antifall_getup
+python scripts/list_envs.py --keyword AMP
 ```
 
-如果是从已经融合好的 AntiFall-GetUp checkpoint 继续训练，并且希望保留 actor/critic、
-重置 optimizer state，再使用 `--policy-only-resume True`。
+按要求启动 4 卡训练：
 
-### 1.5 G1 Parkour artifact
+```bash
+python scripts/train.py Unitree-G1-AMP-Flat \
+  --gpu-ids "[0,1,2,3]" \
+  --env.scene.num-envs=4096 \
+  --agent.max-iterations=20000
+```
+
+日志写入 `logs/rsl_rl/g1_amp_locomotion/<run>/`。约 2w（20k）iterations
+附近 policy 经常会突然学会跌倒恢复；这时 AMP/recovery 指标出现阶跃式变化通常是
+预期现象，不应直接判定为训练异常。
+
+本次迁移在当前 checkout 上完成的验证训练：
+
+- 命令：`python scripts/train.py Unitree-G1-AMP-Flat --gpu-ids "[0,1,2,3]" --env.scene.num-envs=4096 --agent.max-iterations=20000 --agent.save-interval=100 --agent.logger=tensorboard`
+- Run 目录：`logs/rsl_rl/g1_amp_locomotion/2026-06-02_14-47-05/`
+- 最终 checkpoint：`model_19999.pt`（0-based 日志共 20,000 次迭代：`0..19999`）
+- 导出策略：`policy.onnx`
+- 最终指标快照：mean reward `41.03`，mean episode length `1000.0`，`bad_orientation=0.0`，`bad_base_height=0.0`，`skipped_non_finite_batches=0.0`
+- Launcher 结果：torchrunx 报告 `Workers exited without errors`。
+
+`logs/` 下的训练产物是本机输出，按仓库规则不纳入版本控制；在其他机器上需要重新运行上面的命令生成 checkpoint。
+
+### 1.4 G1 Parkour artifact
 
 当前 Parkour 主要是一个 **play/deploy lane**，用于已导出的 InstinctLab 风格深度
 策略。默认 policy bundle 位于：
@@ -318,63 +261,18 @@ python scripts/play_antifall.py \
 `logs/rsl_rl/g1_antifall/<stage4b_run>/model_*.pt`。
 
 
-### 2.3 AntiFall-GetUp play
+### 2.3 AMP-Locomotion play
 
-AntiFall-GetUp 是单独注册的任务，请使用通用 play 入口：
-
-```bash
-python scripts/play.py Unitree-G1-AntiFall-GetUp \
-  --checkpoint-file logs/rsl_rl/g1_antifall_getup/<run>/model_*.pt \
-  --num-envs 1 \
-  --viewer native \
-  --no-terminations
-```
-
-native MuJoCo viewer 支持鼠标拖拽扰动。可以拖拽机器人身体模拟推/踢，在上硬件前
-检查恢复行为。
-
-### 2.4 GetUp play
+使用通用 play 入口回放训练好的 AMP-Locomotion checkpoint：
 
 ```bash
-python scripts/play_getup.py --terrain ground -- \
-  --checkpoint-file logs/rsl_rl/g1_getup/<run>/model_*.pt \
-  --num-envs 1 \
-  --viewer native
-
-# 使用同一个 checkpoint 依次切换 platform、wall、slope 检查地形迁移。
-python scripts/play_getup.py --terrain slope -- \
-  --checkpoint-file logs/rsl_rl/g1_getup/<run>/model_*.pt \
-  --num-envs 1 \
-  --viewer native
+python scripts/play.py Unitree-G1-AMP-Flat \
+  --checkpoint-file logs/rsl_rl/g1_amp_locomotion/<run>/model_*.pt
 ```
 
-对于 `mixed` GetUp policy，应在 `ground`、`platform`、`wall` 和 `slope` 上回放
-同一个 checkpoint。对于单地形训练，除非刻意测试迁移，否则 play terrain 应与训练 terrain 一致。
+粗糙地形版本使用 `Unitree-G1-AMP-Rough`。
 
-AMP fallback 使用通用 play 入口：
-
-```bash
-python scripts/play.py Unitree-G1-GetUp-AMP \
-  --checkpoint-file logs/rsl_rl/g1_getup_amp/<run>/model_*.pt \
-  --num-envs 1 \
-  --viewer native
-```
-
-训练前如果要直接检查示教轨迹本身，可以把 retargeted motion 回放到 G1 MuJoCo 模型：
-
-```bash
-python scripts/play_g1_getup_amp_data.py \
-  --motion-index 0 \
-  --speed 1.0
-```
-
-用 `--play-all` 逐个播放所有 accepted clip；用 `--validate-only` 做无头运动学检查。
-
-Unitree simulator / C++ controller 验证时，将导出的
-`logs/rsl_rl/g1_getup_amp/<run>/policy.onnx` 复制到
-`deploy/robots/g1_getup/config/policy/getup/v0/exported/policy.onnx`，然后使用现有
-GetUp controller 的 build/run 流程。
-
+### 2.4 Parkour play 与地形编辑
 ### 2.5 Parkour play 与地形编辑
 
 默认 Parkour 回放：
@@ -441,7 +339,6 @@ controller。真实机器人时，必须先通过 simulator 验证，再把同�
 | --- | --- | --- | --- | --- | --- | --- |
 | Velocity / 基础 G1 | `python scripts/play.py Unitree-G1-Flat --checkpoint_file <model.pt>` | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | 键盘：`f` → `v`；遥控器：`L2+Up` → `R2+A` | 部署 artifact 来自 `deploy/robots/g1/config/policy/velocity/v0`；重点核对 `params/deploy.yaml` 里的 joint order/action scale。 |
 | AntiFall | `python scripts/play_antifall.py --task Unitree-G1-AntiFall-Stage4b --run-dir <stage_dir> --checkpoint <model.pt>` | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | 键盘：`f` → `v`；遥控器：`L2+Up` → `R2+A` | 先在 simulator 中验证恢复能力；不要用 AntiFall 掩盖 action order、PD gain 或 reset pose 错误。 |
-| GetUp | `python scripts/play_getup.py --terrain ground -- --checkpoint_file <model.pt>` | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | 键盘：`f` → `g`；遥控器：`L2+Up` → `R2+Y` | 硬件先从 ground get-up 开始；platform/wall/slope 需要匹配初始几何并加额外物理保护。 |
 | Parkour | `python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer`<br>`python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20` | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>自动进入：`./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback 键盘路线：按住 `w` / `up`；`p` 回 Passive | Live depth 是 policy contract 的一部分。常量深度只适合 ablation，不代表地形通过能力。 |
 
 无头 simulator 诊断时，给 simulator 命令加 `--headless --headless-seconds <N>`。
@@ -474,12 +371,9 @@ Parkour 特别注意：
 - `doc/train_play_sim2real_en.md` / `doc/train_play_sim2real_zh.md` — 端到端流程检查清单。
 - `doc/g1_velocity.md` — 基础 G1 velocity train/play/sim2real 说明。
 - `doc/g1_antifall.md` — AntiFall train/play/sim2real 说明。
-- `doc/g1_antifall_getup.md` — AntiFall-GetUp 训练/play 和当前部署门槛说明。
 - `doc/g1_parkour.md` — Parkour artifact、深度、地形和部署说明。
-- `doc/g1_getup_demo_data.md` — 可选 GetUp AMP/示教数据 fallback 与 source-gate 流程。
-- `doc/g1_getup.md` — GetUp 地形迁移和使用说明。
 
 ## 致谢
 
 本项目基于 Unitree RL MJLab、MJLab、MuJoCo、MuJoCo Warp、RSL-RL、Unitree SDK2
-和 Unitree MuJoCo。本 fork 增加了 G1 Parkour、AntiFall、GetUp 工作流及相关部署工具。
+和 Unitree MuJoCo。本 fork 增加了 G1 Parkour、AntiFall、AMP-Locomotion 工作流及相关部署工具。

@@ -6,7 +6,7 @@ catch contract and runtime mismatches before they reach a real robot.
 ## 1. Train
 
 1. Pick the task id and confirm the module maturity:
-   - Base velocity and GetUp are trainable MJLab tasks.
+   - Base velocity and AMP-Locomotion are trainable MJLab tasks.
    - AntiFall is trainable through staged/curriculum tasks.
    - Parkour currently uses a play/deploy-first exported depth policy lane.
 2. Start from the generic training entrypoint unless a module wrapper exists:
@@ -30,7 +30,7 @@ Before C++/DDS:
 1. Replay the exact checkpoint/artifact in Python.
 2. Use the task-specific play script when available:
    - AntiFall: `scripts/play_antifall.py`
-   - GetUp: `scripts/play_getup.py`
+   - AMP-Locomotion: use generic `scripts/play.py Unitree-G1-AMP-Flat` or `Unitree-G1-AMP-Rough`
    - Parkour: `scripts/play_parkour.py`
 3. Check reset pose, command direction, action scale, joint order, and viewer
    diagnostics.
@@ -63,7 +63,6 @@ Before C++/DDS:
    pkill -f unitree_mujoco || true
    pkill -f g1_ctrl || true
    pkill -f g1_antifall_ctrl || true
-   pkill -f g1_getup_ctrl || true
    pkill -f g1_parkour_ctrl || true
    ```
 
@@ -84,8 +83,7 @@ Before C++/DDS:
 | --- | --- | --- | --- | --- | --- |
 | Velocity / base G1 | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | keyboard `f` enters FixStand, `v` enters Velocity, `w/s/a/d/q/e` command motion, release to stop, `p` returns Passive; joystick `L2+Up` → `R2+A`, `L2+B` returns Passive | `./deploy/robots/g1/build/g1_ctrl --network=<robot_nic> --keyboard` |
 | AntiFall | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | keyboard `f` enters FixStand, `v` enters AntiFall, `w/s/a/d/q/e` command motion, `p` returns Passive; joystick `L2+Up` → `R2+A`, `L2+B` returns Passive | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=<robot_nic> --keyboard` |
-| AntiFall-GetUp | Reuses `g1_antifall` build after its deploy contract is supported | `./simulate/build/unitree_mujoco --network lo` | eventual shape: `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | same controls as AntiFall: keyboard `f` → `v`, `p` returns Passive; joystick `L2+Up` → `R2+A`, `L2+B` returns Passive | Not hardware-ready until the final deploy YAML uses C++-registered observations; see `doc/g1_antifall_getup.md`. |
-| GetUp | `cmake -S deploy/robots/g1_getup -B deploy/robots/g1_getup/build`<br>`cmake --build deploy/robots/g1_getup/build -j4` | `./simulate/build/unitree_mujoco --network lo` | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=lo --keyboard` | keyboard `f` enters FixStand, then `g` starts GetUp after the start pose is safe, `p` returns Passive; joystick `L2+Up` → `R2+Y`, `L2+B` returns Passive | `./deploy/robots/g1_getup/build/g1_getup_ctrl --network=<robot_nic> --keyboard` |
+| AMP-Locomotion | Python training/play lane; deploy controller is not introduced in this migration | `./simulate/build/unitree_mujoco --network lo` | Python play: `python scripts/play.py Unitree-G1-AMP-Flat --checkpoint-file <model.pt>` | train/play first; export `policy.onnx` from the AMP runner | Validate in Python before adding a C++ controller contract. |
 | Parkour | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour --network lo` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>auto-start: `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback defaults to Parkour idle-hold; hold `w` / `up` for route following, release to stop, `+/-` changes speed, `a/d/q/e` turns, `s/down/x/space` idles, `p` returns Passive; hardware joystick `L2+Up` → `R2+X` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=<robot_nic> --keyboard` |
 
 Use `--headless --headless-seconds <N>` on the simulator for no-GUI loopback
@@ -127,6 +125,5 @@ Do not run hardware until the simulator path is stable.  Before enabling motors:
 | --- | --- | --- | --- |
 | Base velocity | Stable checkpoint and expected tracking metrics. | Python play walks with correct command direction. | C++/DDS simulator stable at low speed. |
 | AntiFall | Curriculum/stage checkpoint recovers in training eval. | Native viewer drag perturbations recover. | Conservative sim/hardware disturbance tests only. |
-| AntiFall-GetUp | Final fused run preserves walking, recovery, and resume behavior. | Generic play shows upright walking, forced-fall recovery, and resumed locomotion. | Blocked until C++ deploy observations match the final exported contract. |
 | GetUp | Terrain-specific checkpoint converges for selected terrain. | Same terrain play gets up repeatedly. | Start from ground terrain before platform/wall/slope hardware tests. |
 | Parkour | Exported artifact contract is complete. | Depth contract and route-following replay pass. | Simulator live-depth route before any real-depth hardware trial. |

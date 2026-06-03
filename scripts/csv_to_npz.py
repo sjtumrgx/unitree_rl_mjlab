@@ -1,17 +1,50 @@
-from typing import Any
+# python scripts/csv_to_npz.py \
+#   --input-file motion_data_csv/lafan1/fallAndGetUp1_subject1.csv \
+#   --output-name fallAndGetUp1_subject1.npz \
+#   --input-fps 30 \
+#   --output-fps 50 \
+#   --line-range "(408,1953)" \
+#   --render True \
+#   --render-backend window \
+#   --window-realtime True \
+#   --window-realtime-scale 1.0
 
+# python scripts/csv_to_npz.py \
+#   --input-file src/assets/motions/g1/dance1_subject2.csv \
+#   --output-name dance1_subject2.npz \
+#   --input-fps 30 \
+#   --output-fps 50 \
+#   --render True \
+#   --render-backend offscreen \
+#   --video-output src/assets/motions/g1/dance1_subject2.mp4
+
+# python scripts/csv_to_npz.py \
+#   --input-dir /home/crp/wbc_mjlab/motion_data_csv/amp \
+#   --output-dir /home/crp/wbc_mjlab/motion_data_npz/amp \
+#   --input-fps 120 \
+#   --output-fps 50 \
+#   --render True \
+#   --render-backend window \
+#   --window-realtime True \
+#   --window-realtime-scale 1.0
+
+
+from pathlib import Path
+import time
+from typing import Any, Literal
+
+import mujoco
+import mujoco.viewer as mj_viewer
 import numpy as np
 import torch
 import tyro
-import os
 from tqdm import tqdm
 
 import mjlab
 from mjlab.entity import Entity
 from mjlab.scene import Scene
 from mjlab.sim.sim import Simulation, SimulationCfg
-from src.tasks.tracking.config.g1.env_cfgs import unitree_g1_flat_tracking_env_cfg
-from src.tasks.tracking.config.g1_23dof.env_cfgs import unitree_g1_23dof_flat_tracking_env_cfg
+from mjlab.tasks.tracking.config.g1.env_cfgs import unitree_g1_flat_tracking_env_cfg
 from mjlab.utils.lab_api.math import (
   axis_angle_from_quat,
   quat_conjugate,
@@ -189,10 +222,15 @@ def run_sim(
   input_file,
   input_fps,
   output_fps,
-  output_path,
+  output_name,
+  output_dir,
   render,
   line_range,
   renderer: OffscreenRenderer | None = None,
+  window_viewer: Any | None = None,
+  video_output: str | None = None,
+  window_realtime: bool = False,
+  window_realtime_scale: float = 1.0,
 ):
   motion = MotionLoader(
     motion_file=input_file,
@@ -221,7 +259,10 @@ def run_sim(
 
   print(f"\nStarting simulation with {motion.output_frames} frames...")
   if render:
-    print("Rendering enabled - generating video frames...")
+    if window_viewer is not None:
+      print("Rendering enabled - showing native MuJoCo window...")
+    else:
+      print("Rendering enabled - generating offscreen video frames...")
 
   # Create progress bar
   pbar = tqdm(
@@ -233,6 +274,7 @@ def run_sim(
   )
 
   frame_count = 0
+  wall_start_time = time.perf_counter()
   while not file_saved:
     (
       (
@@ -262,9 +304,33 @@ def run_sim(
 
     sim.forward()
     scene.update(sim.mj_model.opt.timestep)
+
     if render and renderer is not None:
       renderer.update(sim.data)
       frames.append(renderer.render())
+    if render and window_viewer is not None:
+      if not window_viewer.is_running():
+        print("Window closed by user, stopping simulation loop.")
+        pbar.close()
+        break
+
+      if sim.mj_model.nq > 0:
+        sim.mj_data.qpos[:] = sim.data.qpos[0].cpu().numpy()
+        sim.mj_data.qvel[:] = sim.data.qvel[0].cpu().numpy()
+      if sim.mj_model.nmocap > 0:
+        sim.mj_data.mocap_pos[:] = sim.data.mocap_pos[0].cpu().numpy()
+        sim.mj_data.mocap_quat[:] = sim.data.mocap_quat[0].cpu().numpy()
+      sim.mj_data.xfrc_applied[:] = sim.data.xfrc_applied[0].cpu().numpy()
+      mujoco.mj_forward(sim.mj_model, sim.mj_data)
+      window_viewer.sync()
+
+      if window_realtime:
+        sim_elapsed = frame_count / output_fps
+        target_elapsed = sim_elapsed / max(window_realtime_scale, 1e-6)
+        now_elapsed = time.perf_counter() - wall_start_time
+        sleep_s = target_elapsed - now_elapsed
+        if sleep_s > 0:
+          time.sleep(sleep_s)
 
     if not file_saved:
       log["joint_pos"].append(robot.data.joint_pos[0, :].cpu().numpy().copy())
@@ -306,97 +372,80 @@ def run_sim(
           "body_ang_vel_w",
         ):
           log[k] = np.stack(log[k], axis=0)
-        np.savez(output_path, **log)  # type: ignore[arg-type]
+        output_dir_path = Path(output_dir)
+        output_dir_path.mkdir(parents=True, exist_ok=True)
+        np.savez(str(output_dir_path / output_name), **log)  # type: ignore[arg-type]
+
+        if render and renderer is not None and frames:
+          mp4_path = Path(video_output) if video_output is not None else None
+          if mp4_path is None:
+            default_mp4_name = Path(output_name).with_suffix(".mp4").name
+            mp4_path = output_dir_path / default_mp4_name
+          mp4_path.parent.mkdir(parents=True, exist_ok=True)
+
+          try:
+            import imageio.v3 as iio
+          except ImportError as exc:
+            raise RuntimeError(
+              "Saving mp4 requires imageio. Install with: pip install imageio[ffmpeg]"
+            ) from exc
+
+          print(f"Saving offscreen video to: {mp4_path}")
+          iio.imwrite(str(mp4_path), np.stack(frames, axis=0), fps=output_fps)
 
 
 def main(
-  robot: str,
-  input_file: str,
-  output_name: str,
+  input_file: str | None = None,
+  output_name: str | None = None,
+  input_dir: str | None = None,
+  output_dir: str = "./motion_data_npz/amp/Recovery",
   input_fps: float = 30.0,
   output_fps: float = 50.0,
   device: str = "cuda:0",
   render: bool = False,
+  render_backend: Literal["offscreen", "window"] = "offscreen",
+  window_realtime: bool = False,
+  window_realtime_scale: float = 1.0,
+  video_output: str | None = None,
+  render_entity_name: str | None = "robot",
   line_range: tuple[int, int] | None = None,
 ):
   """Replay motion from CSV file and output to npz file.
 
   Args:
-    input_file: Path to the input CSV file.
-    output_name: Path to the output npz file.
+    input_file: Path to a single input CSV file.
+    output_name: Output npz filename (used with input_file).
+    input_dir: Directory containing CSV files for batch conversion.
+    output_dir: Directory to save output npz files.
     input_fps: Frame rate of the CSV file.
     output_fps: Desired output frame rate.
     device: Device to use.
-    render: Whether to render the simulation and save a video.
+    render: Whether to render the simulation.
+    render_backend: Rendering backend (offscreen or window).
+    window_realtime: Keep window playback aligned with wall-clock time.
+    window_realtime_scale: Realtime speed scale (1.0 real-time, 2.0 twice speed).
+    video_output: Optional output path for mp4 video (offscreen backend only).
+    render_entity_name: Entity to track when rendering with ASSET_ROOT camera.
     line_range: Range of lines to process from the CSV file.
   """
+  if input_file is None and input_dir is None:
+    raise ValueError("Either --input_file or --input_dir must be specified.")
+
+  if input_dir is not None:
+    csv_files = sorted(Path(input_dir).glob("*.csv"))
+    if not csv_files:
+      raise FileNotFoundError(f"No CSV files found in {input_dir}")
+    file_pairs = [(str(f), f.with_suffix(".npz").name) for f in csv_files]
+    print(f"Found {len(csv_files)} CSV files in {input_dir}")
+  else:
+    assert input_file is not None
+    if output_name is None:
+      output_name = Path(input_file).with_suffix(".npz").name
+    file_pairs = [(input_file, output_name)]
   sim_cfg = SimulationCfg()
   sim_cfg.mujoco.timestep = 1.0 / output_fps
-  if robot == "g1":    # 29 Dof
-    scene = Scene(unitree_g1_flat_tracking_env_cfg().scene, device=device)
-    joint_names=[
-      "left_hip_pitch_joint",
-      "left_hip_roll_joint",
-      "left_hip_yaw_joint",
-      "left_knee_joint",
-      "left_ankle_pitch_joint",
-      "left_ankle_roll_joint",
-      "right_hip_pitch_joint",
-      "right_hip_roll_joint",
-      "right_hip_yaw_joint",
-      "right_knee_joint",
-      "right_ankle_pitch_joint",
-      "right_ankle_roll_joint",
-      "waist_yaw_joint",
-      "waist_roll_joint",
-      "waist_pitch_joint",
-      "left_shoulder_pitch_joint",
-      "left_shoulder_roll_joint",
-      "left_shoulder_yaw_joint",
-      "left_elbow_joint",
-      "left_wrist_roll_joint",
-      "left_wrist_pitch_joint",
-      "left_wrist_yaw_joint",
-      "right_shoulder_pitch_joint",
-      "right_shoulder_roll_joint",
-      "right_shoulder_yaw_joint",
-      "right_elbow_joint",
-      "right_wrist_roll_joint",
-      "right_wrist_pitch_joint",
-      "right_wrist_yaw_joint",
-    ]
-    output_dir = "./src/assets/motions/g1"
-  elif robot == "g1_23dof":
-    scene = Scene(unitree_g1_23dof_flat_tracking_env_cfg().scene, device=device)
-    joint_names=[    # 23 Dof
-      "left_hip_pitch_joint",
-      "left_hip_roll_joint",
-      "left_hip_yaw_joint",
-      "left_knee_joint",
-      "left_ankle_pitch_joint",
-      "left_ankle_roll_joint",
-      "right_hip_pitch_joint",
-      "right_hip_roll_joint",
-      "right_hip_yaw_joint",
-      "right_knee_joint",
-      "right_ankle_pitch_joint",
-      "right_ankle_roll_joint",
-      "waist_yaw_joint",
-      "left_shoulder_pitch_joint",
-      "left_shoulder_roll_joint",
-      "left_shoulder_yaw_joint",
-      "left_elbow_joint",
-      "left_wrist_roll_joint",
-      "right_shoulder_pitch_joint",
-      "right_shoulder_roll_joint",
-      "right_shoulder_yaw_joint",
-      "right_elbow_joint",
-      "right_wrist_roll_joint",
-    ]
-    output_dir = "./src/assets/motions/g1_23dof"
-  else:
-    raise ValueError(f"Unsupported robot: {robot}")
 
+  scene = Scene(unitree_g1_flat_tracking_env_cfg().scene, device=device)
   model = scene.compile()
 
   sim = Simulation(num_envs=1, cfg=sim_cfg, model=model, device=device)
@@ -404,7 +453,7 @@ def main(
   scene.initialize(sim.mj_model, sim.model, sim.data)
 
   renderer = None
-  if render:
+  if render and render_backend == "offscreen":
     viewer_cfg = ViewerConfig(
       height=480,
       width=640,
@@ -413,29 +462,81 @@ def main(
       elevation=-5.0,
       azimuth=20,
     )
+
+    # OffscreenRenderer needs entity_name when ASSET_ROOT is used in a multi-entity scene.
+    if viewer_cfg.origin_type == ViewerConfig.OriginType.ASSET_ROOT:
+      if render_entity_name is not None:
+        viewer_cfg.entity_name = render_entity_name
+      elif len(scene.entities) == 1:
+        viewer_cfg.entity_name = next(iter(scene.entities.keys()))
+
     renderer = OffscreenRenderer(
       model=sim.mj_model,
       cfg=viewer_cfg,
       scene=scene,
     )
     renderer.initialize()
-  os.makedirs(output_dir, exist_ok=True)
-  if not output_name.endswith(".npz"):
-    output_name += ".npz"
-  output_path = os.path.join(output_dir, output_name)
 
-  run_sim(
-    sim=sim,
-    scene=scene,
-    joint_names=joint_names,
-    input_fps=input_fps,
-    input_file=input_file,
-    output_fps=output_fps,
-    output_path=output_path,
-    render=render,
-    line_range=line_range,
-    renderer=renderer,
-  )
+  joint_names = [
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+  ]
+
+  for i, (cur_input_file, cur_output_name) in enumerate(file_pairs):
+    if len(file_pairs) > 1:
+      print(f"\n{'='*60}")
+      print(f"Processing file {i + 1}/{len(file_pairs)}: {cur_input_file}")
+      print(f"{'='*60}")
+
+    common_kwargs = dict(
+      sim=sim,
+      scene=scene,
+      joint_names=joint_names,
+      input_fps=input_fps,
+      input_file=cur_input_file,
+      output_fps=output_fps,
+      output_name=cur_output_name,
+      output_dir=output_dir,
+      render=render,
+      line_range=line_range,
+      renderer=renderer,
+      video_output=video_output,
+      window_realtime=window_realtime,
+      window_realtime_scale=window_realtime_scale,
+    )
+
+    if render and render_backend == "window":
+      with mj_viewer.launch_passive(sim.mj_model, sim.mj_data) as window_viewer:
+        run_sim(**common_kwargs, window_viewer=window_viewer)
+    else:
+      run_sim(**common_kwargs)
 
 
 if __name__ == "__main__":
