@@ -28,11 +28,8 @@
 │   └── parkour/                      # Parkour ONNX/deploy contract、观测适配、深度工具和场景编辑核心。
 ├── scripts/
 │   ├── train.py                      # 通用训练入口。
-│   ├── play.py                       # 通用 Python 策略回放 / 可视化入口。
-│   ├── play_parkour.py               # 带深度输入的 G1 Parkour 回放与诊断。
-│   ├── play_antifall.py              # 带 MuJoCo 鼠标拖拽扰动的 G1 AntiFall 回放。
-│   ├── csv_to_npz.py                 # 将 AMP motion CSV 转成 NPZ clip。
-│   └── edit_parkour_scene.py         # 基于浏览器/Viser 的 Parkour 地形盒子编辑器。
+│   └── play.py                       # 通用 Python 策略回放 / 可视化入口。
+├── tools/                            # 从 scripts/ 移出的辅助 CLI 和诊断工具。
 ├── data/
 ├── deploy/
 │   └── robots/g1_parkour/            # C++/DDS G1 Parkour controller 与 policy runtime。
@@ -191,7 +188,7 @@ PY
 查看迁移后的任务：
 
 ```bash
-python scripts/list_envs.py --keyword AMP
+python tools/list_envs.py --keyword AMP
 ```
 
 按要求启动 4 卡训练：
@@ -250,7 +247,7 @@ python scripts/play.py Unitree-G1-Flat \
 用 native MuJoCo viewer 回放具体 stage checkpoint：
 
 ```bash
-python scripts/play_antifall.py \
+python tools/play_antifall.py \
   --task Unitree-G1-AntiFall-Stage4b \
   --checkpoint-file logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
   --num-envs 1 \
@@ -278,13 +275,13 @@ python scripts/play.py Unitree-G1-AMP-Flat \
 默认 Parkour 回放：
 
 ```bash
-python scripts/play_parkour.py
+python tools/play_parkour.py
 ```
 
 无头验证：
 
 ```bash
-python scripts/play_parkour.py --validate-walk \
+python tools/play_parkour.py --validate-walk \
   --viewer none \
   --no-depth-viewer \
   --max-steps 20
@@ -303,7 +300,7 @@ src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml
 打开可视化地形编辑器：
 
 ```bash
-python scripts/edit_parkour_scene.py --open-browser
+python tools/edit_parkour_scene.py --open-browser
 ```
 
 编辑器显示的是直观的**完整**长/宽/高。MuJoCo XML 的 box `size` 是半尺寸，所以
@@ -338,8 +335,8 @@ controller。真实机器人时，必须先通过 simulator 验证，再把同�
 | 任务 | 进入 C++ 前的 Python gate | Controller 构建 | Loopback simulator 终端 | Loopback controller 终端 | 进入/控制方式 | 主要注意事项 |
 | --- | --- | --- | --- | --- | --- | --- |
 | Velocity / 基础 G1 | `python scripts/play.py Unitree-G1-Flat --checkpoint_file <model.pt>` | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | 键盘：`f` → `v`；遥控器：`L2+Up` → `R2+A` | 部署 artifact 来自 `deploy/robots/g1/config/policy/velocity/v0`；重点核对 `params/deploy.yaml` 里的 joint order/action scale。 |
-| AntiFall | `python scripts/play_antifall.py --task Unitree-G1-AntiFall-Stage4b --run-dir <stage_dir> --checkpoint <model.pt>` | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | 键盘：`f` → `v`；遥控器：`L2+Up` → `R2+A` | 先在 simulator 中验证恢复能力；不要用 AntiFall 掩盖 action order、PD gain 或 reset pose 错误。 |
-| Parkour | `python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer`<br>`python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20` | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>自动进入：`./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback 键盘路线：按住 `w` / `up`；`p` 回 Passive | Live depth 是 policy contract 的一部分。常量深度只适合 ablation，不代表地形通过能力。 |
+| AntiFall | `python tools/play_antifall.py --task Unitree-G1-AntiFall-Stage4b --run-dir <stage_dir> --checkpoint <model.pt>` | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | 键盘：`f` → `v`；遥控器：`L2+Up` → `R2+A` | 先在 simulator 中验证恢复能力；不要用 AntiFall 掩盖 action order、PD gain 或 reset pose 错误。 |
+| Parkour | `python tools/play_parkour.py --check-contract --viewer none --no-depth-viewer`<br>`python tools/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20` | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>自动进入：`./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback 键盘路线：按住 `w` / `up`；`p` 回 Passive | Live depth 是 policy contract 的一部分。常量深度只适合 ablation，不代表地形通过能力。 |
 
 无头 simulator 诊断时，给 simulator 命令加 `--headless --headless-seconds <N>`。
 Parkour 深度 ablation 可在 controller 侧设置 `G1_PARKOUR_DEBUG_CONSTANT_DEPTH=0.5`；

@@ -27,9 +27,9 @@
 
 1. 在 Python 中回放同一个 checkpoint/artifact。
 2. 有任务专用 play 脚本时优先使用：
-   - AntiFall：`scripts/play_antifall.py`
+   - AntiFall：`tools/play_antifall.py`
    - AMP-Locomotion：使用通用 `scripts/play.py Unitree-G1-AMP-Flat` 或 `Unitree-G1-AMP-Rough`
-   - Parkour：`scripts/play_parkour.py`
+   - Parkour：`tools/play_parkour.py`
 3. 检查 reset pose、命令方向、action scale、joint order 和 viewer 诊断。
 4. Parkour 先用 `--check-contract` 检查深度 contract；无头短测使用
    `--validate-walk --viewer none --no-depth-viewer`。

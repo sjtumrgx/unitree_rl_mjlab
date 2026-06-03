@@ -29,11 +29,8 @@ The intended workflow is:
 │   └── parkour/                      # Parkour ONNX/deploy contracts, observation adapter, depth utilities, and scene editor core.
 ├── scripts/
 │   ├── train.py                      # Generic training entrypoint.
-│   ├── play.py                       # Generic Python policy replay / visualization entrypoint.
-│   ├── play_parkour.py               # Depth-conditioned G1 Parkour replay and diagnostics.
-│   ├── play_antifall.py              # G1 AntiFall replay with native MuJoCo drag perturbations.
-│   ├── csv_to_npz.py                 # Convert AMP motion CSV files into NPZ clips.
-│   └── edit_parkour_scene.py         # Browser-based Viser editor for parkour terrain boxes.
+│   └── play.py                       # Generic Python policy replay / visualization entrypoint.
+├── tools/                            # Auxiliary CLIs and diagnostics moved out of scripts/.
 ├── data/
 ├── deploy/
 │   └── robots/g1_parkour/            # C++/DDS G1 Parkour controller and policy runtime.
@@ -194,7 +191,7 @@ PY
 List the migrated tasks:
 
 ```bash
-python scripts/list_envs.py --keyword AMP
+python tools/list_envs.py --keyword AMP
 ```
 
 Start the requested 4-GPU training run:
@@ -258,7 +255,7 @@ Use `--viewer native` when you need MuJoCo mouse/keyboard interaction.  Use
 Replay a stage checkpoint with the native MuJoCo viewer:
 
 ```bash
-python scripts/play_antifall.py \
+python tools/play_antifall.py \
   --task Unitree-G1-AntiFall-Stage4b \
   --checkpoint-file logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b/model_*.pt \
   --num-envs 1 \
@@ -286,13 +283,13 @@ Use `Unitree-G1-AMP-Rough` for the rough-terrain variant.
 Default Parkour replay:
 
 ```bash
-python scripts/play_parkour.py
+python tools/play_parkour.py
 ```
 
 Headless validation:
 
 ```bash
-python scripts/play_parkour.py --validate-walk \
+python tools/play_parkour.py --validate-walk \
   --viewer none \
   --no-depth-viewer \
   --max-steps 20
@@ -312,7 +309,7 @@ src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml
 Open the visual terrain editor:
 
 ```bash
-python scripts/edit_parkour_scene.py --open-browser
+python tools/edit_parkour_scene.py --open-browser
 ```
 
 The editor exposes each terrain box module with intuitive **full** length/width
@@ -349,8 +346,8 @@ replace `lo` with the robot network interface after simulator validation passes.
 | Task | Python gate before C++ | Controller build | Loopback simulator terminal | Loopback controller terminal | Enter/control | Main caveat |
 | --- | --- | --- | --- | --- | --- | --- |
 | Velocity / base G1 | `python scripts/play.py Unitree-G1-Flat --checkpoint_file <model.pt>` | `cmake -S deploy/robots/g1 -B deploy/robots/g1/build`<br>`cmake --build deploy/robots/g1/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1/build/g1_ctrl --network=lo --keyboard` | keyboard: `f` → `v`; joystick: `L2+Up` → `R2+A` | The deployed artifact is read from `deploy/robots/g1/config/policy/velocity/v0`; verify joint order/action scale in `params/deploy.yaml`. |
-| AntiFall | `python scripts/play_antifall.py --task Unitree-G1-AntiFall-Stage4b --run-dir <stage_dir> --checkpoint <model.pt>` | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | keyboard: `f` → `v`; joystick: `L2+Up` → `R2+A` | Validate recovery with simulator pushes before hardware; do not use AntiFall to mask wrong action order, PD gains, or reset pose. |
-| Parkour | `python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer`<br>`python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20` | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>or auto-start: `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback keyboard route: hold `w` / `up`; `p` returns Passive | Live depth is part of the policy contract.  Constant depth is only an ablation, not terrain traversal proof. |
+| AntiFall | `python tools/play_antifall.py --task Unitree-G1-AntiFall-Stage4b --run-dir <stage_dir> --checkpoint <model.pt>` | `cmake -S deploy/robots/g1_antifall -B deploy/robots/g1_antifall/build`<br>`cmake --build deploy/robots/g1_antifall/build -j4` | `./simulate/build/unitree_mujoco` | `./deploy/robots/g1_antifall/build/g1_antifall_ctrl --network=lo --keyboard` | keyboard: `f` → `v`; joystick: `L2+Up` → `R2+A` | Validate recovery with simulator pushes before hardware; do not use AntiFall to mask wrong action order, PD gains, or reset pose. |
+| Parkour | `python tools/play_parkour.py --check-contract --viewer none --no-depth-viewer`<br>`python tools/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20` | `cmake -S deploy/robots/g1_parkour -B deploy/robots/g1_parkour/build`<br>`cmake --build deploy/robots/g1_parkour/build -j4` | `./simulate/build/unitree_mujoco_parkour` | `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo`<br>or auto-start: `./deploy/robots/g1_parkour/build/g1_parkour_ctrl --network=lo --sim-autostart-parkour` | loopback keyboard route: hold `w` / `up`; `p` returns Passive | Live depth is part of the policy contract.  Constant depth is only an ablation, not terrain traversal proof. |
 
 For headless simulator diagnostics, add `--headless --headless-seconds <N>` to
 the simulator command.  For Parkour depth ablations, set

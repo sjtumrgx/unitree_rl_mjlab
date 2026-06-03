@@ -35,19 +35,19 @@ Do not update ONNX files without updating the matching deploy YAML and manifest.
 Default visual replay:
 
 ```bash
-python scripts/play_parkour.py
+python tools/play_parkour.py
 ```
 
 Contract-only check:
 
 ```bash
-python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer
+python tools/play_parkour.py --check-contract --viewer none --no-depth-viewer
 ```
 
 Short headless walk validation:
 
 ```bash
-python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20
+python tools/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20
 ```
 
 `terrain-route` mode reads `g1_parkour_route_waypoints` from
@@ -66,13 +66,13 @@ src/assets/robots/unitree_g1/xmls/scene_g1_parkour.xml
 Open the browser editor:
 
 ```bash
-python scripts/edit_parkour_scene.py --open-browser
+python tools/edit_parkour_scene.py --open-browser
 ```
 
 The editor shows full dimensions.  MuJoCo XML stores box half-extents, so a full
 `0.36 m` length is stored as `size="0.18 ..."`.  The Python MJLab debug spec reads
 modules from the same XML, so saved XML changes affect both standalone simulator
-scene loading and `scripts/play_parkour.py` after restart.
+scene loading and `tools/play_parkour.py` after restart.
 
 ## Sim2Real / C++ runtime
 

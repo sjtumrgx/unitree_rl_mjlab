@@ -30,15 +30,5 @@ data/motions/g1_getup_amp/
 data/huggingface/
 data/raw/g1_getup_source/
 data/g1-retargeted-motions/
-# Keep broad test ignores narrow: only committed migration/AntiFall tests are trackable.
-tests/*
-!tests/tasks/
-tests/tasks/*
-!tests/tasks/test_amp_locomotion_migration.py
-!tests/tasks/test_amp_locomotion_cleanup_inventory.py
-!tests/tasks/test_g1_antifall_registration.py
-!tests/tasks/test_g1_antifall_stage_contracts.py
-!tests/scripts/
-tests/scripts/*
-!tests/fixtures/
-tests/fixtures/*
+# Keep local test suites out of git.
+tests/

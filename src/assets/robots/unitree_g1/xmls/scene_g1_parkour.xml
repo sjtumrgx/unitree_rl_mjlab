@@ -388,7 +388,7 @@
     <light pos="1 0 3.5" dir="0 0 -1" directional="true" />
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" />
     <!-- InstinctLab-inspired deterministic parkour course for C++/DDS MuJoCo.
-         Mirrors scripts/play_parkour.py route terrain: up/down stairs, two safe
+         Mirrors tools/play_parkour.py route terrain: up/down stairs, two safe
          square-gap surrogates, centered boxes, and mesh-box stepping stones.
          Stairs are raised to force visible foot clearance; gap lower strips are
          0.14 m with a 0.28 m lip-to-floor drop so the simulator can

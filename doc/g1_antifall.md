@@ -39,7 +39,7 @@ logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/<stage>/model_*.pt
 Replay a stage checkpoint, not the top-level exported ONNX:
 
 ```bash
-python scripts/play_antifall.py \
+python tools/play_antifall.py \
   --task Unitree-G1-AntiFall-Stage4b \
   --run-dir logs/rsl_rl/g1_antifall_curriculum/<run>_curriculum/stages/05_stage4b \
   --checkpoint model_*.pt
@@ -144,5 +144,5 @@ After Python play and loopback simulator recovery checks pass:
 ## Benchmark helpers
 
 `Unitree-G1-AntiFall-Benchmark` is a deterministic environment config for
-repeatable checks.  `scripts/benchmark_antifall.py` remains the shell-facing CLI,
-while `scripts/antifall_harness.py` contains reusable helper logic.
+repeatable checks.  `tools/benchmark_antifall.py` remains the shell-facing CLI,
+while `tools/antifall_harness.py` contains reusable helper logic.

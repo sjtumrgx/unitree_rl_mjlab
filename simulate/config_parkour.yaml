@@ -1,6 +1,6 @@
 robot: "g1"
 # Default interactive parkour simulator shows the same deterministic complex
-# terrain family used by scripts/play_parkour.py: up/down stairs, safe gap
+# terrain family used by tools/play_parkour.py: up/down stairs, safe gap
 # surrogates, centered boxes, and mesh-box stepping stones.
 # Headless/manual validation can pass scene_g1_parkour_flat.xml explicitly
 # through the simulator --scene/robot_scene configuration path.
@@ -53,7 +53,7 @@ depth_debug_policy_display: 1
 depth_debug_artifact_floor: 0.10
 depth_debug_artifact_ceiling: 0.75
 # The C++ OpenGL path exposes two near-plane/self-occlusion rows at the
-# bottom of the policy crop that scripts/play_parkour.py does not produce.
+# bottom of the policy crop that tools/play_parkour.py does not produce.
 # Extrapolate them from the nearest valid crop rows before DDS publish and
 # debug display so live policy input matches the Python MuJoCo depth path.
 depth_policy_bottom_artifact_rows: 2

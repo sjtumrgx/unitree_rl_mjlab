@@ -111,13 +111,13 @@ ldd deploy/robots/g1/build/g1_ctrl | grep "not found" || true
 
 ```bash
 # Python import / task registration 检查。
-python scripts/list_envs.py | grep Unitree-G1
+python tools/list_envs.py | grep Unitree-G1
 
 # Parkour contract 检查。
-python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer
+python tools/play_parkour.py --check-contract --viewer none --no-depth-viewer
 
 # Parkour 无头短回放验证。
-python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20
+python tools/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20
 ```
 
 建议在 C++/DDS 或真实机器人测试前先跑这些检查。

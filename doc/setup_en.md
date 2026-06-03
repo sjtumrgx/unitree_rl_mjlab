@@ -117,13 +117,13 @@ ldd deploy/robots/g1/build/g1_ctrl | grep "not found" || true
 
 ```bash
 # Python import / task registration sanity.
-python scripts/list_envs.py | grep Unitree-G1
+python tools/list_envs.py | grep Unitree-G1
 
 # Parkour contract check.
-python scripts/play_parkour.py --check-contract --viewer none --no-depth-viewer
+python tools/play_parkour.py --check-contract --viewer none --no-depth-viewer
 
 # Headless short Parkour play validation.
-python scripts/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20
+python tools/play_parkour.py --validate-walk --viewer none --no-depth-viewer --max-steps 20
 ```
 
 Use these before C++/DDS or real robot testing.

@@ -29,9 +29,9 @@ Before C++/DDS:
 
 1. Replay the exact checkpoint/artifact in Python.
 2. Use the task-specific play script when available:
-   - AntiFall: `scripts/play_antifall.py`
+   - AntiFall: `tools/play_antifall.py`
    - AMP-Locomotion: use generic `scripts/play.py Unitree-G1-AMP-Flat` or `Unitree-G1-AMP-Rough`
-   - Parkour: `scripts/play_parkour.py`
+   - Parkour: `tools/play_parkour.py`
 3. Check reset pose, command direction, action scale, joint order, and viewer
    diagnostics.
 4. For Parkour, validate depth contract with `--check-contract` and use

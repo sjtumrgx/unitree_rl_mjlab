@@ -1,4 +1,4 @@
-# python scripts/csv_to_npz.py \
+# python tools/csv_to_npz.py \
 #   --input-file motion_data_csv/lafan1/fallAndGetUp1_subject1.csv \
 #   --output-name fallAndGetUp1_subject1.npz \
 #   --input-fps 30 \
@@ -9,7 +9,7 @@
 #   --window-realtime True \
 #   --window-realtime-scale 1.0
 
-# python scripts/csv_to_npz.py \
+# python tools/csv_to_npz.py \
 #   --input-file src/assets/motions/g1/dance1_subject2.csv \
 #   --output-name dance1_subject2.npz \
 #   --input-fps 30 \
@@ -18,7 +18,7 @@
 #   --render-backend offscreen \
 #   --video-output src/assets/motions/g1/dance1_subject2.mp4
 
-# python scripts/csv_to_npz.py \
+# python tools/csv_to_npz.py \
 #   --input-dir /home/crp/wbc_mjlab/motion_data_csv/amp \
 #   --output-dir /home/crp/wbc_mjlab/motion_data_npz/amp \
 #   --input-fps 120 \

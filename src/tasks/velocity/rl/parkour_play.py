@@ -1,4 +1,4 @@
-"""Runtime helpers for ``scripts/play_parkour.py``."""
+"""Runtime helpers for ``tools/play_parkour.py``."""
 
 from __future__ import annotations
 
