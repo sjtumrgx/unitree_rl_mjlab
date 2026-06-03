@@ -270,7 +270,6 @@ python scripts/play.py Unitree-G1-AMP-Flat \
 粗糙地形版本使用 `Unitree-G1-AMP-Rough`。
 
 ### 2.4 Parkour play 与地形编辑
-### 2.5 Parkour play 与地形编辑
 
 默认 Parkour 回放：
 

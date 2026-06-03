@@ -278,7 +278,6 @@ python scripts/play.py Unitree-G1-AMP-Flat \
 Use `Unitree-G1-AMP-Rough` for the rough-terrain variant.
 
 ### 2.4 Parkour play and terrain editing
-### 2.5 Parkour play and terrain editing
 
 Default Parkour replay:
 
